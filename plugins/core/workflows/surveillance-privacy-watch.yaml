@@ -61,6 +61,86 @@ steps:
     provider_hint: ollama
     description: "Sweep: police and commercial tracking"
 
+  # Outlet RSS feeds (folded in 2026-10-23, owner): a trial run of the
+  # surveillance-privacy-watch-rss draft found an item the sweeps missed (the
+  # FCC's HiSilicon device ban, via The Record). Optional: a feed that is down
+  # leaves the sweeps to carry the report.
+  - id: feed_bleepingcomputer
+    needs: { kind: news-feed, topic: cybersecurity }
+    tool_name: http_request
+    arguments:
+      context_name: bleepingcomputer_rss
+      method: GET
+      url: "feed/"
+    optional: true
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Outlet feed: bleepingcomputer_rss (RSS)"
+
+  - id: feed_therecord
+    needs: { kind: news-feed, topic: cybersecurity }
+    tool_name: http_request
+    arguments:
+      context_name: therecord_rss
+      method: GET
+      url: "feed"
+    optional: true
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Outlet feed: therecord_rss (RSS)"
+
+  - id: feed_securityweek
+    needs: { kind: news-feed, topic: cybersecurity }
+    tool_name: http_request
+    arguments:
+      context_name: securityweek_rss
+      method: GET
+      url: "feed/"
+    optional: true
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Outlet feed: securityweek_rss (RSS)"
+
+  - id: rss
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 30000
+      code: |
+        import json, datetime, email.utils, xml.etree.ElementTree as ET
+        FEEDS = {"bleepingcomputer_rss": r"""{{steps.feed_bleepingcomputer.body}} """, "therecord_rss": r"""{{steps.feed_therecord.body}} """, "securityweek_rss": r"""{{steps.feed_securityweek.body}} """}
+        KEYWORDS = ["spyware", "surveillance", "privacy", "tracking", "facial recognition", "data broker", "biometric", "lawsuit", "gdpr", "ftc", "location data", "stalkerware"]
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
+        out, seen, errors = [], 0, []
+        for name, xml in FEEDS.items():
+            try:
+                root = ET.fromstring(xml.strip())
+            except ET.ParseError as e:
+                errors.append(f"{name}: not RSS ({e})")
+                continue
+            for it in root.iter("item"):
+                seen += 1
+                title = (it.findtext("title") or "").strip()
+                desc = (it.findtext("description") or "").strip()
+                when = it.findtext("pubDate") or ""
+                try:
+                    dt = email.utils.parsedate_to_datetime(when)
+                except Exception:
+                    dt = None
+                if dt is not None and dt < cutoff:
+                    continue
+                text = (title + " " + desc).lower()
+                if not any(k in text for k in KEYWORDS):
+                    continue
+                out.append({"title": title, "link": (it.findtext("link") or "").strip(),
+                            "date": dt.date().isoformat() if dt else "", "snippet": desc[:300], "source": name})
+        print(json.dumps(out, indent=1))
+        print(f"(RSS: {len(out)} of {seen} feed items kept: last 7 days, beat keywords" + (f"; errors: {errors}" if errors else "") + ")")
+    optional: true
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Parse the feeds: last 7 days, beat keywords (code, no model)"
+
   - id: report
     tool_name: reason
     arguments:
@@ -100,7 +180,7 @@ steps:
 
         Ground every line in the CONTEXT and cite its URL. If a sweep came back
         empty or off-topic, say so plainly.
-      context: "## PRIOR REPORT (may be empty on first run)\n{{steps.prior}}\n\n## SWEEP — SPYWARE AND STATE SURVEILLANCE\n{{steps.spyware}}\n\n## SWEEP — PRIVACY LAWSUITS AND REGULATORS\n{{steps.privacy}}\n\n## SWEEP — POLICE AND COMMERCIAL TRACKING\n{{steps.tracking}}"
+      context: "## PRIOR REPORT (may be empty on first run)\n{{steps.prior}}\n\n## SWEEP — SPYWARE AND STATE SURVEILLANCE\n{{steps.spyware}}\n\n## SWEEP — PRIVACY LAWSUITS AND REGULATORS\n{{steps.privacy}}\n\n## SWEEP — POLICE AND COMMERCIAL TRACKING\n{{steps.tracking}}\n\n## OUTLET RSS FEEDS (last 7 days, beat keywords; JSON list: title, link, date, snippet, source)\n{{steps.rss.stdout}}"
       store_inference: false
     priority: 2
     max_attempts: 3

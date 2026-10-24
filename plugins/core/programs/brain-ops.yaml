@@ -16,9 +16,7 @@ workflows:
   - item-dispatch
   - overdue-todo-review
   - todo-snapshot
-  - todo-review-chat
   - behavior-candidates
-  - brain-exercise
   - consolidate
   - capability-mining
   - brain-api-sync

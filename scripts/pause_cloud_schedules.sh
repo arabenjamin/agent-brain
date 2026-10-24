@@ -66,9 +66,7 @@ TARGETS=(
   "tech-dependency-synthesis"
   "hardware-tripwire"
   # --- start runs of a workflow with a cloud step ---
-  "news-analysis"                       # -> fill-knowledge-gap
   "media-watch"                         # -> video-learning
-  "brain-exercise"                      # -> fill-knowledge-gap
 )
 
 cypher() {

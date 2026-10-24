@@ -153,6 +153,30 @@ impl Store {
         Ok(count(&rows) > 0)
     }
 
+    /// The topics some active program works on, as `(name, description)`:
+    /// what a gap question must be about to be worth a gap-fill run.
+    pub async fn program_topics(&self) -> Result<Vec<(String, String)>> {
+        let rows = self
+            .q(
+                "MATCH (p:Program) WHERE p.status = 'active' \
+                 UNWIND coalesce(p.topics, []) AS t \
+                 MATCH (tp:Topic {name: t}) \
+                 RETURN DISTINCT tp.name AS name, coalesce(tp.description, '') AS d \
+                 ORDER BY name",
+                json!({}),
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                Some((
+                    r["name"].as_str()?.to_string(),
+                    r["d"].as_str().unwrap_or("").to_string(),
+                ))
+            })
+            .collect())
+    }
+
     /// How many Tasks whose goal starts with `prefix` were created since
     /// `since` (RFC 3339). Backs the curiosity engine's daily cap.
     pub async fn count_tasks_with_goal_prefix_since(

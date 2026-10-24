@@ -898,13 +898,35 @@ impl MediaSkill {
             .count_tasks_with_goal_prefix_since("fill knowledge gap:", &day_start)
             .await
             .unwrap_or(0);
+        // Only a gap some program works on (owner, 2026-10-23: of a week's
+        // 168 gap notes, 140 were never read again, and about a third of the
+        // questions fit no program). Unknown program topics: no filter.
+        let program_topics = self.store.program_topics().await.unwrap_or_else(|e| {
+            warn!(error = %e, "spawn_gap_tasks: could not read program topics; not filtering");
+            Vec::new()
+        });
         let mut created = 0usize;
+        let mut off_program = Vec::new();
         for concept in concepts.iter().take(max) {
             if today >= daily_max {
                 info!(daily_max, "spawn_gap_tasks: daily gap-task ceiling reached");
                 break;
             }
             let concept = truncate(concept, 160);
+            if !program_topics.is_empty() {
+                let prompt = gap_topic_prompt(&concept, &program_topics);
+                match self.llm.generate_json(&prompt, None, &["topics"], 1).await {
+                    Ok(v) if gap_topics(&v, &program_topics).is_empty() => {
+                        off_program.push(concept.clone());
+                        continue;
+                    }
+                    Ok(_) => {}
+                    // Fail open, loudly: a classifier outage keeps the old behaviour.
+                    Err(e) => {
+                        warn!(error = %e, "spawn_gap_tasks: topic check failed; keeping the gap")
+                    }
+                }
+            }
             let goal = format!("fill knowledge gap: {concept}");
             if self
                 .store
@@ -937,6 +959,7 @@ impl MediaSkill {
         info!(
             created,
             candidates = concepts.len(),
+            off_program = ?off_program,
             "spawn_gap_tasks complete"
         );
         // Pass-through: return the analysis unchanged so downstream steps see it.
@@ -1034,6 +1057,32 @@ fn extract_follow_up(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The local-model prompt asking which program topic a gap question is about.
+fn gap_topic_prompt(concept: &str, topics: &[(String, String)]) -> String {
+    let list: String = topics
+        .iter()
+        .map(|(n, d)| format!("- {n}: {}\n", d.trim()))
+        .collect();
+    format!(
+        "Which of these topics is this research question substantially about?\n{list}\
+         Rules:\n\
+         - The ONE topic it is mainly about, or two if both are central. A passing mention does not count.\n\
+         - If no topic fits, the list is empty.\n\
+         - Output ONLY JSON: {{\"topics\":[\"topic-name\"]}}\n\nQUESTION:\n{concept}"
+    )
+}
+
+/// The known topic names in the classifier's answer.
+fn gap_topics(v: &Value, topics: &[(String, String)]) -> Vec<String> {
+    v.get("topics")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.as_str().map(|s| s.trim().to_lowercase()))
+        .filter(|s| topics.iter().any(|(n, _)| n == s))
+        .collect()
 }
 
 /// Default ceiling on `fill knowledge gap:` tasks created per local day.
@@ -1206,6 +1255,22 @@ mod tests {
         }
     }
     use super::*;
+
+    #[test]
+    fn a_gap_counts_only_when_it_names_a_program_topic() {
+        let topics = vec![
+            ("cybersecurity".to_string(), "Security".to_string()),
+            ("ai-ml".to_string(), "AI".to_string()),
+        ];
+        assert_eq!(
+            gap_topics(&json!({"topics": ["Cybersecurity", "sports"]}), &topics),
+            vec!["cybersecurity"]
+        );
+        assert!(gap_topics(&json!({"topics": []}), &topics).is_empty());
+        assert!(gap_topics(&json!({"topics": ["geopolitics"]}), &topics).is_empty());
+        let p = gap_topic_prompt("How does X work?", &topics);
+        assert!(p.contains("- ai-ml: AI") && p.ends_with("How does X work?"));
+    }
 
     #[test]
     fn unique_slug_dedups_and_sanitizes() {

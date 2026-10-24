@@ -154,6 +154,12 @@ impl TaskSkill {
         match neo4j.find_similar_tasks(7).await {
             Ok(candidates) => {
                 for task in &candidates {
+                    // A task naming its workflow is that workflow's run: a
+                    // similar goal for another workflow is different work
+                    // (2026-10-23: two *-rss drafts' runs merged into one).
+                    if !may_be_same_work(input.workflow.as_deref(), task.workflow.as_deref()) {
+                        continue;
+                    }
                     let sim = jaccard_word_overlap(&input.goal, &task.goal);
                     if sim < 0.6 {
                         continue;
@@ -405,6 +411,12 @@ impl Skill for TaskSkill {
 /// Stopwords and tokens ≤ 2 chars are excluded so that minor phrasing
 /// differences ("Analyze the repeated failures" vs "Analyze repeated failure")
 /// still score above the dedup threshold.
+/// Whether an existing task could be the one being created: not when the new
+/// task names a workflow the existing one does not run.
+fn may_be_same_work(new: Option<&str>, existing: Option<&str>) -> bool {
+    new.is_none() || new == existing
+}
+
 fn jaccard_word_overlap(a: &str, b: &str) -> f32 {
     const STOPWORDS: &[&str] = &[
         "the", "a", "an", "to", "of", "in", "and", "or", "for", "with", "on", "at", "by", "is",
@@ -484,6 +496,14 @@ mod tests {
     }
 
     // -- tool registry --------------------------------------------------------
+
+    #[test]
+    fn a_named_workflow_never_merges_into_another_workflows_task() {
+        assert!(!may_be_same_work(Some("a-rss"), Some("b-rss")));
+        assert!(!may_be_same_work(Some("a-rss"), None));
+        assert!(may_be_same_work(Some("a-rss"), Some("a-rss")));
+        assert!(may_be_same_work(None, Some("a-rss")));
+    }
 
     #[test]
     fn tools_list_has_correct_count() {

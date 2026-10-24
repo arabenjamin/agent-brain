@@ -20,7 +20,7 @@ claims.
 | Jobsearch | 2/2 | 6 | 1 | 0 | 0 | Small and working; the job search sends notifications, not notes. |
 | NIA (+4 verticals) | 8/8 | 103 | 230 | 32 | 25 | The best-cited program after intake. Its reports name technologies, tools and methods (Reticulum, zero trust, chip packaging, CISA KEV), and none of that reaches the work that could use it. |
 | Off-grid & Decentralized Networking | 1/1 | 4 | 26 | 12 | 2 | A research interest (mesh, Reticulum, LoRa), not intelligence; on its own since 10-17. |
-| Shared services | 7/7 | 667 | 348 | 121 | 0 | On-demand. `fill-knowledge-gap` is 646 of the runs; its notes are read (115) but never cited. |
+| Shared services | 7/7 | 667 | 348 | 121 | 0 | On-demand. `fill-knowledge-gap` is 646 of the runs (§3.4). |
 
 Workflows outside every program: `harness-candidates`, `harness-improve`
 (enabled) and three `*-rss` drafts the API match digest made on 2026-10-19
@@ -61,34 +61,42 @@ Brain Ops ── + harness-candidates, harness-improve
 - **Membership only:** moving a program under R&D changes its `parent`, not
   its workflows, topics or schedules. Pausing R&D pauses its areas.
 
-## 3. Proposals for the owner (not done)
+## 3. Owner decisions (2026-10-23)
 
-1. **New areas when they have work:** Security engineering (zero trust and
-   the vault applied to our own systems; `zero-trust-architecture-research`
-   could move from NIA › Cybersecurity, since it reads as "what should we
-   adopt" more than "who gains or loses"), Home lab (the tailnet discovery
-   todo `8b29f766`), Agent engineering (the Harness² loop, if it outgrows
-   Brain Ops).
-2. **The three `*-rss` drafts:** run each once and compare with its original,
-   as their descriptions ask, then fold the feeds in or delete the draft.
-3. **Retire or restart what is off:** `news-analysis` and `weekly-news` were
-   read (16 and 0 reads); `brain-exercise` was replaced by `deep-dive-pick`;
-   `relation-extraction` succeeded in 52 of 69 runs. Each is a delete or a fix.
-4. **`fill-knowledge-gap`:** 646 runs and no citations. Worth a look at what
-   triggers it and whether its notes answer anything.
-5. **`critical-tech-dependencies` names a workflow that no longer exists**
-   (`weekly-sodium-battery-research`): every startup drops it with a WARN.
-   Remove it from the program file or bring the workflow back.
+1. **R&D areas:** Security Engineering (zero-trust-architecture-research
+   moved from NIA › Cybersecurity & Privacy) and Home Lab (no workflows yet;
+   collects what rnd-intake and the hand-offs file). Agent engineering stays
+   in Brain Ops. `rnd-scout` files under the area a candidate fits.
+2. **The `*-rss` drafts:** one run each, 2026-10-23. The outlet feeds put
+   one item into a report in three runs (the FCC's HiSilicon device ban, in
+   surveillance); everything else came from the searches. The feeds were
+   folded into `surveillance-privacy-watch` (optional steps); all three
+   drafts deleted.
+3. **Switched-off workflows deleted:** brain-exercise, todo-review-chat,
+   self-test-dead-tools, news-analysis, weekly-news, hardware-tripwire-rss.
+   `relation-extraction` stays off until the Ollama quota question is
+   settled.
+4. **`fill-knowledge-gap`:** measured on 168 runs (2026-10-14..20, the first
+   week its notes link to their runs): 140 notes never read again, 26 read
+   once or twice, 2 three or more times. "Never cited" was a false signal:
+   nothing extracts claims from gap notes. About 11 of 20 sampled questions
+   fit an NIA vertical, 2 R&D, 7 no program. Now capped at 10 a day
+   (`GAP_TASKS_DAILY_MAX`) and only for a question the local model places
+   under an active program's topic.
+5. `critical-tech-dependencies` named a workflow that never existed as a
+   file (`weekly-sodium-battery-research`; hardware-tripwire already
+   searches sodium-ion): removed.
 6. **Paid models per workflow** (routing rule `routing/a-paid-model-runs-only-on-work-the-owner-started`):
-   after a month of results (~2026-11-23), decide which workflow, if any,
-   gets `paid: true`. The candidates are the five standing investigations
-   whose synthesis used Sonnet (`deep_reasoning`) until 2026-10-23.
+   open. After a month of results (~2026-11-23), decide which workflow, if
+   any, gets `paid: true`. The candidates are the five standing
+   investigations whose synthesis used Sonnet (`deep_reasoning`) until
+   2026-10-23.
 
 ## 4. Status
 
 - 2026-10-23: audit done; R&D program, the two moves, `rnd-intake` and
-  `rnd-scout` built; harness workflows assigned to Brain Ops. §3 waits for
-  the owner.
+  `rnd-scout` built; harness workflows assigned to Brain Ops. §3 decided
+  the same day (only the paid question waits).
 - First `rnd-intake` run (task fe227756, gpt-oss, $0): filed one todo,
   "R&D: AdFection zero-click spyware delivery, learn" (`6abd28d3`), quoting
   the 2026-10-19 surveillance-privacy-watch report correctly; its "use it"
