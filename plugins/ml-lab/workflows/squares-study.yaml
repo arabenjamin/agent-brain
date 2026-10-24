@@ -1,8 +1,8 @@
 name: squares-study
-description: "Every 2 days, one public method from the Squares in Squares competition (ML_LAB_PLAN.md §5, owner 2026-10-24: study first, rebuild what we can, blend in only the rest): ml-student reads it, reproduces its core idea on a small case in the sandbox, and stores what ran under squares_study."
+description: "Daily (owner 2026-10-24, was every 2 days), one public method from the Squares in Squares competition (ML_LAB_PLAN.md §5, owner 2026-10-24: study first, rebuild what we can, blend in only the rest): ml-student reads it, reproduces its core idea on a small case in the sandbox, and stores what ran under squares_study."
 topic: ai-ml
 kind: learning
-every: 2d
+every: 1d
 enabled: true
 data_class: public
 defaults:

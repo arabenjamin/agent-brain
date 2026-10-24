@@ -1,11 +1,13 @@
 """The overnight search (ML_LAB_PLAN.md B3): pick puzzles, search, keep what
 the metric accepts.
 
-Two strategies, both in `sa.py`:
-- squeeze: shrink the stored packing (for the n whose packing is a larger
-  one with squares removed, so there is a hole to use);
-- restart: random starts in a container just below the stored side (for
-  n <= RESTART_MAX_N, where that search has found records before).
+The default strategy (ML_SEARCH=lp) is `lp.polish`: edge-LP basin hopping
+from the stored packing, for every puzzle not proven or a perfect square.
+Puzzles where some public notebook's output is smaller (public/better.json)
+go first: a smaller packing is known to exist there. The annealer in `sa.py`
+(ML_SEARCH=anneal: squeeze holey packings, random restarts for
+n <= RESTART_MAX_N) improved none of 569 jobs on 2026-10-23 and stays only as
+the measured baseline.
 
 Every attempt is logged to `attempts.jsonl` with what it tried and found, so
 a week of nights says whether the CPU is buying anything.
@@ -20,12 +22,13 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-from . import sa
+from . import lp, sa
 from .metric import MAX_N
 from .packing import Store, from_floats
 
 RESTART_MAX_N = int(os.environ.get("ML_RESTART_MAX_N", "120"))
 RESTART_SHRINK = 1e-4  # a restart aims this far (relative) below the stored side
+SEARCH = os.environ.get("ML_SEARCH", "lp")
 
 
 def _attempts(root: Path) -> dict[int, int]:
@@ -48,6 +51,10 @@ def targets(store: Store, k: int) -> list[tuple[int, str]]:
         proven = set(json.loads((store.root / "proven.json").read_text())["n"])
     except (OSError, ValueError, KeyError):
         proven = set()
+    try:  # n -> the smallest side among downloaded public outputs
+        public = {int(k): v[0] for k, v in json.loads((store.root / "public" / "better.json").read_text()).items()}
+    except (OSError, ValueError):
+        public = {}
     scored = []
     for n in range(2, MAX_N + 1):
         r = math.isqrt(n)
@@ -56,6 +63,11 @@ def targets(store: Store, k: int) -> list[tuple[int, str]]:
         rec = store.get(n) or {}
         score = store.L(n) / math.sqrt(n) - 1
         holey = " minus " in rec.get("source", "")
+        if SEARCH == "lp":
+            gap = max(0.0, (store.L(n) - public.get(n, math.inf)) / math.sqrt(n))
+            pri = (score + 100 * gap) / (1 + tried.get(n, 0)) / max(1.0, n / 200)
+            scored.append((pri, n, "polish"))
+            continue
         if n <= RESTART_MAX_N:
             strategy = "restart"
         elif holey:
@@ -74,6 +86,11 @@ def _job(args):
     L = store.L(n)
     p = store.packing(n)
     t0 = time.time()
+    if strategy == "polish":
+        f = p.floats()
+        r = lp.polish([q[0] for q in f], [q[1] for q in f], [q[2] for q in f], seconds, seed)
+        out = {"n": n, "strategy": strategy, "seconds": round(time.time() - t0), "from_L": L}
+        return out, None if r is None else (list(r[0]), list(r[1]), list(r[2]))
     if strategy == "squeeze":
         f = p.floats()
         r = sa.squeeze([q[0] for q in f], [q[1] for q in f], [q[2] for q in f], seconds, seed)

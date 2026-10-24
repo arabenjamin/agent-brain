@@ -475,6 +475,7 @@ services:
       - ML_RUNNER_HOURS=${ML_RUNNER_HOURS:-23-7}
       - ML_RUNNER_WORKERS=${ML_RUNNER_WORKERS:-12}
       - ML_SUBMIT=${ML_SUBMIT:-on}
+      - ML_SEARCH=${ML_SEARCH:-lp}
     volumes:
       - ./workspace/ml-lab/squares:/data
     cpus: ${ML_RUNNER_WORKERS:-12}

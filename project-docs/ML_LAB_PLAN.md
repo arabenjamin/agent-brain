@@ -119,9 +119,10 @@ gpt-oss (HARNESS2_PLAN.md); Rust stays hand-integrated.
   doubles with contacts opened by 1e-12 (a cost of ~3e-10 in all), and
   every check, the store's and the build's, goes through the same pandas
   path.
-- Nightly: `optimize.py` runs 10-minute searches on 12 processes, as random
-  restarts below the stored side for n ≤ 120 and as squeezes for packings
-  that are a larger one minus squares. It skips proven n (`proven.json`).
+- Nightly: `optimize.py` runs 10-minute searches on 12 processes. Since
+  2026-10-24 that is `lp.py`, the edge LP (below); the annealer (random
+  restarts for n ≤ 120, squeezes of holey packings) found nothing in 569
+  jobs and stays as `ML_SEARCH=anneal`. It skips proven n (`proven.json`).
   Every attempt goes to `attempts.jsonl`; only metric-checked improvements
   are stored. At the window's close it builds `submission.zip`, scores it,
   and submits when it beats the best one sent (at most 1 a day,
@@ -179,7 +180,7 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
   used: the best of them per puzzle would beat ours on 414 puzzles (337
   above 324), a blend of **22.3661**. Whether to submit others' packings is
   the owner's call (§6). The owner chose: study the methods first
-  (`squares-study`, every 2 days, S01-S08), rebuild what we can, blend in
+  (`squares-study`, every 2 days, daily from 10-24; S01-S08), rebuild what we can, blend in
   the rest after.
 - 2026-10-24, MIT record registers (Couzo's register, evand, Mishapolk,
   TheSnakeFang, dostashev; `register.py`, the repo kept per packing). Their
@@ -188,11 +189,34 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
   **Kaggle 22.3556317792, rank 64 of 483** (best 22.2248, 10th 22.3048,
   median 22.394). That is better than the blend of public notebooks
   (22.3661), without any of them.
+- 2026-10-24 (later): the field moved past us overnight (rank 225 of 642;
+  10th 22.2901, median 22.3747), mostly teams submitting the public blend.
+  Per puzzle, the downloaded public outputs now beat our store on only 14
+  puzzles, 0.005 in all: rebuilding or blending every public method is worth
+  at most that. The leaders' further 0.07-0.13 is unpublished.
+  The night's annealer search: 569 jobs, nothing improved. The owner chose
+  to build the edge LP (S01) now and to run `squares-study` daily.
+  `lp.py`: with angles fixed, one edge normal per pair makes non-overlap
+  linear in the centres (exact, a fixed axis only narrows the feasible set);
+  `slp` also linearises in the angles (at an edge-on kink the half-width
+  grows as |Δθ|/2, modelled with an auxiliary, or the LP treats turning as
+  free); `squeeze` holds a smaller side and minimises the summed overlap
+  (one slack per pair); `polish` hops between them. Known answers pass
+  (a 3%-loosened n=10 compacts to its record; n=5 with the centre at 35°
+  walks to 45° and 2+1/√2). On our stored records it is near-rigid: 12
+  sampled puzzles, nothing in 60 s; the 14 public-gap puzzles, one gain of
+  7e-6 (n=131) in 120 s. It replaces the annealer tonight, the public-gap
+  puzzles first; `attempts.jsonl` says by 10-26 whether it buys anything.
 
 ## 6. Open
 
-- After `squares-study` (S08 ≈ 2026-11-09): rebuild what the brain could
-  reproduce, then blend in public packings for the rest (owner, 2026-10-24).
+- After `squares-study` (S08 ≈ 2026-10-29, daily since 10-24): rebuild what
+  the brain could reproduce, then blend in public packings for the rest
+  (owner, 2026-10-24). The 10-24 measure caps that at ~0.005.
+- Where the leaders' 0.07-0.13 comes from is unknown. Edge-LP local moves
+  do not reach it from our records; the candidates are larger structural
+  moves (fault-line gadgets, S02-S03) and proposal searches whose output
+  the LP then polishes (S01's GPU stage, S05).
 
 - The second Göbel strip family (n = (a+1)a+3+b, e.g. n = 332, 450, 539,
   796) is not generated yet.
