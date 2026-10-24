@@ -7,11 +7,14 @@ FROM python:3.13-slim
 
 # Compute libraries submitted code may import. sympy is the one that matters
 # most: symbolic algebra is where a language model's prose arithmetic fails
-# worst and an exact solver wins outright.
+# worst and an exact solver wins outright. scipy and scikit-learn are the
+# ML Lab's lesson exercises and optimizers (ML_LAB_PLAN.md).
 RUN pip install --no-cache-dir \
         numpy==2.2.1 \
         sympy==1.13.3 \
-        pandas==2.2.3
+        pandas==2.2.3 \
+        scipy==1.15.1 \
+        scikit-learn==1.6.1
 
 RUN useradd -m -u 1000 sandbox
 

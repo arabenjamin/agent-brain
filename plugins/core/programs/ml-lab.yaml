@@ -1,0 +1,18 @@
+# An area of Research & Development (owner, 2026-10-23; ML_LAB_PLAN.md):
+# AI & ML Research follows the field, this area does the work: learn ML by
+# running exercises, enter competitions as the measuring stick, then build
+# our own models. Its workflows arrive as the plan's tracks are built.
+name: ml-lab
+label: ML Lab
+kind: department
+parent: research-development
+charter: >-
+  Learn machine learning by doing it: a curriculum worked through with an
+  exercise that runs for every lesson, competitions entered as the measure
+  (first Kaggle's Squares in Squares), then models of our own.
+success: >-
+  Every lesson ends in an exercise that ran; every competition submission
+  is scored by our own checker before it is uploaded and improves on the
+  last; each model idea ends built and measured, or dropped with a reason.
+topics: [ai-ml]
+review: { every: 30d }

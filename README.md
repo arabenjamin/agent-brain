@@ -117,7 +117,7 @@ arithmetic fails silently and confidently, and nothing downstream re-derives it.
 The sandbox sits on an `internal: true` Docker network with **no egress**, a
 read-only root filesystem, dropped capabilities, none of the brain's
 credentials, and no bind mounts; every input must be passed inline in the code.
-`numpy`, `sympy`, and `pandas` are available. A failed run returns its traceback
+`numpy`, `sympy`, `pandas`, `scipy`, and `scikit-learn` are available. A failed run returns its traceback
 as a *successful* tool call, so the model can fix the code rather than burn a
 retry. Offered only when `SANDBOX_URL` (or `RUST_SANDBOX_URL`, for `language: "rust"`) is set.
 

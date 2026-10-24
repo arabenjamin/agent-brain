@@ -86,6 +86,11 @@ def run_code(code: str, timeout_ms: int) -> dict:
                 "LC_ALL": "C.UTF-8",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "MPLBACKEND": "Agg",
+                # One BLAS/OpenMP thread: numpy and scipy each start one per
+                # host CPU (32), which runs past MAX_PROCESSES and fails the
+                # import. A run has CPU_SECONDS anyway.
+                "OPENBLAS_NUM_THREADS": "1",
+                "OMP_NUM_THREADS": "1",
             },
         )
 

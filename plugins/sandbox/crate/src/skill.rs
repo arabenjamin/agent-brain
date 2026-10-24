@@ -108,8 +108,8 @@ impl ExecSkill {
                 " PYTHON (language=\"python\", the default): use this for ANY quantitative work — \
                  arithmetic, projections, unit conversion, date math, aggregation, statistics, \
                  symbolic algebra — instead of computing in prose, where numbers drift silently. \
-                 Print the results you need; nothing else is captured. numpy, sympy and pandas \
-                 are available.",
+                 Print the results you need; nothing else is captured. numpy, sympy, pandas, \
+                 scipy and scikit-learn are available.",
             );
         }
         if self.rust_url.is_some() {
