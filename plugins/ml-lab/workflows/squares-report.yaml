@@ -1,0 +1,100 @@
+name: squares-report
+description: "Daily report of the Kaggle Squares in Squares runner (ML_LAB_PLAN.md Track B): the local score by band, last night's search, the build and the submission. Stored as a note; the owner is notified only when a night improved a puzzle or a submission was sent or refused."
+topic: ai-ml
+kind: monitor
+every: 1d
+enabled: true
+data_class: public
+defaults:
+  max_attempts: 2
+  provider_hint: ollama
+steps:
+  # The runner is on brain-internal; HTTP_ALLOW_INTERNAL lists ml-runner:8000.
+  - id: status
+    tool_name: http_request
+    arguments:
+      url: "http://ml-runner:8000/status"
+      method: GET
+    priority: 1
+    max_attempts: 3
+    description: "The runner's status"
+
+  # Written in code: the numbers are the report, nothing to reason about.
+  - id: report
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 20000
+      code: |
+        import json
+        raw = r"""{{steps.status.body}} """
+        try:
+            s = json.loads(raw)
+        except ValueError:
+            print("# Squares in Squares — {{date}}\n\nThe runner did not answer: " + raw[:300])
+            raise SystemExit
+        b, n, w, sub = s["bands"], s.get("last_night") or {}, s["search_7d"], s.get("submissions") or []
+        out = ["# Squares in Squares — {{date}}", "",
+               f"Local score {s['local_score']:.6f} (lower is better; Kaggle's metric on our store).",
+               "By band: " + ", ".join(f"n {k}: {v:.3f}" for k, v in b.items()), ""]
+        if n:
+            out.append(f"Last night ({n.get('started')}): {n.get('jobs')} searches, {n.get('improved')} improved; "
+                       f"score {n.get('score_before', 0):.6f} -> {n.get('score_after', 0):.6f}.")
+        else:
+            out.append("No night has run yet.")
+        out.append(f"Last 7 days: {w['attempts']} searches, {w['cpu_hours']} CPU hours, {len(w['improved'])} puzzles improved.")
+        for i in w["improved"][-10:]:
+            out.append(f"- n={i['n']}: {i['from_L']:.9f} -> {i['to_L']:.9f} ({i['at']})")
+        lb = s.get("last_build") or {}
+        out.append(f"Last build {lb.get('built_at')}: score {lb.get('score')}, {lb.get('rejected')} puzzles rejected.")
+        if sub:
+            last = sub[-1]
+            out.append(f"Last submission {last['at']}: {last['status']} (local {last['score']:.6f}).")
+            if last.get("kaggle"):
+                out.append("Kaggle said: " + last["kaggle"][-200:])
+        else:
+            out.append("Nothing submitted yet.")
+        print("\n".join(out))
+    priority: 1
+    description: "Write the report from the status, in code"
+
+  - tool_name: store_note
+    arguments:
+      content: "{{steps.report.stdout}}"
+      note_type: source_record
+      source_context: squares_report
+    priority: 1
+    description: "Store the report"
+
+  # Only news reaches the owner: a puzzle improved last night, or a
+  # submission sent or refused in the last day. Otherwise nothing is printed
+  # and notify_user sends nothing.
+  - id: news
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 20000
+      code: |
+        import json, datetime
+        try:
+            s = json.loads(r"""{{steps.status.body}} """)
+        except ValueError:
+            raise SystemExit
+        day = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = []
+        n = s.get("last_night") or {}
+        if n.get("improved"):
+            lines.append(f"The overnight search improved {n['improved']} puzzle(s); local score now {s['local_score']:.6f}.")
+        for x in s.get("submissions") or []:
+            if x["at"] >= day and not x["status"].startswith("skipped"):
+                lines.append(f"Submission {x['status']} at local score {x['score']:.6f}." + (f" Kaggle: {x['kaggle'][-160:]}" if x.get("kaggle") else ""))
+        print("\n".join(lines))
+    priority: 1
+    description: "Anything the owner should hear about"
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{steps.news.stdout}}"
+      context: "Squares in Squares {{date}}"
+    priority: 2
+    description: "Notify only on news"

@@ -173,6 +173,9 @@ topology:
     - name: hbi-frontend
       networks: [ai-network]
       ports: ["3002:80"]
+    - name: ml-runner
+      networks: [brain-internal]
+      note: ML Lab's Squares in Squares runner (overnight search, Kaggle's metric, submit). Runs only its own code, so it may reach Kaggle; the brain reads its /status.
     - name: yt-proxy
       networks: [yt-egress, yt-link]
       note: yt-dlp's way to YouTube past the VPN exit; passes only YouTube's domains.

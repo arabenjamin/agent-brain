@@ -1,0 +1,12 @@
+# ML_LAB_PLAN.md: the brain learns machine learning by doing it.
+#   ml-study        every 3 days: the next lesson of the curriculum, read, then
+#                   an exercise that runs in the Python sandbox (ml-student)
+#   squares-report  daily: the Squares in Squares runner's night, build and
+#                   submission (runner: plugins/ml-lab/runner, compose ml-runner)
+name: ml-lab
+version: 1
+description: "ML Lab: a machine-learning curriculum where every lesson ends in an exercise that ran, and the Kaggle Squares in Squares runner's daily report."
+requires:
+  env: []
+  plugins: [sandbox]
+author: owner

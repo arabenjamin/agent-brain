@@ -248,7 +248,7 @@ services:
       # MCP servers, schemas, topics, entity seeds, relation types. `core` always loads;
       # PLUGINS_ENABLED names the others (comma-separated). GET /api/plugins shows each one.
       - PLUGINS_DIR=/home/agent/agent-brain/plugins
-      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,personal,research,websocket,github,maps,harness}
+      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,personal,research,websocket,github,maps,harness,ml-lab}
       # More bundle dirs (colon-separated), searched after plugins/: the private
       # repo of the owner's own seeds (`personal`), mounted below.
       - PLUGINS_EXTRA_DIRS=/home/agent/plugins-private
@@ -454,6 +454,34 @@ services:
     pids_limit: 128
     networks:
       - sandbox-net
+    restart: unless-stopped
+
+  # The ML Lab runner (plugins/ml-lab/runner, ML_LAB_PLAN.md Track B): the
+  # Squares in Squares store, an overnight search on ML_RUNNER_WORKERS of the
+  # host's CPUs inside ML_RUNNER_HOURS (local), the build scored with Kaggle's
+  # own metric, and the submit. It runs only its own code, never code from a
+  # request, so unlike the sandboxes it may reach Kaggle. The brain reads
+  # GET http://ml-runner:8000/status. Data lives in workspace/ml-lab/squares.
+  ml-runner:
+    build:
+      context: ./plugins/ml-lab/runner
+      dockerfile: Dockerfile
+    environment:
+      - TZ=${TZ:-America/Detroit}
+      - KAGGLE_API_TOKEN=${KAGGLE_API_TOKEN:-}
+      - ML_RUNNER_HOURS=${ML_RUNNER_HOURS:-23-7}
+      - ML_RUNNER_WORKERS=${ML_RUNNER_WORKERS:-12}
+      - ML_SUBMIT=${ML_SUBMIT:-on}
+    volumes:
+      - ./workspace/ml-lab/squares:/data
+    cpus: ${ML_RUNNER_WORKERS:-12}
+    mem_limit: 6g
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - brain-internal
     restart: unless-stopped
 
   # Offline Rust compile/test sandbox for `execute_code(language: "rust")`.

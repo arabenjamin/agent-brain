@@ -1,0 +1,98 @@
+name: ml-study
+description: "Every 3 days, the next lesson of the ML Lab curriculum (ML_LAB_PLAN.md Track A): ml-student reads it, runs its exercise in the Python sandbox and stores what the run printed. Stops when the curriculum is done."
+topic: ai-ml
+kind: learning
+every: 3d
+enabled: true
+# Public course material on a public topic.
+data_class: public
+defaults:
+  max_attempts: 2
+  provider_hint: ollama-cloud
+steps:
+  # 1. Lessons already stored: a lesson is done when its note exists (one
+  #    whose exercise failed is done too; its note says so).
+  - id: done
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'ml_study' AND NOT (n)-[:PART_OF]->() AND n.content STARTS WITH '# ML study — ' RETURN substring(n.content, 13, 3) AS id ORDER BY id"
+    priority: 1
+    provider_hint: ollama
+    description: "Lessons already studied"
+
+  # 2. The curriculum, in order (owner, 2026-10-23: Kaggle Learn, Karpathy's
+  #    Zero to Hero, optimization and search; fast.ai after). The next lesson
+  #    not done is printed for the agent, or `id: none` when all are.
+  - id: pick
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 20000
+      code: |
+        import re
+        done = set(re.findall(r"L\d\d", r"""{{steps.done}} """))
+        K = "https://www.kaggle.com/code/"
+        Y = "https://www.youtube.com/watch?v="
+        C = [
+          ("L01", "How models work", K + "dansbecker/how-models-work", "", "Fit a DecisionTreeRegressor on load_diabetes and print the first 5 predictions next to the true values."),
+          ("L02", "Basic data exploration", K + "dansbecker/basic-data-exploration", "", "Load load_diabetes as a pandas DataFrame and print describe() for three columns and the target."),
+          ("L03", "Your first machine learning model", K + "dansbecker/your-first-machine-learning-model", "", "Choose 4 features of load_diabetes, fit a DecisionTreeRegressor(random_state=1) and print predictions for 5 rows."),
+          ("L04", "Model validation", K + "dansbecker/model-validation", "", "Print the mean absolute error of that tree on its training data and on a held-out 25% split; say which is honest."),
+          ("L05", "Underfitting and overfitting", K + "dansbecker/underfitting-and-overfitting", "", "Print validation MAE for max_leaf_nodes in 5, 25, 50, 100, 250, 500 and the best value."),
+          ("L06", "Random forests", K + "dansbecker/random-forests", "", "Compare validation MAE of the best tree from L05 with a RandomForestRegressor(random_state=1)."),
+          ("L07", "Missing values", K + "alexisbcook/missing-values", "", "Blank out 10% of load_diabetes cells at random (seed 0); print validation MAE for dropping columns, SimpleImputer, and imputer plus missing-indicator."),
+          ("L08", "Categorical variables", K + "alexisbcook/categorical-variables", "", "Bin bmi into 4 labelled categories; print validation MAE with the column dropped, ordinal-encoded and one-hot-encoded."),
+          ("L09", "Pipelines", K + "alexisbcook/pipelines", "", "Rebuild L07+L08 as one sklearn Pipeline with a ColumnTransformer and print its validation MAE."),
+          ("L10", "Cross-validation", K + "alexisbcook/cross-validation", "", "Print 5-fold cross-validated MAE of the L09 pipeline for n_estimators 50, 100, 200, 400."),
+          ("L11", "Gradient boosting", K + "alexisbcook/xgboost", "", "No xgboost in the sandbox: use HistGradientBoostingRegressor with early stopping; compare its 5-fold MAE with the random forest's."),
+          ("L12", "Data leakage", K + "alexisbcook/data-leakage", "", "Add a feature computed from the target (leak), show the too-good cross-validated score, then remove it and print both."),
+          ("L13", "What is feature engineering", K + "ryanholbrook/what-is-feature-engineering", "", "On load_diabetes, print 5-fold R^2 of a RandomForestRegressor with and without one engineered feature (bmi * bp)."),
+          ("L14", "Mutual information", K + "ryanholbrook/mutual-information", "", "Print mutual_info_regression scores of every load_diabetes feature against the target, highest first."),
+          ("L15", "Creating features", K + "ryanholbrook/creating-features", "", "Create a ratio, a product and a count feature on load_wine; print 5-fold accuracy of a classifier before and after."),
+          ("L16", "Clustering with k-means", K + "ryanholbrook/clustering-with-k-means", "", "Cluster load_wine (scaled) with KMeans for k=2..6; print inertia and silhouette for each and the best k."),
+          ("L17", "Principal component analysis", K + "ryanholbrook/principal-component-analysis", "", "Run PCA on scaled load_breast_cancer; print explained variance of the first 5 components and 5-fold accuracy on 2, 5, 10 components."),
+          ("L18", "Target encoding", K + "ryanholbrook/target-encoding", "", "Make a 20-level category from bmi bins on load_diabetes; target-encode it with cross-fitting and print MAE versus one-hot."),
+          ("L19", "Neural networks and backpropagation (micrograd)", "https://github.com/karpathy/micrograd", Y + "VMj-3S1tku0", "Write a tiny scalar autograd Value class in numpy-free Python, train a 2-layer MLP on make_moons(100, noise=0.1, random_state=1) and print the loss every 20 steps and the final accuracy."),
+          ("L20", "Language modeling: bigrams (makemore 1)", "https://github.com/karpathy/makemore", Y + "PaCmpygFfXo", "Build a character bigram model in numpy on a list of at least 60 first names written into the code; print the average negative log likelihood and 5 sampled names."),
+          ("L21", "Makemore 2: MLP", "https://github.com/karpathy/nn-zero-to-hero", Y + "TCH_1BHY58I", "Train a numpy MLP with an embedding table on the L20 words (context 3); print train and validation loss."),
+          ("L22", "Makemore 3: activations, gradients, BatchNorm", "https://github.com/karpathy/nn-zero-to-hero", Y + "P6sfmUTpUmc", "Show in numpy how a badly scaled init saturates tanh (print the fraction of |h| > 0.99) and how scaling by 1/sqrt(fan_in) fixes it."),
+          ("L23", "Makemore 4: backprop by hand", "https://github.com/karpathy/nn-zero-to-hero", Y + "q8SA3rM6ckI", "Backprop a 2-layer numpy MLP by hand and print the max difference between your gradients and finite-difference gradients."),
+          ("L24", "Makemore 5: WaveNet", "https://github.com/karpathy/nn-zero-to-hero", Y + "t3YJ5hKiMQ0", "Explain hierarchical (dilated) context in the note; in code, print the receptive field of 1, 2, 3, 4 stacked layers with dilation 2."),
+          ("L25", "Let's build GPT", "https://github.com/karpathy/ng-video-lecture", Y + "kCc8FmEb1nY", "Implement one head of scaled dot-product self-attention with a causal mask in numpy on random input (T=8, C=16); print the attention weights' row sums and the upper triangle's max."),
+          ("L26", "Simulated annealing", "https://en.wikipedia.org/wiki/Simulated_annealing", "", "Anneal a 30-city random travelling-salesman tour (seed 0); print the start and final tour length and the temperature schedule used."),
+          ("L27", "Gradient descent", "https://d2l.ai/chapter_optimization/gd.html", "", "Minimise the Rosenbrock function from (-1.5, 2) with plain gradient descent and with momentum; print iterations to reach 1e-6 for each."),
+          ("L28", "Basin hopping", "https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.basinhopping.html", "", "Use scipy.optimize.basinhopping on the 2-D Rastrigin function; print the minimum found from 5 random starts."),
+          ("L29", "Packing unit squares in squares", "https://erich-friedman.github.io/papers/squares/squares.html", "", "Pack 5 unit squares: write an overlap test for two rotated unit squares (separating axes) and check that the s = 2 + 1/sqrt(2) packing has no overlap."),
+          ("L30", "Analytic minimization of a packing", "https://kingbird.myphotos.cc/packing/squares_in_squares__analytic_minimization.html", "", "Write a penalty function (sum of squared overlap depths) for n unit squares in a box of side L; anneal 10 squares in L = 3.75 from random starts and print the best penalty."),
+        ]
+        for id_, title, read, video, ex in C:
+            if id_ not in done:
+                print(f"id: {id_}\ntitle: {title}\nreading URL: {read}\nvideo URL: {video or 'none'}\nexercise: {ex}")
+                break
+        else:
+            print("id: none (every lesson is done)")
+    priority: 1
+    provider_hint: ollama
+    description: "The next lesson not yet studied"
+
+  - id: study
+    tool_name: run_agent
+    # Not `when: {{steps.pick.stdout}}`: `when` renders as the run starts,
+    # before any step has run, so it would always drop this step.
+    arguments:
+      agent: ml-student
+      model: gpt-oss:120b-cloud
+      max_rounds: 10
+      verify:
+        answer_requires:
+          - when: '(?im)^\W*stored:'
+            tools: ["store_note"]
+        retry: true
+      task: |-
+        Study this lesson (today is {{date}}).
+
+        ===== BEGIN LESSON =====
+        {{steps.pick.stdout}}
+        ===== END LESSON =====
+    priority: 2
+    description: "ml-student reads the lesson, runs its exercise, stores the note"

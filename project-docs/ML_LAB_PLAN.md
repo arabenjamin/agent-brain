@@ -86,21 +86,79 @@ scikit-learn alongside numpy, sympy and pandas. The GPU is the shared 8 GB
 card. Code the brain writes in narrow, self-contained units runs well on
 gpt-oss (HARNESS2_PLAN.md); Rust stays hand-integrated.
 
-## 3. Owner decisions
+## 3. Owner decisions (2026-10-23)
 
-1. **Kaggle account:** enter the competition under the owner's account (accept
-   the rules; entry closes 2027-07-11). Submit by hand, or add a Kaggle API
-   token so the brain submits?
-2. **B3 compute:** a long-running optimizer on the host CPUs needs a runner
-   with more time than the sandbox gives, either a third sandbox with long
-   limits or a workspace job. How many cores, and when (overnight only)?
-3. **Curriculum:** the order in §2 Track A, or another (fast.ai, d2l.ai)?
-4. **Track C:** which first model after the curriculum, and whether the
-   Super Bowl is in. Sports are otherwise out of every brain workflow.
+1. **Kaggle:** the owner's account. A Kaggle API token (`KAGGLE_API_TOKEN`,
+   `.env`) lets the runner submit itself; the owner joins the competition on
+   the website (accepting the rules cannot be done through the API; until
+   then a submission is refused with 403).
+2. **Compute:** 12 of the host's 16 cores, overnight. The runner searches
+   inside `ML_RUNNER_HOURS` (local, default `23-7`) on `ML_RUNNER_WORKERS`
+   (12) processes, and compose caps the container at that many CPUs.
+3. **Curriculum:** the order in §2 first (Kaggle Learn, Zero to Hero,
+   optimization and search), then fast.ai.
+4. **The first model of our own:** chosen once Track A has run (it was
+   unclear as asked; it is not a decision yet).
 
-## 4. Status
+## 4. What runs
+
+**Runner** (`plugins/ml-lab/runner`, compose `ml-runner`, data in
+`workspace/ml-lab/squares`, not in git):
+
+- `squares/metric.py` is Kaggle's metric notebook, verbatim (pulled with
+  the API). Every packing passes it before it is stored, and the submission
+  file is re-scored with it before upload.
+- `best/<n>.json` holds the best packing per n. It was seeded from the grid,
+  341 of the record page's 367 SVGs (parsed offline with Ellsworth's
+  `parse_svg_packing.py`; the other 26 links are dead) and generated
+  Göbel squares (`gobel.py`, for the n > 324 drawn without an SVG). Exact
+  contacts are opened by a 1e-30 scaling, so 40-digit decimals never read
+  as an overlap.
+- Nightly: `optimize.py` runs 10-minute searches on 12 processes, as random
+  restarts below the stored side for n ≤ 120 and as squeezes for packings
+  that are a larger one minus squares. It skips proven n (`proven.json`).
+  Every attempt goes to `attempts.jsonl`; only metric-checked improvements
+  are stored. At the window's close it builds `submission.zip`, scores it,
+  and submits when it beats the best one sent (at most 1 a day,
+  `ML_SUBMIT=off` stops it).
+- `GET /status` (brain-internal; `HTTP_ALLOW_INTERNAL` lists
+  `ml-runner:8000`).
+
+**Brain** (`plugins/ml-lab`): `squares-report` (daily; written in code; a
+note every day, a notification only for an improved puzzle or a sent or
+refused submission) and `ml-study` (every 3 days: `ml-student` on gpt-oss
+reads the next lesson, runs its exercise in the sandbox, stores
+`# ML study — Lnn` under `ml_study`). The curriculum is the list in
+`ml-study.yaml`'s pick step.
+
+Measured 2026-10-23:
+
+| Store | Score |
+|---|---|
+| Grid | 28.94 |
+| + the record page's packings | 24.08 |
+| + generated Göbel squares | **23.9235** (the built file, Kaggle's metric, 0 rejected) |
+
+What is left is mostly the 523 puzzles above 324 still at grid (8.07 of
+it), between k² and (k+1)². The annealer finds nothing in short runs: from a
+grid start, getting below ⌈√n⌉ needs a rotated structure, and every
+improvement on a stored packing would be a new record. So B2, constructions
+for those n (Göbel strips of the second kind, tilted bands), is the next
+lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
+
+## 5. Status
 
 - 2026-10-23: competition read; baseline measured (§1); `ml-lab` program
-  created under R&D; scipy and scikit-learn added to the Python sandbox; todo
-  `83199798` moved to `ml-lab` with this plan as its next step. Nothing
-  submitted.
+  created under R&D; scipy and scikit-learn added to the Python sandbox.
+  The owner decided §3 the same day; runner, store (23.9235), `ml-study`
+  and `squares-report` built and running. Nothing submitted yet (the owner
+  has not joined the competition).
+
+## 6. Open
+
+- The second Göbel strip family (n = (a+1)a+3+b, e.g. n = 332, 450, 539,
+  796) is not generated yet.
+- `parse_svg_packing.py` (and the repository it is from) has no license: it
+  is run, never committed. The competition asks a winner to license the
+  code that made the submission; the parser only imported published
+  records.
