@@ -1,6 +1,8 @@
 # ML_LAB_PLAN.md: the brain learns machine learning by doing it.
 #   ml-study        every 3 days: the next lesson of the curriculum, read, then
 #                   an exercise that runs in the Python sandbox (ml-student)
+#   squares-study   every 2 days: one public method of the competition, read
+#                   and reproduced on a small case (study before blending)
 #   squares-report  daily: the Squares in Squares runner's night, build and
 #                   submission (runner: plugins/ml-lab/runner, compose ml-runner)
 name: ml-lab

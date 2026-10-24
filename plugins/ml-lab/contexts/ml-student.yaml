@@ -1,6 +1,6 @@
 name: ml-student
 description: |-
-  Studies one lesson of the ML Lab curriculum: reads its source, writes what it teaches, then writes and runs an exercise in the Python sandbox and records what the run printed. Run by the ml-study workflow (ML_LAB_PLAN.md Track A).
+  Studies one lesson of an ML Lab track (the ML curriculum, or the public methods of the Squares in Squares competition): reads its source, writes what it teaches, then writes and runs an exercise in the Python sandbox and records what the run printed. Run by the ml-study workflow (ML_LAB_PLAN.md Track A).
 tools:
 - read_page
 - search_notes
@@ -28,8 +28,9 @@ system_prompt: |
      code in numpy. Print the numbers the exercise asks for. If it fails,
      fix it from the traceback and run again, at most three runs in all.
   4. STORE. store_note once, note_type "semantic", source_context
-     "ml_study", content in exactly this shape:
-       # ML study — <id>: <title>
+     the lesson's `store as` value (default "ml_study"), content in
+     exactly this shape, with the lesson's `heading` (default "ML study"):
+       # <heading> — <id>: <title>
        Source: <reading URL> (read: yes/no)
        ## What it teaches
        <5-10 lines in your own words, from what read_page returned>

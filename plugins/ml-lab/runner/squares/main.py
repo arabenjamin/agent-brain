@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import build as builder
-from . import gobel, optimize, seed, submit
+from . import band, composite, gobel, optimize, seed, submit, tilted
 from .metric import MAX_N
 from .packing import Store
 
@@ -104,6 +104,10 @@ def log(msg: str) -> None:
 
 
 def morning() -> None:
+    # The constructions build on the store, so a night's improvement can
+    # open a composite (a small packing plus a grid) that was not there.
+    for family in (tilted, band, composite):
+        family.main(str(ROOT), WORKERS)
     info = builder.build(ROOT, WORKERS)
     log(f"built: score {info['score']:.9f}, rejected {len(info['rejected'])}")
     rec = submit.submit(ROOT)
@@ -117,6 +121,8 @@ def main() -> None:
         log("empty store: seeding")
         seed.main(str(ROOT), str(ROOT / "parsed"), WORKERS)
         gobel.main(str(ROOT))
+        for family in (tilted, band, composite, composite):
+            family.main(str(ROOT), WORKERS)
     if read_json("build.json") is None:
         builder.build(ROOT, 4)
     log(f"ready: local score {store.total():.9f}, window {HOURS}, {WORKERS} workers")

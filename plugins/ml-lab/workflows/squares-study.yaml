@@ -1,0 +1,72 @@
+name: squares-study
+description: "Every 2 days, one public method from the Squares in Squares competition (ML_LAB_PLAN.md §5, owner 2026-10-24: study first, rebuild what we can, blend in only the rest): ml-student reads it, reproduces its core idea on a small case in the sandbox, and stores what ran under squares_study."
+topic: ai-ml
+kind: learning
+every: 2d
+enabled: true
+data_class: public
+defaults:
+  max_attempts: 2
+  provider_hint: ollama-cloud
+steps:
+  - id: done
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'squares_study' AND NOT (n)-[:PART_OF]->() AND n.content STARTS WITH '# Squares study — ' RETURN substring(n.content, 18, 3) AS id ORDER BY id"
+    priority: 1
+    provider_hint: ollama
+    description: "Methods already studied"
+
+  # The methods, best-scoring public work first (read 2026-10-24). Each
+  # exercise is small enough for the sandbox (60 CPU-seconds, no network).
+  - id: pick
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 20000
+      code: |
+        import re
+        done = set(re.findall(r"S\d\d", r"""{{steps.done}} """))
+        K = "https://www.kaggle.com/code/"
+        C = [
+          ("S01", "Edge LP (22.3661)", K + "kirilltym/22-3661-cpu-cuda-mps-eda-edge-lp", "Explain what the LP optimises and over which variables. Then write a small LP with scipy.optimize.linprog that shifts 6 upright unit squares along x inside a box to minimise the box width, given which pairs touch; print the width."),
+          ("S02", "Fault-line DP and basin hopping (22.3747)", K + "alexchilton/fault-line-dp-basin-hopping-lb-22-3747", "Explain the fault-line composition: what a gadget is and what the DP chooses. Then write a DP that picks, from 4 gadgets of known (width, squares-gained), the best set along a fault of length 20; print the choice and the total."),
+          ("S03", "Multi-gadget fault DP (22.48)", K + "cdeotte/squares-in-squares-multi-gadget-fault-dp-22-48", "Say how this differs from S02. Reproduce the counting: for a grid of side 20 with one fault, print how many unit squares the fault adds or saves for each gadget width 1..4."),
+          ("S04", "Neighbour transfer and squeeze", K + "malyshevdanil/squares-in-squares-neighbour-transfer-squeeze", "Explain neighbour transfer (reusing a packing of n for n+1 or n-1). Then take the 5-square packing (4 corners, 1 at 45° in the centre, side 2 + 1/sqrt(2)) and show in code that removing a square cannot shrink it, by checking each square is touched."),
+          ("S05", "CUDA packing search", K + "lightningv08/squares-in-squares-cuda-packing-search", "Explain the search (moves, objective, schedule). Then run its idea on the CPU: anneal 10 unit squares in a box of side 3.75 from random starts, penalising overlap depth squared; print the best penalty in 40 seconds."),
+          ("S06", "Ensemble of public packings (22.376)", K + "cdeotte/squares-in-squares-ensemble-22-376", "Explain how the ensemble picks per puzzle and what it must check (the float64 round trip). Then show in code that rounding a 40-digit coordinate to a double can turn a touching pair into an overlap, and that a 1e-12 dilation fixes it."),
+          ("S07", "Soft-to-rigid shape continuation", "https://github.com/yoheinakajima/soft-to-rigid", "Explain the method: what shape is continued into what, and why that helps. Then pack 5 circles of growing size into a box and print the radius reached, as the first half of the method."),
+          ("S08", "Evolutionary program search for packings", "https://slightlysupervised.substack.com/p/improving-25-square-packing-upper", "Explain what was evolved and how it was scored. Then write a tiny evolutionary loop that evolves the angle of the centre square of the n=5 packing from random angles and print the side it reaches (it should approach 45 degrees)."),
+        ]
+        for id_, title, read, ex in C:
+            if id_ not in done:
+                print(f"id: {id_}\ntitle: {title}\nreading URL: {read}\nvideo URL: none\nexercise: {ex}\nstore as: squares_study\nheading: Squares study")
+                break
+        else:
+            print("id: none (every method is studied)")
+    priority: 1
+    provider_hint: ollama
+    description: "The next public method not yet studied"
+
+  - id: study
+    tool_name: run_agent
+    arguments:
+      agent: ml-student
+      model: gpt-oss:120b-cloud
+      max_rounds: 10
+      verify:
+        answer_requires:
+          - when: '(?im)^\W*stored:'
+            tools: ["store_note"]
+        retry: true
+      task: |-
+        Study this method from the Kaggle Squares in Squares competition
+        (today is {{date}}). Under "What it teaches", say what we could
+        rebuild in our own runner (Python, numpy, scipy, numba; 12 CPU cores
+        overnight) and what it needs that we lack.
+
+        ===== BEGIN LESSON =====
+        {{steps.pick.stdout}}
+        ===== END LESSON =====
+    priority: 2
+    description: "ml-student studies the method and reproduces its core idea"

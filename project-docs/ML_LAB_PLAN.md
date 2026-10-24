@@ -164,8 +164,35 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
   the best 22.22, so most teams are ~1.5 past the published records. Finding
   what they share (the competition's discussion forum, public notebooks)
   comes before more search.
+- 2026-10-24, B2 from the forum: Chris Deotte's gallery notebook (7th) names
+  the families behind strong packings and embeds a per-n reference curve
+  (`deotte_payload.json`, total 22.60). Three families are built from it,
+  each generated exactly and checked by the metric:
+  - `tilted.py` (a tilted b1×b2 core with rows around it): 23.92 → 23.47.
+  - `composite.py` (a stored packing in a corner plus a grid): → 23.20.
+  - `band.py` (Göbel's strip widened to w rows): → 23.01.
+  Composite passes and Deotte's 12 showcase packings bring it to
+  **22.9948, Kaggle's score too, rank 332 of 463**. The runner re-runs the
+  three families every morning before the build.
+- Public notebooks post full solutions at 22.37-22.39 ("Edge LP", "Fault-line
+  DP", Deotte's ensemble), which is why the median is 22.39. Measured, not
+  used: the best of them per puzzle would beat ours on 414 puzzles (337
+  above 324), a blend of **22.3661**. Whether to submit others' packings is
+  the owner's call (§6). The owner chose: study the methods first
+  (`squares-study`, every 2 days, S01-S08), rebuild what we can, blend in
+  the rest after.
+- 2026-10-24, MIT record registers (Couzo's register, evand, Mishapolk,
+  TheSnakeFang, dostashev; `register.py`, the repo kept per packing). Their
+  certificates store a rotation as t = tan(θ/2): read as an angle, 329
+  packings were rejected until that was fixed. With the families re-run:
+  **Kaggle 22.3556317792, rank 64 of 483** (best 22.2248, 10th 22.3048,
+  median 22.394). That is better than the blend of public notebooks
+  (22.3661), without any of them.
 
 ## 6. Open
+
+- After `squares-study` (S08 ≈ 2026-11-09): rebuild what the brain could
+  reproduce, then blend in public packings for the rest (owner, 2026-10-24).
 
 - The second Göbel strip family (n = (a+1)a+3+b, e.g. n = 332, 450, 539,
   796) is not generated yet.
@@ -173,3 +200,40 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
   is run, never committed. The competition asks a winner to license the
   code that made the submission; the parser only imported published
   records.
+
+## 7. Playbook: what a Kaggle competition workflow should do
+
+Written while working Squares in Squares (2026-10-23/24), so that a
+competition workflow can do it next time and get better with each one. Each
+step has what it cost and what it bought.
+
+1. **Read the competition**, with `read_page` and reader `anakin` (Kaggle's
+   pages need rendering): the task, the metric, deadlines, prizes, rules
+   (external data, licenses, daily limit). 10 minutes.
+2. **Get the official metric** with the Kaggle API (`kernels/pull` on
+   `metric/<slug>`) and vendor it verbatim. Score locally the way Kaggle
+   does, through `pd.read_csv` (dev note `ml-lab/kaggle-reads-a-submission-
+   through-pandas-check-it-as-doubles`). Our first upload skipped that step and
+   lost everything (28.94 on Kaggle against 23.92 locally).
+3. **Baseline from published knowledge** before any search. Here: the record
+   table (28.94 → 24.08) and formula families (→ 23.92).
+4. **Read the forum and the top public notebooks** (`kaggle kernels list
+   --competition`, `kernels pull`, `kernels output`) and list what they build
+   on. This is where most of the gain was: the families they named (→ 22.99)
+   and the MIT record registers they cite (→ 22.66). Measure, per item, what
+   each source beats us on before building anything (dev note
+   `ml-lab/in-a-kaggle-competition-read-the-forum-and-public-work-befor`).
+5. **Check licenses; record every item's source** (dev note
+   `ml-lab/import-only-licensed-sources-record-each-one-and-study-publi`).
+6. **Submit early and compare** Kaggle's score with the local one. Any gap is
+   a bug in the local check.
+7. **Study, then search.** The brain studies the public methods
+   (`squares-study`); a search runs on the owner's CPU allowance
+   (`ml-runner`, 12 cores, 23-7) and logs every attempt, so its value is
+   measured.
+8. **Report daily** (`squares-report`): score, rank, what changed, what the
+   CPU bought.
+
+What stays per competition: the metric file, the data importers, the
+constructions or models. What a general workflow can own: steps 1, 2, 4, 5,
+6 and 8, plus the decision log in §3.

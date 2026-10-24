@@ -18,4 +18,5 @@ topics: [ai-ml]
 workflows:
   - ml-study
   - squares-report
+  - squares-study
 review: { every: 30d }
