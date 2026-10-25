@@ -446,11 +446,51 @@ def sources(slug: str) -> dict:
     return res
 
 
+NOTEBOOK_CHARS = 14000  # what the study gets of one notebook
+
+
+def notebook(ref: str) -> str:
+    """A public notebook's markdown and code cells as plain text (outputs
+    dropped), pulled with the Kaggle API: the web reader returns only the
+    page around a notebook, not its code. Cached per ref. The text is
+    someone else's: it reaches the study as data."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}/[a-z0-9][a-z0-9-]{0,99}", ref or ""):
+        return ""
+    cache = ROOT / "_notebooks" / (ref.replace("/", "__") + ".txt")
+    if cache.exists():
+        return cache.read_text()
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        _kaggle("kernels", "pull", ref, "-p", tmp, timeout=180)
+        files = list(Path(tmp).glob("*.ipynb")) + list(Path(tmp).glob("*.py"))
+        if not files:
+            return ""
+        f = files[0]
+        if f.suffix == ".py":
+            text = f.read_text(errors="replace")
+        else:
+            try:
+                cells = json.loads(f.read_text(errors="replace")).get("cells", [])
+            except ValueError:
+                return ""
+            parts = []
+            for c in cells:
+                src = "".join(c.get("source", [])) if isinstance(c.get("source"), list) else str(c.get("source", ""))
+                if src.strip():
+                    parts.append(("```python\n" + src + "\n```") if c.get("cell_type") == "code" else src)
+            text = "\n\n".join(parts)
+    if len(text) > NOTEBOOK_CHARS:
+        text = text[:NOTEBOOK_CHARS] + f"\n\n[... truncated: {len(text)} chars in all, the first {NOTEBOOK_CHARS} shown]"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(text)
+    return text
+
+
 def status() -> dict:
     """Every competition under ROOT: its experiments, the queue, submissions,
     and the menu a proposal may use."""
     out = {}
-    for d in sorted(p for p in ROOT.glob("*") if p.is_dir()):
+    for d in sorted(p for p in ROOT.glob("*") if p.is_dir() and not p.name.startswith("_")):
         done = {e["name"] for e in history(d, "experiments.jsonl")}
         out[d.name] = {"experiments": history(d, "experiments.jsonl")[-15:],
                        "queued": [r for r in history(d, "queue.jsonl") if r["name"] not in done],

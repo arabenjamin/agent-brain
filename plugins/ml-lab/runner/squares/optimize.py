@@ -20,6 +20,7 @@ import math
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 from . import lp, sa
@@ -81,6 +82,8 @@ def targets(store: Store, k: int) -> list[tuple[int, str]]:
 
 
 def _job(args):
+    import faulthandler
+    faulthandler.enable()  # a native crash prints where it happened
     root, n, strategy, seconds, seed = args
     store = Store(root)
     L = store.L(n)
@@ -107,47 +110,66 @@ def _job(args):
     return out, (list(x), list(y), list(a))
 
 
+def _record(root, out: dict) -> None:
+    out["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with open(Path(root) / "attempts.jsonl", "a") as f:
+        f.write(json.dumps(out) + "\n")
+
+
 def run(root: Path, workers: int, seconds: int, until: float, log=print) -> dict:
-    """Run jobs on `workers` processes until the time `until`."""
+    """Run jobs on `workers` processes until the time `until`.
+
+    A worker that dies (a signal, not an exception: on 2026-10-24/25 one did
+    about hourly and took the whole runner down) breaks the pool. The jobs it
+    held are recorded as crashed, so `targets` moves on from them, and a new
+    pool carries on; each worker's faulthandler prints the native traceback."""
     store = Store(root)
-    done = improved = 0
+    done = improved = crashed = 0
     seed = int(time.time())
-    with ProcessPoolExecutor(workers) as pool:
+    while time.time() + seconds <= until:
         pending = set()
+        try:
+            with ProcessPoolExecutor(workers) as pool:
 
-        def submit_more():
-            nonlocal seed
-            busy = {getattr(f, "n", None) for f in pending}
-            for n, strategy in targets(store, workers * 2):
-                if len(pending) >= workers:
-                    break
-                if n in busy or time.time() + seconds > until:
-                    continue
-                seed += 1
-                fut = pool.submit(_job, (str(root), n, strategy, seconds, seed))
-                fut.n = n
-                pending.add(fut)
-                busy.add(n)
+                def submit_more():
+                    nonlocal seed
+                    busy = {getattr(f, "n", None) for f in pending}
+                    for n, strategy in targets(store, workers * 2):
+                        if len(pending) >= workers:
+                            break
+                        if n in busy or time.time() + seconds > until:
+                            continue
+                        seed += 1
+                        fut = pool.submit(_job, (str(root), n, strategy, seconds, seed))
+                        fut.n, fut.strategy = n, strategy
+                        pending.add(fut)
+                        busy.add(n)
 
-        submit_more()
-        while pending:
-            for fut in as_completed(pending):
-                pending.discard(fut)
-                out, sol = fut.result()
-                done += 1
-                if sol is not None:
-                    x, y, a = sol
-                    ok, why = store.offer(from_floats(out["n"], x, y, a, f"ml-lab {out['strategy']}"), "optimize")
-                    out["result"] = why
-                    if ok:
-                        improved += 1
-                        out["to_L"] = store.L(out["n"])
-                        log(f"n={out['n']}: improved {out['from_L']:.9f} -> {out['to_L']:.9f}")
-                else:
-                    out["result"] = "nothing found"
-                out["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                with open(Path(root) / "attempts.jsonl", "a") as f:
-                    f.write(json.dumps(out) + "\n")
                 submit_more()
-                break
-    return {"jobs": done, "improved": improved}
+                while pending:
+                    for fut in as_completed(pending):
+                        pending.discard(fut)
+                        out, sol = fut.result()
+                        done += 1
+                        if sol is not None:
+                            x, y, a = sol
+                            ok, why = store.offer(from_floats(out["n"], x, y, a, f"ml-lab {out['strategy']}"), "optimize")
+                            out["result"] = why
+                            if ok:
+                                improved += 1
+                                out["to_L"] = store.L(out["n"])
+                                log(f"n={out['n']}: improved {out['from_L']:.9f} -> {out['to_L']:.9f}")
+                        else:
+                            out["result"] = "nothing found"
+                        _record(root, out)
+                        submit_more()
+                        break
+            break  # the window is over
+        except BrokenProcessPool:
+            lost = sorted(getattr(f, "n", -1) for f in pending)
+            crashed += 1
+            log(f"a worker died; the pool held n={lost}; starting a new pool")
+            for f in pending:
+                _record(root, {"n": f.n, "strategy": f.strategy, "seconds": 0, "from_L": store.L(f.n),
+                               "result": "worker crashed (this job or another in the pool)"})
+    return {"jobs": done, "improved": improved, "pool_crashes": crashed}

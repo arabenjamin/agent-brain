@@ -271,6 +271,28 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
     sent: Kaggle **0.95843**, rank 1787 of 2926 (from 2235). The family alone
     buys little; the forum's 0.9599 XGBoost carries tuning or features we
     lack, which is the study's next job.
+- 2026-10-25, the first night with both tracks: the edge-LP search made its
+  first real gains (n=639 -0.0038, n=696 -0.0019, n=457 -0.0008: on the
+  fault-line packings, which have slack the imported records lack), but a
+  worker died about hourly with no Python error (not memory: a 60 s polish
+  peaks at 187 MB) and took the runner down 7 times, so the morning build
+  never ran. `optimize.run` now records the jobs of a broken pool as
+  crashed and starts a new one (tested by killing a worker), workers carry
+  faulthandler, and the morning runs even if the search fails. Morning run
+  by hand: the fault-line pass turned the night's finds into 8 more,
+  local 22.350811, submitted.
+- Playground study, the same day: the web reader returns only the page
+  around a Kaggle notebook (title, tags, score), not its code, so the first
+  notebook study had nothing to learn from. The runner now pulls a
+  notebook's markdown and code with the Kaggle API (`GET
+  /playground/notebook?ref=`, 14,000 chars, cached) and the study reads
+  that. A second run then failed differently: gpt-oss returned empty
+  responses, the fallback model (nemotron) summarised well but stored
+  nothing, and the check only required `store_note` when the answer claimed
+  "Stored:"; it now requires it always. The third run stored the top
+  notebook's lesson: the best public scores (nested CV 0.96217, LB 0.96213)
+  are logistic-regression stacks of 124-201 public out-of-fold prediction
+  sets plus tabular foundation models.
 
 ## 6. Open
 
@@ -280,9 +302,13 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
 - `fault.py` uses a buffer cell between gadgets. Deotte's zero-buffer chains
   (adjacent gadgets sharing an f×f corner where one corner is empty) gained
   him ~0.001; not built.
-- Playground menu: LightGBM and XGBoost are in. TabPFN (the forum's best,
-  0.9611) needs a GPU and its license read first. Ensembling the rungs'
-  out-of-fold predictions is not built (each rung keeps only its CV).
+- Playground menu: LightGBM and XGBoost are in. Not built, in the order the
+  evidence suggests: stacking our own rungs' out-of-fold predictions (each
+  rung keeps only its CV now); digit features (a single LightGBM at CV
+  0.96111 uses them); stacking public OOF sets (others' predictions: the
+  owner's call, as blending is for Squares); TabPFN (GPU, license first).
+- The study's exercise is weak on notebooks (it tabulates the reported
+  scores rather than showing the technique).
 - Playground: the ladder is three rungs and sits below the median. The
   usual Playground gains, to measure one rung at a time: the original
   dataset the synthetic one was generated from, added to training; the

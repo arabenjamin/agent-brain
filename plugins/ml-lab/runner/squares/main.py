@@ -98,6 +98,12 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps({s: playground.sources(s) for s in PLAYGROUND}).encode()
         elif self.path == "/playground/menu":
             body = json.dumps(playground.menu()).encode()
+        elif self.path.startswith("/playground/notebook?"):
+            from urllib.parse import parse_qs, urlsplit
+            ref = (parse_qs(urlsplit(self.path).query).get("ref") or [""])[0]
+            text = playground.notebook(ref) if ref != "none" else ""
+            self._send(200, text.encode(), "text/plain; charset=utf-8")
+            return
         else:
             self.send_error(404)
             return
@@ -130,9 +136,9 @@ class Handler(BaseHTTPRequestHandler):
         log(f"playground rung for {slug}: {why}")
         self._send(200 if ok else 400, json.dumps({"queued": ok, "why": why, "slug": slug}).encode())
 
-    def _send(self, code: int, body: bytes):
+    def _send(self, code: int, body: bytes, ctype: str = "application/json"):
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -182,7 +188,11 @@ def main() -> None:
                 log(f"playground {slug}: {type(e).__name__}: {str(e)[:300]}")
         t0 = time.time()
         before = store.total()
-        res = optimize.run(ROOT, WORKERS, JOB_SECONDS, stop.timestamp(), log)
+        try:
+            res = optimize.run(ROOT, WORKERS, JOB_SECONDS, stop.timestamp(), log)
+        except Exception as e:  # the morning build and submit still run
+            log(f"search failed: {type(e).__name__}: {str(e)[:300]}")
+            res = {"error": f"{type(e).__name__}: {str(e)[:300]}"}
         night = res | {"started": datetime.fromtimestamp(t0).isoformat(timespec="minutes"),
                        "score_before": before, "score_after": store.total()}
         (ROOT / "night.json").write_text(json.dumps(night))
