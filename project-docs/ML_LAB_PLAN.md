@@ -293,6 +293,16 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
   notebook's lesson: the best public scores (nested CV 0.96217, LB 0.96213)
   are logistic-regression stacks of 124-201 public out-of-fold prediction
   sets plus tabular foundation models.
+- Owner: build our own stack and the features. Every scored rung now keeps
+  its out-of-fold and test predictions (`oof/<name>.npz`); model `stack` is a
+  logistic regression on their logits, on the same folds (rungs scored
+  before are re-run once to keep theirs). New options `digits` (each digit
+  10^-2..10^5 of the wide numeric columns), `counts_all`,
+  `target_encoding_all`, from evgendvorkin's notebook, whose own log has
+  them worth 0.95833 → 0.96000 for one LightGBM. Ladder: `lgb-features`
+  (those features, its parameters) and `stack`. On a 60k-row copy:
+  LightGBM 0.95552, lgb-features 0.95569, stack 0.95589; the backfill path
+  reproduces the stack exactly. The full run is the 10-25 night.
 
 ## 6. Open
 
@@ -302,11 +312,12 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
 - `fault.py` uses a buffer cell between gadgets. Deotte's zero-buffer chains
   (adjacent gadgets sharing an f×f corner where one corner is empty) gained
   him ~0.001; not built.
-- Playground menu: LightGBM and XGBoost are in. Not built, in the order the
-  evidence suggests: stacking our own rungs' out-of-fold predictions (each
-  rung keeps only its CV now); digit features (a single LightGBM at CV
-  0.96111 uses them); stacking public OOF sets (others' predictions: the
-  owner's call, as blending is for Squares); TabPFN (GPU, license first).
+- Playground menu: LightGBM, XGBoost, our own stack and the strongest
+  single-model notebook's features are in (2026-10-25, below). Not built:
+  stacking public OOF sets (others' predictions: the owner's call, as
+  blending is for Squares); TabPFN (GPU, license first); that notebook's
+  later steps (binned keys for target encoding, pair features, original
+  target means: +0.0003 together in its log).
 - The study's exercise is weak on notebooks (it tabulates the reported
   scores rather than showing the technique).
 - Playground: the ladder is three rungs and sits below the median. The

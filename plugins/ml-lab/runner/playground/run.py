@@ -18,7 +18,14 @@ wait in queue.jsonl for the next window. Options:
 - target_encoding: each categorical's out-of-fold target mean, fitted inside
   every training fold (cross-fitted by sklearn's TargetEncoder);
 - original: the dataset the synthetic one was generated from (COMPETITIONS),
-  added to every training fold; scoring stays on competition rows.
+  added to every training fold; scoring stays on competition rows;
+- digits, counts_all, target_encoding_all: each digit of the wide numeric
+  columns, and frequency and target encodings of every column (the
+  strongest single-model public notebook's features).
+
+Every scored rung keeps its out-of-fold and test predictions (oof/<name>.npz).
+A rung with model "stack" fits a logistic regression on all of them, on the
+same folds; rungs scored before predictions were kept are re-run once for it.
 
 Every experiment goes to experiments.jsonl. The best by CV is written as
 submission.csv and submitted when it beats the CV of the last one sent
@@ -68,6 +75,9 @@ MENU = {
     "ratings_as_category": "integer columns with <= 10 distinct values as categories",
     "target_encoding": "out-of-fold target mean of each categorical, fitted inside each fold",
     "original": "add the original dataset to every training fold",
+    "digits": "each digit (10^-2 .. 10^5) of the numeric columns with more than 10 values",
+    "counts_all": "frequency encodings of every column, however many values it has",
+    "target_encoding_all": "out-of-fold target mean of every column (each value a category), inside each fold",
 }
 # Parameters a rung may set, by shared name: (type, low, high). Each model
 # family takes the ones listed in MODELS; `fit_predict` maps them.
@@ -83,6 +93,7 @@ PARAMS = {
     "n_iter_no_change": (int, 5, 500),
     "subsample": (float, 0.3, 1.0),
     "min_child_weight": (float, 0.0, 100.0),
+    "C": (float, 0.0001, 100.0),  # stack: inverse L2 strength of the logistic regression
 }
 _COMMON = ["learning_rate", "max_iter", "max_leaf_nodes", "max_depth", "l2_regularization",
            "max_features", "max_bins", "n_iter_no_change"]
@@ -90,6 +101,11 @@ MODELS = {
     "hgb": _COMMON + ["min_samples_leaf"],
     "lightgbm": _COMMON + ["min_samples_leaf", "subsample"],
     "xgboost": _COMMON + ["subsample", "min_child_weight"],
+    # Logistic regression on the logits of every earlier rung's out-of-fold
+    # predictions (oof/<name>.npz), scored on the same folds; it takes no
+    # options. How the top public notebooks finish (playground-study,
+    # 2026-10-25: stacks of 124-201 OOF sets, nested CV 0.96217).
+    "stack": ["C"],
 }
 TUNED = {"learning_rate": 0.05, "max_iter": 2000, "max_leaf_nodes": 63, "min_samples_leaf": 40,
          "l2_regularization": 1.0, "n_iter_no_change": 50}
@@ -105,6 +121,16 @@ LADDER = [
     {"name": "xgboost", "model": "xgboost", "options": {},
      "params": {"learning_rate": 0.05, "max_iter": 3000, "max_depth": 7, "min_child_weight": 1.0,
                 "l2_regularization": 1.0, "max_features": 0.8, "subsample": 0.8, "n_iter_no_change": 100}},
+    # The features of the strongest single-model notebook the study read
+    # (evgendvorkin, LightGBM, OOF 0.95833 -> 0.96000 in its own log): digits
+    # +0.0007, frequency of all columns +0.0004, target encoding of all
+    # columns +0.0004, its parameters +0.0002.
+    {"name": "lgb-features", "model": "lightgbm",
+     "options": {"digits": True, "counts_all": True, "target_encoding_all": True},
+     "params": {"learning_rate": 0.03, "max_iter": 3000, "max_depth": 8, "max_leaf_nodes": 255,
+                "min_samples_leaf": 5, "l2_regularization": 5.0, "max_features": 0.9, "subsample": 0.9,
+                "n_iter_no_change": 100}},
+    {"name": "stack", "model": "stack", "options": {}, "params": {"C": 1.0}},
 ]
 
 
@@ -130,6 +156,8 @@ def validate(spec) -> tuple[dict | None, str]:
     opts = spec.get("options") or {}
     if not isinstance(opts, dict) or any(k not in MENU or not isinstance(v, bool) for k, v in opts.items()):
         return None, f"options: booleans among {sorted(MENU)}"
+    if model == "stack" and any(opts.values()):
+        return None, "options: a stack takes none (it reads the rungs' predictions)"
     params = spec.get("params") or {}
     if not isinstance(params, dict):
         return None, "params: an object"
@@ -254,13 +282,33 @@ def ratings_as_category(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
     return out
 
 
-def counts(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
-    """Frequency of each value over every frame, for categoricals and numeric
-    columns with few distinct values."""
+def digits(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
+    """Each decimal digit, 10^-2 to 10^5, of the numeric columns with more than
+    10 distinct values (not the 0-5 ratings). Synthetic Playground data keeps
+    artefacts of its generator in them; a digit that never varies is dropped."""
     out = [f.copy() for f in frames]
     both = pd.concat(frames)
     for c in list(frames[0].columns):
-        if isinstance(both[c].dtype, pd.CategoricalDtype) or both[c].nunique() <= 200:
+        if not pd.api.types.is_numeric_dtype(both[c]) or pd.api.types.is_bool_dtype(both[c]) or both[c].nunique() <= 10:
+            continue
+        for p in range(-2, 6):
+            col = (np.floor(np.abs(both[c].values) / 10.0 ** p + 1e-9) % 10)
+            if np.nanstd(col) == 0:
+                continue
+            start = 0
+            for f, g in zip(out, frames):
+                f[f"{c}_d{p}"] = col[start:start + len(g)]
+                start += len(g)
+    return out
+
+
+def counts(frames: list[pd.DataFrame], every: bool = False) -> list[pd.DataFrame]:
+    """Frequency of each value over every frame, for categoricals and numeric
+    columns with few distinct values (or for every column)."""
+    out = [f.copy() for f in frames]
+    both = pd.concat(frames)
+    for c in list(frames[0].columns):
+        if every or isinstance(both[c].dtype, pd.CategoricalDtype) or both[c].nunique() <= 200:
             freq = both[c].value_counts()
             for f, g in zip(out, frames):
                 f[f"{c}_count"] = g[c].map(freq).astype(float).values
@@ -313,13 +361,15 @@ def fit_predict(model, Xtr, ytr, Xva, Tk, params, clf, seed):
     return m.predict(Xva), m.predict(Tk)
 
 
-def cv(X, y, T, O, yo, metric, params, te: bool, model: str = "hgb"):
-    """Out-of-fold score and the fold-averaged test prediction. O (the
-    original data) joins every training fold and is never scored."""
+def cv(X, y, T, O, yo, metric, params, te: bool, model: str = "hgb", te_cols=None):
+    """Out-of-fold score, the fold-averaged test prediction and the
+    out-of-fold predictions. O (the original data) joins every training fold
+    and is never scored. Target encoding covers the categoricals, or
+    `te_cols` when given."""
     clf = metric == "auc"
     split = (StratifiedKFold if clf else KFold)(FOLDS, shuffle=True, random_state=SEED)
     oof, pred = np.zeros(len(X)), np.zeros(len(T))
-    cats = [c for c in X.columns if isinstance(X[c].dtype, pd.CategoricalDtype)]
+    cats = te_cols if te_cols is not None else [c for c in X.columns if isinstance(X[c].dtype, pd.CategoricalDtype)]
     for k, (tr, va) in enumerate(split.split(X, y)):
         Xtr, ytr = X.iloc[tr], y[tr]
         if O is not None:
@@ -336,7 +386,37 @@ def cv(X, y, T, O, yo, metric, params, te: bool, model: str = "hgb"):
         oof[va] = p_va
         pred += p_te / FOLDS
     score = roc_auc_score(y, oof) if clf else -mean_squared_error(y, oof) ** 0.5
-    return float(score), pred
+    return float(score), pred, oof
+
+
+def _logit(p):
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return np.log(p / (1 - p))
+
+
+def stack(d: Path, y, metric: str, params: dict, members: list[str]):
+    """Logistic regression on the members' out-of-fold logits, scored on the
+    same folds as every rung (each member's OOF predictions are themselves
+    out of fold, so a row's stack input never saw its own label)."""
+    from sklearn.linear_model import LogisticRegression, Ridge
+    if len(members) < 2:
+        raise RuntimeError(f"a stack needs two members with saved predictions, has {members}")
+    F = [np.load(d / "oof" / f"{m}.npz") for m in members]
+    clf = metric == "auc"
+    A = np.column_stack([_logit(f["oof"]) if clf else f["oof"] for f in F])
+    B = np.column_stack([_logit(f["pred"]) if clf else f["pred"] for f in F])
+    C = params.get("C", 1.0)
+    make = (lambda: LogisticRegression(C=C, max_iter=2000)) if clf else (lambda: Ridge(alpha=1.0 / C))
+    split = (StratifiedKFold if clf else KFold)(FOLDS, shuffle=True, random_state=SEED)
+    oof = np.zeros(len(A))
+    for tr, va in split.split(A, y):
+        m = make().fit(A[tr], y[tr])
+        oof[va] = m.predict_proba(A[va])[:, 1] if clf else m.predict(A[va])
+    m = make().fit(A, y)
+    pred = m.predict_proba(B)[:, 1] if clf else m.predict(B)
+    score = roc_auc_score(y, oof) if clf else -mean_squared_error(y, oof) ** 0.5
+    weights = dict(zip(members, np.round(m.coef_.ravel(), 4).tolist()))
+    return float(score), pred, oof, weights
 
 
 def history(d: Path, name: str) -> list[dict]:
@@ -367,36 +447,66 @@ def submit(slug: str, d: Path, rec: dict) -> dict:
 
 
 def run_rung(slug: str, d: Path, rung: dict, metric: str):
+    """(score, test prediction, features, oof, ids, id column, target, extra)."""
     opts = rung["options"]
+    if rung.get("model") == "stack":
+        X, y, T, _, _, ids, idc, target = load(slug, d, False)
+        yv, _ = encode_target(y, metric)
+        members = sorted(p.stem for p in (d / "oof").glob("*.npz") if p.stem in _stackable(d))
+        score, pred, oof, w = stack(d, yv, metric, rung["params"], members)
+        return score, pred, len(members), oof, ids, idc, target, {"members": w}
     X, y, T, O, yo, ids, idc, target = load(slug, d, bool(opts.get("original")))
     yv, _ = encode_target(y, metric)
     yov = None if O is None else encode_target(yo, metric)[0]
     frames = [X, T] + ([O] if O is not None else [])
     if opts.get("ratings_as_category"):
         frames = ratings_as_category(frames)
-    if opts.get("counts"):
-        frames = counts(frames)
+    base = list(X.columns)
+    if opts.get("digits"):
+        frames = digits(frames)
+    if opts.get("counts") or opts.get("counts_all"):
+        frames = counts(frames, every=bool(opts.get("counts_all")))
     X, T = frames[0], frames[1]
     O = frames[2] if O is not None else None
-    te = bool(opts.get("target_encoding"))
+    te = bool(opts.get("target_encoding") or opts.get("target_encoding_all"))
+    te_cols = base if opts.get("target_encoding_all") else None
     with threadpool_limits(THREADS):
-        score, pred = cv(X, yv, T, O, yov, metric, rung["params"], te, rung.get("model", "hgb"))
-    n_te = sum(isinstance(X[c].dtype, pd.CategoricalDtype) for c in X.columns) if te else 0
-    return score, pred, X.shape[1] + n_te, ids, idc, target
+        score, pred, oof = cv(X, yv, T, O, yov, metric, rung["params"], te, rung.get("model", "hgb"), te_cols)
+    n_te = (len(te_cols) if te_cols else sum(isinstance(X[c].dtype, pd.CategoricalDtype) for c in X.columns)) if te else 0
+    return score, pred, X.shape[1] + n_te, oof, ids, idc, target, {}
+
+
+def _stackable(d: Path) -> set[str]:
+    """Rungs whose predictions a stack may use: scored, and not stacks."""
+    return {e["name"] for e in history(d, "experiments.jsonl") if "cv" in e and e.get("model") != "stack"}
+
+
+def _save(d: Path, name: str, oof, pred) -> None:
+    (d / "oof").mkdir(exist_ok=True)
+    np.savez_compressed(d / "oof" / f"{name}.npz", oof=oof, pred=pred)
 
 
 def run(slug: str, send: bool = True) -> dict:
     metric = COMPETITIONS.get(slug, {}).get("metric", "auc")
     d = fetch(slug)
     done = {e["name"]: e for e in history(d, "experiments.jsonl")}
-    best = max(done.values(), key=lambda e: e["cv"], default=None)
+    best = max((e for e in done.values() if "cv" in e), key=lambda e: e["cv"], default=None)
     rungs = LADDER + [r for r in history(d, "queue.jsonl") if validate(r)[0] is not None]
+    by_name = {r["name"]: r for r in rungs}
     for rung in rungs:
         if rung["name"] in done:
             continue
+        if rung.get("model") == "stack":
+            # Rungs scored before predictions were kept: run again, once, to keep them.
+            for name in sorted(_stackable(d)):
+                if not (d / "oof" / f"{name}.npz").exists() and name in by_name:
+                    t1 = time.time()
+                    _, p, _, o, *_ = run_rung(slug, d, by_name[name], metric)
+                    _save(d, name, o, p)
+                    log(f"{name}: predictions kept for the stack ({round(time.time() - t1)} s)")
         t0 = time.time()
         try:
-            score, pred, nf, ids, idc, target = run_rung(slug, d, rung, metric)
+            score, pred, nf, oof, ids, idc, target, extra = run_rung(slug, d, rung, metric)
         except Exception as e:  # one bad rung must not stop the ladder
             rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "name": rung["name"],
                    "error": f"{type(e).__name__}: {str(e)[:300]}", "options": rung["options"], "params": rung["params"]}
@@ -412,9 +522,11 @@ def run(slug: str, send: bool = True) -> dict:
         for k in ("proposed_by", "reason", "source"):
             if k in rung:
                 rec[k] = rung[k]
+        rec.update(extra)
         with open(d / "experiments.jsonl", "a") as f:
             f.write(json.dumps(rec) + "\n")
         done[rung["name"]] = rec
+        _save(d, rung["name"], oof, pred)
         log(f"{rung['name']}: cv {score:.6f} ({rec['seconds']} s)")
         if best is None or score > best.get("cv", -1e9):
             best = rec
