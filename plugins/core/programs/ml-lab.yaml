@@ -21,4 +21,5 @@ workflows:
   - squares-report
   - squares-study
   - playground-report
+  - playground-study
 review: { every: 30d }

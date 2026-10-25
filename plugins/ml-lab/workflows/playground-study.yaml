@@ -1,0 +1,150 @@
+name: playground-study
+description: "Daily, one source on the current Kaggle Playground competition (ML_LAB_PLAN.md Track A, owner 2026-10-24): its forum first, then its top-voted notebooks. ml-student reads it, runs the smallest version of its key idea in the sandbox, stores what it teaches under playground_study, and proposes one rung for the runner's ladder from a fixed menu (data, never code). The runner checks the proposal and runs it in the next overnight window; playground-report says what it bought."
+topic: ai-ml
+kind: learning
+every: 1d
+enabled: true
+data_class: public
+defaults:
+  max_attempts: 2
+  provider_hint: ollama-cloud
+steps:
+  - id: done
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'playground_study' AND NOT (n)-[:PART_OF]->() RETURN substring(n.content, 0, 400) AS head"
+    priority: 1
+    provider_hint: ollama
+    description: "Sources already studied"
+
+  # The runner is on brain-internal; HTTP_ALLOW_INTERNAL lists ml-runner:8000.
+  - id: sources
+    tool_name: http_request
+    arguments:
+      url: "http://ml-runner:8000/playground/sources"
+      method: GET
+      timeout_ms: 150000
+    priority: 1
+    provider_hint: ollama
+    description: "The forum and top-voted notebooks of each competition"
+
+  - id: state
+    tool_name: http_request
+    arguments:
+      url: "http://ml-runner:8000/playground"
+      method: GET
+    priority: 1
+    provider_hint: ollama
+    description: "The ladder so far"
+
+  - id: menu
+    tool_name: http_request
+    arguments:
+      url: "http://ml-runner:8000/playground/menu"
+      method: GET
+    priority: 1
+    provider_hint: ollama
+    description: "What a proposal may use"
+
+  # The forum first (what helped, in the community's words), then the
+  # notebooks by votes. Each source once.
+  - id: pick
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 20000
+      code: |
+        import json
+        done = r"""{{steps.done}} """
+        try:
+            src = json.loads(r"""{{steps.sources.body}} """)
+            state = json.loads(r"""{{steps.state.body}} """)
+            menu = json.loads(r"""{{steps.menu.body}} """)
+        except ValueError:
+            print("id: none (the runner did not answer)")
+            raise SystemExit
+        for slug, s in src.items():
+            cands = [("forum", "The forum, top-voted threads", s["forum"])]
+            cands += [(f"nb{i + 1:02d}", f"{n['title']} ({n['votes']} votes)", n["url"]) for i, n in enumerate(s.get("notebooks", []))]
+            for sid, title, url in cands:
+                if url.split("?")[0] in done:  # the note may drop the query
+                    continue
+                ex = state.get(slug, {})
+                ladder = "; ".join(f"{e['name']} {e.get('options', {})} {e.get('params', {})}: CV {e['cv']:.6f}" if "cv" in e
+                                   else f"{e['name']}: failed" for e in ex.get("experiments", []))
+                queued = ", ".join(r["name"] for r in ex.get("queued", [])) or "none"
+                opts = "; ".join(f"{k} ({v})" for k, v in menu["options"].items())
+                params = "; ".join(f"{k} {t} in [{lo}, {hi}]" for k, (t, lo, hi) in menu["params"].items())
+                print(f"id: {slug.replace('playground-series-', '')}-{sid}\ntitle: {title}\nreading URL: {url}\nvideo URL: none")
+                print("exercise: List what this source does that our ladder does not (data, features, models, validation, ensembling),"
+                      " with the CV or LB it reports for each where it says. Then show the key idea on a small generated table in the"
+                      " sandbox (no network, no competition data) and print the numbers.")
+                print("store as: playground_study\nheading: Playground study")
+                print(f"ladder so far (5-fold CV AUC, HistGradientBoosting): {ladder}. Queued: {queued}.")
+                print('propose: one JSON object {"name": "<a-z0-9_- , new>", "options": {...}, "params": {...}, "reason": "<one line: what the source showed>"}'
+                      f" using only these options: {opts}; and these params: {params}. Choose the change the source gives the most"
+                      " evidence for that the ladder has not tried. If what it shows is not in the menu, write RUNG: none and say in"
+                      " the note's Next line what the menu lacks.")
+                raise SystemExit
+        print("id: none (every source is studied)")
+    priority: 1
+    provider_hint: ollama
+    description: "The next source not yet studied, with the ladder and the menu"
+
+  - id: study
+    tool_name: run_agent
+    arguments:
+      agent: ml-student
+      model: gpt-oss:120b-cloud
+      max_rounds: 10
+      verify:
+        answer_requires:
+          - when: '(?im)^\W*stored:'
+            tools: ["store_note"]
+        retry: true
+      task: |-
+        Study this source on a Kaggle Playground competition (today is
+        {{date}}). Under "What it teaches", name each technique with the
+        score the source reports for it.
+
+        ===== BEGIN LESSON =====
+        {{steps.pick.stdout}}
+        ===== END LESSON =====
+    priority: 2
+    description: "ml-student studies the source and proposes a rung"
+
+  # The proposal, if any, as the runner wants it. The runner validates it
+  # again (menu options and parameter bounds only).
+  - id: propose
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 20000
+      code: |
+        import json, re
+        ans = r"""{{steps.study.answer}} """
+        m = re.search(r"(?i)RUNG:\s*", ans)
+        start = ans.find("{", m.end()) if m else -1
+        try:
+            spec, _ = json.JSONDecoder().raw_decode(ans[start:]) if start >= 0 else (None, 0)
+        except ValueError:
+            spec = None
+        if not isinstance(spec, dict):
+            print("none")
+            raise SystemExit
+        spec["proposed_by"] = "playground-study {{date}}"
+        print(json.dumps(spec))
+    priority: 2
+    provider_hint: ollama
+    description: "Extract the proposed rung"
+
+  - tool_name: http_request
+    arguments:
+      url: "http://ml-runner:8000/playground/rung"
+      method: POST
+      body:
+        spec: "{{steps.propose.stdout}}"
+    priority: 2
+    max_attempts: 1
+    provider_hint: ollama
+    description: "Queue it for the next window"

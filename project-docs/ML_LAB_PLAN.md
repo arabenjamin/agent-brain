@@ -139,6 +139,13 @@ gpt-oss (HARNESS2_PLAN.md); Rust stays hand-integrated.
   + frequency encodings), logs every rung to `experiments.jsonl` and submits
   the best when its CV beats the last one sent (one a day). Data in
   `workspace/ml-lab/playground/<slug>`; the owner joins each competition.
+  A rung is data, never code: options from a fixed menu (`counts`,
+  `ratings_as_category`, `target_encoding` fitted inside each fold,
+  `original`: the source dataset added to every training fold) and
+  HistGradientBoosting parameters within bounds. More rungs arrive by
+  `POST /playground/rung` (checked again, at most 3 waiting) and run in the
+  next window; `GET /playground/sources` lists the competition's top-voted
+  notebooks and forum, `GET /playground/menu` what a proposal may use.
 - `GET /status` and `GET /playground` (brain-internal; `HTTP_ALLOW_INTERNAL`
   lists `ml-runner:8000`).
 
@@ -147,7 +154,10 @@ note every day, a notification only for an improved puzzle or a sent or
 refused submission) and `ml-study` (every 3 days: `ml-student` on gpt-oss
 reads the next lesson, runs its exercise in the sandbox, stores
 `# ML study — Lnn` under `ml_study`), `squares-study` (daily: one public
-method, S01-S08) and `playground-report` (daily, from `/playground`). The curriculum is the list in
+method, S01-S12), `playground-report` (daily, from `/playground`) and
+`playground-study` (daily: the forum, then the top-voted notebooks; ml-student
+stores what each teaches under `playground_study` and ends with one proposed
+rung from the menu, or none, which the workflow posts to the runner). The curriculum is the list in
 `ml-study.yaml`'s pick step.
 
 Measured 2026-10-23:
@@ -248,6 +258,11 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
     encodings 0.958414 (96 s: no gain). Tuned sent: Kaggle **0.95806**
     (CV 0.95851, a gap of 0.0005), rank 2235 of 2922; median 0.95959, top
     25% 0.96165, best 0.96407.
+  - `playground-study` built the same evening; first run on the forum (gpt-oss,
+    $0): the top thread reports tabular foundation models ahead (TabPFN 3.5
+    OOF AUC 0.961145) and a tuned XGBoost at 0.959852, against our 0.958510.
+    Neither is on the menu, so it proposed none, as it should; the note's
+    Next line did not say what the menu lacks, as asked.
 
 ## 6. Open
 
@@ -257,6 +272,10 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
 - `fault.py` uses a buffer cell between gadgets. Deotte's zero-buffer chains
   (adjacent gadgets sharing an f×f corner where one corner is empty) gained
   him ~0.001; not built.
+- Playground menu: the forum's first lesson is that the model family matters
+  here (XGBoost 0.9599, TabPFN 0.9611 vs HistGradientBoosting 0.9585). A
+  `model` option (LightGBM, XGBoost) is the next menu entry; TabPFN needs a
+  GPU and its license read first.
 - Playground: the ladder is three rungs and sits below the median. The
   usual Playground gains, to measure one rung at a time: the original
   dataset the synthetic one was generated from, added to training; the

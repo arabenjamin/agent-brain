@@ -94,10 +94,44 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(status()).encode()
         elif self.path == "/playground":
             body = json.dumps(playground.status()).encode()
+        elif self.path == "/playground/sources":
+            body = json.dumps({s: playground.sources(s) for s in PLAYGROUND}).encode()
+        elif self.path == "/playground/menu":
+            body = json.dumps(playground.menu()).encode()
         else:
             self.send_error(404)
             return
-        self.send_response(200)
+        self._send(200, body)
+
+    def do_POST(self):
+        """POST /playground/rung {"slug": ..., "spec": <rung JSON or object>}:
+        a proposal from the brain's playground-study. Only data from the
+        menu is accepted (playground.validate); it runs in the next window."""
+        if self.path != "/playground/rung":
+            self.send_error(404)
+            return
+        size = int(self.headers.get("Content-Length") or 0)
+        if size > 8192:
+            self._send(413, b'{"queued":false,"why":"body over 8 KB"}')
+            return
+        try:
+            req = json.loads(self.rfile.read(size) or b"{}")
+        except ValueError:
+            req = None
+        if not isinstance(req, dict):
+            self._send(400, b'{"queued":false,"why":"body is not a JSON object"}')
+            return
+        slug = req.get("slug") or (PLAYGROUND[0] if PLAYGROUND else "")
+        spec = req.get("spec")
+        if spec is None or (isinstance(spec, str) and spec.strip().lower() in ("", "none")):
+            self._send(200, json.dumps({"queued": False, "why": "nothing proposed", "slug": slug}).encode())
+            return  # a study that proposed nothing is not an error
+        ok, why = playground.queue(slug, spec)
+        log(f"playground rung for {slug}: {why}")
+        self._send(200 if ok else 400, json.dumps({"queued": ok, "why": why, "slug": slug}).encode())
+
+    def _send(self, code: int, body: bytes):
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

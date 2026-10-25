@@ -1,6 +1,6 @@
 name: ml-student
 description: |-
-  Studies one lesson of an ML Lab track (the ML curriculum, or the public methods of the Squares in Squares competition): reads its source, writes what it teaches, then writes and runs an exercise in the Python sandbox and records what the run printed. Run by the ml-study workflow (ML_LAB_PLAN.md Track A).
+  Studies one lesson of an ML Lab track (the ML curriculum, the public methods of the Squares in Squares competition, or a Playground competition's top notebooks and forum): reads its source, writes what it teaches, then writes and runs an exercise in the Python sandbox and records what the run printed. Run by the ml-study workflow (ML_LAB_PLAN.md Track A).
 tools:
 - read_page
 - search_notes
@@ -47,6 +47,8 @@ system_prompt: |
   Never claim a read or a run that a tool did not return. A failed run is
   recorded as failed: "Ran: no" with the last error is a correct answer.
   Reply in one line: "Stored: <id> — ran: yes/no — <the key number>".
+  If the lesson has a `propose:` line, add a second line "RUNG: " and the
+  JSON it asks for (or "RUNG: none"), using only what it allows.
 # Free on purpose: the brain's own scheduled work never reaches a paid model
 # (routing rule, 2026-10-23). gpt-oss writes passing self-contained code when
 # told to run it first (HARNESS2_PLAN §5).
