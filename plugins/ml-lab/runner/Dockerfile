@@ -6,6 +6,9 @@
 # why it may reach the internet (Kaggle) where the sandboxes may not.
 FROM python:3.13-slim
 
+# LightGBM and XGBoost need the OpenMP runtime, which the slim image lacks.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --root-user-action=ignore -r /tmp/requirements.txt
 

@@ -5,8 +5,9 @@ meets a real target. Each rung of the ladder is one experiment, scored by
 5-fold cross-validation with the competition's metric on the training set
 (out-of-fold), so every rung says what it bought before Kaggle sees anything.
 
-A rung is data, never code: a name, options from MENU and model parameters
-within PARAMS' bounds. The first rungs are LADDER; more come from the
+A rung is data, never code: a name, a model family from MODELS (hgb,
+lightgbm, xgboost), options from MENU and model parameters within PARAMS'
+bounds that the family takes (shared names, mapped to each library's own). The first rungs are LADDER; more come from the
 brain's playground-study (POST /playground/rung, checked by `validate`) and
 wait in queue.jsonl for the next window. Options:
 
@@ -68,7 +69,8 @@ MENU = {
     "target_encoding": "out-of-fold target mean of each categorical, fitted inside each fold",
     "original": "add the original dataset to every training fold",
 }
-# HistGradientBoosting parameters a rung may set: (type, low, high).
+# Parameters a rung may set, by shared name: (type, low, high). Each model
+# family takes the ones listed in MODELS; `fit_predict` maps them.
 PARAMS = {
     "learning_rate": (float, 0.005, 0.5),
     "max_iter": (int, 10, 5000),
@@ -79,6 +81,15 @@ PARAMS = {
     "max_features": (float, 0.1, 1.0),
     "max_bins": (int, 16, 255),
     "n_iter_no_change": (int, 5, 500),
+    "subsample": (float, 0.3, 1.0),
+    "min_child_weight": (float, 0.0, 100.0),
+}
+_COMMON = ["learning_rate", "max_iter", "max_leaf_nodes", "max_depth", "l2_regularization",
+           "max_features", "max_bins", "n_iter_no_change"]
+MODELS = {
+    "hgb": _COMMON + ["min_samples_leaf"],
+    "lightgbm": _COMMON + ["min_samples_leaf", "subsample"],
+    "xgboost": _COMMON + ["subsample", "min_child_weight"],
 }
 TUNED = {"learning_rate": 0.05, "max_iter": 2000, "max_leaf_nodes": 63, "min_samples_leaf": 40,
          "l2_regularization": 1.0, "n_iter_no_change": 50}
@@ -86,6 +97,14 @@ LADDER = [
     {"name": "baseline", "options": {}, "params": {}},
     {"name": "tuned", "options": {}, "params": TUNED},
     {"name": "counts", "options": {"counts": True}, "params": TUNED},
+    # A measured start for each other model family (the forum, 2026-10-25:
+    # tuned XGBoost 0.9599 against our HistGradientBoosting 0.9585).
+    {"name": "lightgbm", "model": "lightgbm", "options": {},
+     "params": {"learning_rate": 0.05, "max_iter": 3000, "max_leaf_nodes": 63, "min_samples_leaf": 40,
+                "l2_regularization": 1.0, "max_features": 0.8, "subsample": 0.8, "n_iter_no_change": 100}},
+    {"name": "xgboost", "model": "xgboost", "options": {},
+     "params": {"learning_rate": 0.05, "max_iter": 3000, "max_depth": 7, "min_child_weight": 1.0,
+                "l2_regularization": 1.0, "max_features": 0.8, "subsample": 0.8, "n_iter_no_change": 100}},
 ]
 
 
@@ -105,6 +124,9 @@ def validate(spec) -> tuple[dict | None, str]:
     name = spec.get("name")
     if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", name):
         return None, "name: 1-40 of a-z 0-9 _ -"
+    model = spec.get("model") or "hgb"
+    if model not in MODELS:
+        return None, f"model: one of {sorted(MODELS)}"
     opts = spec.get("options") or {}
     if not isinstance(opts, dict) or any(k not in MENU or not isinstance(v, bool) for k, v in opts.items()):
         return None, f"options: booleans among {sorted(MENU)}"
@@ -115,11 +137,13 @@ def validate(spec) -> tuple[dict | None, str]:
     for k, v in params.items():
         if k not in PARAMS:
             return None, f"params: {k} is not one of {sorted(PARAMS)}"
+        if k not in MODELS[model]:
+            return None, f"params: {model} does not take {k} (it takes {MODELS[model]})"
         t, lo, hi = PARAMS[k]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
             return None, f"params: {k} must be a number in [{lo}, {hi}]"
         clean[k] = t(v)
-    rung = {"name": name, "options": {k: v for k, v in opts.items() if v}, "params": clean}
+    rung = {"name": name, "model": model, "options": {k: v for k, v in opts.items() if v}, "params": clean}
     for k in ("proposed_by", "reason", "source"):
         if isinstance(spec.get(k), str):
             rung[k] = spec[k][:500]
@@ -243,7 +267,53 @@ def counts(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
     return out
 
 
-def cv(X, y, T, O, yo, metric, params, te: bool):
+def fit_predict(model, Xtr, ytr, Xva, Tk, params, clf, seed):
+    """Fit one fold and predict its validation part and the test set.
+    LightGBM and XGBoost stop early on 10% held out of the training fold,
+    never on the fold being scored; HistGradientBoosting does the same
+    internally (validation_fraction)."""
+    P = params
+    if model == "hgb":
+        Model = HistGradientBoostingClassifier if clf else HistGradientBoostingRegressor
+        stop = {"early_stopping": True, "validation_fraction": 0.1} if P.get("max_iter", 100) > 100 else {}
+        m = Model(categorical_features="from_dtype", random_state=seed, **stop, **P)
+        m.fit(Xtr, ytr)
+    else:
+        from sklearn.model_selection import train_test_split
+        fit_i, es_i = train_test_split(np.arange(len(Xtr)), test_size=0.1, random_state=seed,
+                                       stratify=ytr if clf else None)
+        Xf, yf, Xe, ye = Xtr.iloc[fit_i], ytr[fit_i], Xtr.iloc[es_i], ytr[es_i]
+        rounds = P.get("n_iter_no_change", 100)
+        sub = P.get("subsample", 1.0)
+        if model == "lightgbm":
+            import lightgbm as lgb
+            Model = lgb.LGBMClassifier if clf else lgb.LGBMRegressor
+            m = Model(n_estimators=P.get("max_iter", 1000), learning_rate=P.get("learning_rate", 0.1),
+                      num_leaves=P.get("max_leaf_nodes", 31), max_depth=P.get("max_depth", -1),
+                      min_child_samples=P.get("min_samples_leaf", 20), reg_lambda=P.get("l2_regularization", 0.0),
+                      colsample_bytree=P.get("max_features", 1.0), max_bin=P.get("max_bins", 255),
+                      subsample=sub, subsample_freq=1 if sub < 1 else 0,
+                      n_jobs=THREADS, random_state=seed, verbose=-1)
+            m.fit(Xf, yf, eval_X=Xe, eval_y=ye, callbacks=[lgb.early_stopping(rounds, verbose=False)])
+        else:
+            import xgboost as xgb
+            Model = xgb.XGBClassifier if clf else xgb.XGBRegressor
+            leaves = P.get("max_leaf_nodes", 0)
+            m = Model(n_estimators=P.get("max_iter", 1000), learning_rate=P.get("learning_rate", 0.1),
+                      max_depth=P.get("max_depth", 0 if leaves else 6), max_leaves=leaves,
+                      grow_policy="lossguide" if leaves else "depthwise",
+                      min_child_weight=P.get("min_child_weight", 1.0), reg_lambda=P.get("l2_regularization", 1.0),
+                      colsample_bytree=P.get("max_features", 1.0), max_bin=P.get("max_bins", 256),
+                      subsample=sub, tree_method="hist", enable_categorical=True,
+                      eval_metric="auc" if clf else "rmse", early_stopping_rounds=rounds,
+                      n_jobs=THREADS, random_state=seed)
+            m.fit(Xf, yf, eval_set=[(Xe, ye)], verbose=False)
+    if clf:
+        return m.predict_proba(Xva)[:, 1], m.predict_proba(Tk)[:, 1]
+    return m.predict(Xva), m.predict(Tk)
+
+
+def cv(X, y, T, O, yo, metric, params, te: bool, model: str = "hgb"):
     """Out-of-fold score and the fold-averaged test prediction. O (the
     original data) joins every training fold and is never scored."""
     clf = metric == "auc"
@@ -262,16 +332,9 @@ def cv(X, y, T, O, yo, metric, params, te: bool):
             Xtr = Xtr.reset_index(drop=True).assign(**dict(zip(names, enc.fit_transform(Xtr[cats].astype(str), ytr).T)))
             Xva = Xva.assign(**dict(zip(names, enc.transform(Xva[cats].astype(str)).T)))
             Tk = T.assign(**dict(zip(names, enc.transform(T[cats].astype(str)).T)))
-        Model = HistGradientBoostingClassifier if clf else HistGradientBoostingRegressor
-        stop = {"early_stopping": True, "validation_fraction": 0.1} if params.get("max_iter", 100) > 100 else {}
-        m = Model(categorical_features="from_dtype", random_state=SEED + k, **stop, **params)
-        m.fit(Xtr, ytr)
-        if clf:
-            oof[va] = m.predict_proba(Xva)[:, 1]
-            pred += m.predict_proba(Tk)[:, 1] / FOLDS
-        else:
-            oof[va] = m.predict(Xva)
-            pred += m.predict(Tk) / FOLDS
+        p_va, p_te = fit_predict(model, Xtr, ytr, Xva, Tk, params, clf, SEED + k)
+        oof[va] = p_va
+        pred += p_te / FOLDS
     score = roc_auc_score(y, oof) if clf else -mean_squared_error(y, oof) ** 0.5
     return float(score), pred
 
@@ -317,7 +380,7 @@ def run_rung(slug: str, d: Path, rung: dict, metric: str):
     O = frames[2] if O is not None else None
     te = bool(opts.get("target_encoding"))
     with threadpool_limits(THREADS):
-        score, pred = cv(X, yv, T, O, yov, metric, rung["params"], te)
+        score, pred = cv(X, yv, T, O, yov, metric, rung["params"], te, rung.get("model", "hgb"))
     n_te = sum(isinstance(X[c].dtype, pd.CategoricalDtype) for c in X.columns) if te else 0
     return score, pred, X.shape[1] + n_te, ids, idc, target
 
@@ -343,7 +406,8 @@ def run(slug: str, send: bool = True) -> dict:
             log(f"{rung['name']}: failed, {rec['error']}")
             continue
         rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "name": rung["name"], "cv": score,
-               "metric": metric, "features": nf, "options": rung["options"], "params": rung["params"],
+               "metric": metric, "model": rung.get("model", "hgb"), "features": nf, "options": rung["options"],
+               "params": rung["params"],
                "seconds": round(time.time() - t0)}
         for k in ("proposed_by", "reason", "source"):
             if k in rung:
@@ -395,8 +459,8 @@ def status() -> dict:
 
 
 def menu() -> dict:
-    return {"options": MENU, "params": {k: [t.__name__, lo, hi] for k, (t, lo, hi) in PARAMS.items()},
-            "ladder": LADDER}
+    return {"models": MODELS, "options": MENU,
+            "params": {k: [t.__name__, lo, hi] for k, (t, lo, hi) in PARAMS.items()}, "ladder": LADDER}
 
 
 if __name__ == "__main__":

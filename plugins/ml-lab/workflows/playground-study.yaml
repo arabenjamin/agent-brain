@@ -70,19 +70,20 @@ steps:
                 if url.split("?")[0] in done:  # the note may drop the query
                     continue
                 ex = state.get(slug, {})
-                ladder = "; ".join(f"{e['name']} {e.get('options', {})} {e.get('params', {})}: CV {e['cv']:.6f}" if "cv" in e
+                ladder = "; ".join(f"{e['name']} {e.get('model', 'hgb')} {e.get('options', {})} {e.get('params', {})}: CV {e['cv']:.6f}" if "cv" in e
                                    else f"{e['name']}: failed" for e in ex.get("experiments", []))
                 queued = ", ".join(r["name"] for r in ex.get("queued", [])) or "none"
                 opts = "; ".join(f"{k} ({v})" for k, v in menu["options"].items())
                 params = "; ".join(f"{k} {t} in [{lo}, {hi}]" for k, (t, lo, hi) in menu["params"].items())
+                models = "; ".join(f"{m} (takes {', '.join(ps)})" for m, ps in menu.get("models", {}).items())
                 print(f"id: {slug.replace('playground-series-', '')}-{sid}\ntitle: {title}\nreading URL: {url}\nvideo URL: none")
                 print("exercise: List what this source does that our ladder does not (data, features, models, validation, ensembling),"
                       " with the CV or LB it reports for each where it says. Then show the key idea on a small generated table in the"
                       " sandbox (no network, no competition data) and print the numbers.")
                 print("store as: playground_study\nheading: Playground study")
-                print(f"ladder so far (5-fold CV AUC, HistGradientBoosting): {ladder}. Queued: {queued}.")
-                print('propose: one JSON object {"name": "<a-z0-9_- , new>", "options": {...}, "params": {...}, "reason": "<one line: what the source showed>"}'
-                      f" using only these options: {opts}; and these params: {params}. Choose the change the source gives the most"
+                print(f"ladder so far (5-fold CV AUC): {ladder}. Queued: {queued}.")
+                print('propose: one JSON object {"name": "<a-z0-9_- , new>", "model": "<model>", "options": {...}, "params": {...}, "reason": "<one line: what the source showed>"}'
+                      f" using only these models: {models}; these options: {opts}; and these params: {params}. Choose the change the source gives the most"
                       " evidence for that the ladder has not tried. If what it shows is not in the menu, write RUNG: none and say in"
                       " the note's Next line what the menu lacks.")
                 raise SystemExit

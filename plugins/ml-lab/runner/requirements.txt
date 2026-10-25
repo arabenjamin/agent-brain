@@ -10,4 +10,7 @@ joblib==1.6.0
 threadpoolctl==3.7.0
 cloudpickle==3.1.2
 narwhals==2.27.1
+lightgbm==4.7.0
+# The CPU-only build: the default xgboost wheel pulls NVIDIA NCCL, unused here.
+xgboost-cpu==3.4.1
 kaggle==2.2.5

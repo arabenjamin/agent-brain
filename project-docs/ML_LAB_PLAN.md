@@ -263,6 +263,14 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
     OOF AUC 0.961145) and a tuned XGBoost at 0.959852, against our 0.958510.
     Neither is on the menu, so it proposed none, as it should; the note's
     Next line did not say what the menu lacks, as asked.
+  - Owner: add the model family. A rung now names `model` (hgb, lightgbm,
+    xgboost; each takes its own parameters, mapped from shared names;
+    LightGBM and XGBoost stop early on 10% held out of the training fold).
+    On the full data (4 threads): LightGBM CV 0.958636 (73 s), XGBoost
+    0.958594 (114 s), against tuned HistGradientBoosting 0.958510. LightGBM
+    sent: Kaggle **0.95843**, rank 1787 of 2926 (from 2235). The family alone
+    buys little; the forum's 0.9599 XGBoost carries tuning or features we
+    lack, which is the study's next job.
 
 ## 6. Open
 
@@ -272,10 +280,9 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
 - `fault.py` uses a buffer cell between gadgets. Deotte's zero-buffer chains
   (adjacent gadgets sharing an f×f corner where one corner is empty) gained
   him ~0.001; not built.
-- Playground menu: the forum's first lesson is that the model family matters
-  here (XGBoost 0.9599, TabPFN 0.9611 vs HistGradientBoosting 0.9585). A
-  `model` option (LightGBM, XGBoost) is the next menu entry; TabPFN needs a
-  GPU and its license read first.
+- Playground menu: LightGBM and XGBoost are in. TabPFN (the forum's best,
+  0.9611) needs a GPU and its license read first. Ensembling the rungs'
+  out-of-fold predictions is not built (each rung keeps only its CV).
 - Playground: the ladder is three rungs and sits below the median. The
   usual Playground gains, to measure one rung at a time: the original
   dataset the synthetic one was generated from, added to training; the
