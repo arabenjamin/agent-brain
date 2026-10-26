@@ -201,7 +201,13 @@ def _solve(x, y, a, t, ta, L_fixed=None):
     if ta:
         bounds += [(v - ta, v + ta) for v in a]
     bounds += [(0, None)] * (nv - len(bounds))
-    res = linprog(c, A_ub=A, b_ub=np.concatenate(rhs), bounds=bounds, method="highs", options=_OPTS)
+    opts = _OPTS
+    if _deadline < math.inf:  # a single HiGHS solve ran 6.6 h on n=799 (2026-10-26)
+        left = _deadline - time.time()
+        if left <= 0:
+            return None
+        opts = _OPTS | {"time_limit": max(left, 1.0)}
+    res = linprog(c, A_ub=A, b_ub=np.concatenate(rhs), bounds=bounds, method="highs", options=opts)
     if res.status != 0:
         return None
     z = res.x
@@ -215,6 +221,8 @@ def repair(x, y, a, t=0.05, rounds=30):
     x, y, a = normalise(x, y, a)  # the LP's box has its corner at the origin
     cur = None
     for _ in range(rounds):
+        if time.time() > _deadline:
+            break
         out = _solve(x, y, a, t, 0.0)
         if out is None:
             break
@@ -300,6 +308,13 @@ def polish(x, y, a, seconds: float, seed: int = 0):
     global _deadline
     rng = np.random.default_rng(seed)
     t_end = _deadline = time.time() + seconds
+    try:
+        return _polish(x, y, a, L0, t_end, rng)
+    finally:
+        _deadline = math.inf  # the worker's next job, or another caller, starts unbounded
+
+
+def _polish(x, y, a, L0, t_end, rng):
     best = slp(x, y, a)
     if best is None:
         best = (x, y, a, L0)

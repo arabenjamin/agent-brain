@@ -36,10 +36,24 @@ steps:
         b, n, w, sub = s["bands"], s.get("last_night") or {}, s["search_7d"], s.get("submissions") or []
         out = ["# Squares in Squares — {{date}}", "",
                f"Local score {s['local_score']:.6f} (lower is better; Kaggle's metric on our store).",
-               "By band: " + ", ".join(f"n {k}: {v:.3f}" for k, v in b.items()), ""]
+               "By band: " + ", ".join(f"n {k}: {v:.3f}" for k, v in b.items())]
+        k = s.get("kaggle") or {}
+        if k.get("rank"):
+            out.append(f"Kaggle: public score {k['score']}, rank {k['rank']} of {k['teams']} "
+                       f"(median {k['median']:.6f}, top {k['top']}; as of {k['at']}).")
+        else:
+            out.append("Kaggle standing unknown: " + (k.get("why") or k.get("refresh_failed") or "the runner sent none"))
+        out.append("")
         if n:
-            out.append(f"Last night ({n.get('started')}): {n.get('jobs')} searches, {n.get('improved')} improved; "
+            out.append(f"Last night ({n.get('started')}): {n.get('jobs')} searches, {n.get('improved')} improved, "
+                       f"{n.get('cut', 0)} cut at the window's end; "
                        f"score {n.get('score_before', 0):.6f} -> {n.get('score_after', 0):.6f}.")
+            # night.json is written when a window closes; an old one means the
+            # last window never closed, so no build or submit followed it.
+            import datetime as _dt
+            started = _dt.datetime.fromisoformat(n.get("started") or "1970-01-01T00:00")
+            if _dt.datetime.now() - started > _dt.timedelta(hours=36):
+                out.append("WARNING: that is the last window that closed; a later one never finished, so no morning build or submit ran.")
         else:
             out.append("No night has run yet.")
         out.append(f"Last 7 days: {w['attempts']} searches, {w['cpu_hours']} CPU hours, {len(w['improved'])} puzzles improved.")

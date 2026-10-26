@@ -53,6 +53,8 @@ from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.preprocessing import TargetEncoder
 from threadpoolctl import threadpool_limits
 
+from . import standing
+
 ROOT = Path(os.environ.get("ML_PLAYGROUND_DIR", "/playground"))
 THREADS = int(os.environ.get("ML_RUNNER_WORKERS", "12"))
 FOLDS = 5
@@ -440,7 +442,8 @@ def submit(slug: str, d: Path, rec: dict) -> dict:
         text = _kaggle("competitions", "submit", slug, "-f", str(d / "submission.csv"), "-m",
                        f"ml-lab {rec['name']} cv {rec['cv']:.6f}", timeout=600)
         out["status"] = "sent" if "Successfully submitted" in text else "refused"
-        out["kaggle"] = text.strip().splitlines()[-1][:300] if text.strip() else ""
+        lines = [l for l in text.replace("\r", "\n").splitlines() if l.strip() and "%|" not in l]
+        out["kaggle"] = lines[-1][:300] if lines else ""  # not the upload's progress bar
     with open(d / "submissions.jsonl", "a") as f:
         f.write(json.dumps(out) + "\n")
     return out
@@ -606,7 +609,8 @@ def status() -> dict:
         done = {e["name"] for e in history(d, "experiments.jsonl")}
         out[d.name] = {"experiments": history(d, "experiments.jsonl")[-15:],
                        "queued": [r for r in history(d, "queue.jsonl") if r["name"] not in done],
-                       "submissions": history(d, "submissions.jsonl")[-5:]}
+                       "submissions": history(d, "submissions.jsonl")[-5:],
+                       "kaggle": standing.standing(d.name, d / "standing.json")}
     return out
 
 

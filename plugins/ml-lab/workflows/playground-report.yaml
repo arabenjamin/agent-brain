@@ -39,6 +39,12 @@ steps:
         for slug, c in s.items():
             ex, sub = c.get("experiments") or [], c.get("submissions") or []
             out.append(f"## {slug}")
+            k = c.get("kaggle") or {}
+            if k.get("rank"):
+                out.append(f"Kaggle: public score {k['score']}, rank {k['rank']} of {k['teams']} "
+                           f"(median {k['median']:.5f}, top {k['top']}; as of {k['at']}).")
+            else:
+                out.append("Kaggle standing unknown: " + (k.get("why") or k.get("refresh_failed") or "the runner sent none"))
             prev = None
             for e in ex:
                 step = "" if prev is None else f" ({e['cv'] - prev:+.6f} on the rung before)"

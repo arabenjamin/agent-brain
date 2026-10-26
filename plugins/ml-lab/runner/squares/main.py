@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from playground import run as playground
+from playground import standing
 
 from . import build as builder
 from . import band, composite, fault, gobel, optimize, seed, submit, tilted
@@ -81,6 +82,7 @@ def status() -> dict:
                          for a in recent if "to_L" in a],
             "cpu_hours": round(sum(a.get("seconds", 0) for a in recent) / 3600, 1),
         },
+        "kaggle": standing.standing(submit.COMPETITION, ROOT / "standing.json", lower_is_better=True),
         "window": HOURS, "workers": WORKERS,
         "now_running": window_end(datetime.now()) is not None,
     }

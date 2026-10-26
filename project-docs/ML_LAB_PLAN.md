@@ -124,7 +124,9 @@ gpt-oss (HARNESS2_PLAN.md); Rust stays hand-integrated.
   restarts for n ≤ 120, squeezes of holey packings) found nothing in 569
   jobs and stays as `ML_SEARCH=anneal`. It skips proven n (`proven.json`).
   Every attempt goes to `attempts.jsonl`; only metric-checked improvements
-  are stored. At the window's close it builds `submission.zip`, scores it,
+  are stored. A job's budget binds every LP solve (HiGHS `time_limit`); a
+  job still running 5 minutes past the window is killed and logged as cut.
+  At the window's close it builds `submission.zip`, scores it,
   and submits when it beats the best one sent (at most 1 a day,
   `ML_SUBMIT=off` stops it).
 - Every morning, before the build, the construction families re-run on the
@@ -147,7 +149,9 @@ gpt-oss (HARNESS2_PLAN.md); Rust stays hand-integrated.
   next window; `GET /playground/sources` lists the competition's top-voted
   notebooks and forum, `GET /playground/menu` what a proposal may use.
 - `GET /status` and `GET /playground` (brain-internal; `HTTP_ALLOW_INTERNAL`
-  lists `ml-runner:8000`).
+  lists `ml-runner:8000`). Each carries `kaggle`: our public score, rank,
+  field size, median and top from Kaggle's leaderboard
+  (`playground/standing.py`, cached 3 h), which the daily reports print.
 
 **Brain** (`plugins/ml-lab`): `squares-report` (daily; written in code; a
 note every day, a notification only for an improved puzzle or a sent or
@@ -303,6 +307,20 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
   (those features, its parameters) and `stack`. On a 60k-row copy:
   LightGBM 0.95552, lgb-features 0.95569, stack 0.95589; the backfill path
   reproduces the stack exactly. The full run is the 10-25 night.
+- 2026-10-26 check-in. Playground: lgb-features CV 0.960105 (+0.0015),
+  stack CV 0.960242 → Kaggle 0.95997, rank 1529 of 3171 (median 0.95972,
+  top 0.96422). Squares: still 22.350811 on Kaggle, rank 511 of 973, below
+  the median 22.3473; 383 teams are under 22.30, the public blend. The
+  night's search stored 17 small gains (store 22.350546) but never
+  submitted them: `lp.polish` checked its deadline only between steps, and
+  one HiGHS solve or 30-round `repair` ran for hours (jobs of 600 s took up
+  to 23,717 s), so the window that closed at 07:00 was still waiting on one
+  job at 19:30, and no morning build or submit had run since the LP search
+  began (the 10-24 and 10-25 submissions were by hand). Fixed: the deadline
+  binds each solve and `repair`, and the night cuts what is still running
+  5 minutes after the window. The reports now print the Kaggle standing
+  (they held only local numbers and, for the Playground, the upload's
+  progress bar) and warn when the last closed night is over 36 h old.
 
 ## 6. Open
 

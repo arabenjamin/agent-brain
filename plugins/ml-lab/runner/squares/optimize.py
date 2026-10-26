@@ -30,6 +30,7 @@ from .packing import Store, from_floats
 RESTART_MAX_N = int(os.environ.get("ML_RESTART_MAX_N", "120"))
 RESTART_SHRINK = 1e-4  # a restart aims this far (relative) below the stored side
 SEARCH = os.environ.get("ML_SEARCH", "lp")
+GRACE = 300  # seconds a job may run past the window before it is cut
 
 
 def _attempts(root: Path) -> dict[int, int]:
@@ -122,48 +123,63 @@ def run(root: Path, workers: int, seconds: int, until: float, log=print) -> dict
     A worker that dies (a signal, not an exception: on 2026-10-24/25 one did
     about hourly and took the whole runner down) breaks the pool. The jobs it
     held are recorded as crashed, so `targets` moves on from them, and a new
-    pool carries on; each worker's faulthandler prints the native traceback."""
+    pool carries on; each worker's faulthandler prints the native traceback.
+
+    A job still running GRACE after `until` is killed and recorded as cut: on
+    2026-10-26 one ran 12 h past the window, and the morning build and submit
+    wait for this function to return."""
     store = Store(root)
-    done = improved = crashed = 0
+    done = improved = crashed = cut = 0
     seed = int(time.time())
     while time.time() + seconds <= until:
         pending = set()
+        pool = ProcessPoolExecutor(workers)
+
+        def submit_more():
+            nonlocal seed
+            busy = {getattr(f, "n", None) for f in pending}
+            for n, strategy in targets(store, workers * 2):
+                if len(pending) >= workers:
+                    break
+                if n in busy or time.time() + seconds > until:
+                    continue
+                seed += 1
+                fut = pool.submit(_job, (str(root), n, strategy, seconds, seed))
+                fut.n, fut.strategy = n, strategy
+                pending.add(fut)
+                busy.add(n)
+
         try:
-            with ProcessPoolExecutor(workers) as pool:
-
-                def submit_more():
-                    nonlocal seed
-                    busy = {getattr(f, "n", None) for f in pending}
-                    for n, strategy in targets(store, workers * 2):
-                        if len(pending) >= workers:
-                            break
-                        if n in busy or time.time() + seconds > until:
-                            continue
-                        seed += 1
-                        fut = pool.submit(_job, (str(root), n, strategy, seconds, seed))
-                        fut.n, fut.strategy = n, strategy
-                        pending.add(fut)
-                        busy.add(n)
-
+            submit_more()
+            while pending:
+                try:
+                    fut = next(as_completed(pending, timeout=max(until + GRACE - time.time(), 0)))
+                except TimeoutError:
+                    cut = len(pending)
+                    log(f"window over: cutting n={sorted(f.n for f in pending)}")
+                    for f in pending:
+                        _record(root, {"n": f.n, "strategy": f.strategy, "seconds": seconds,
+                                       "from_L": store.L(f.n), "result": "cut at the window's end"})
+                    for proc in list(pool._processes.values()):  # no public way to stop a running job
+                        proc.kill()
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    return {"jobs": done, "improved": improved, "pool_crashes": crashed, "cut": cut}
+                pending.discard(fut)
+                out, sol = fut.result()
+                done += 1
+                if sol is not None:
+                    x, y, a = sol
+                    ok, why = store.offer(from_floats(out["n"], x, y, a, f"ml-lab {out['strategy']}"), "optimize")
+                    out["result"] = why
+                    if ok:
+                        improved += 1
+                        out["to_L"] = store.L(out["n"])
+                        log(f"n={out['n']}: improved {out['from_L']:.9f} -> {out['to_L']:.9f}")
+                else:
+                    out["result"] = "nothing found"
+                _record(root, out)
                 submit_more()
-                while pending:
-                    for fut in as_completed(pending):
-                        pending.discard(fut)
-                        out, sol = fut.result()
-                        done += 1
-                        if sol is not None:
-                            x, y, a = sol
-                            ok, why = store.offer(from_floats(out["n"], x, y, a, f"ml-lab {out['strategy']}"), "optimize")
-                            out["result"] = why
-                            if ok:
-                                improved += 1
-                                out["to_L"] = store.L(out["n"])
-                                log(f"n={out['n']}: improved {out['from_L']:.9f} -> {out['to_L']:.9f}")
-                        else:
-                            out["result"] = "nothing found"
-                        _record(root, out)
-                        submit_more()
-                        break
+            pool.shutdown()
             break  # the window is over
         except BrokenProcessPool:
             lost = sorted(getattr(f, "n", -1) for f in pending)
@@ -172,4 +188,5 @@ def run(root: Path, workers: int, seconds: int, until: float, log=print) -> dict
             for f in pending:
                 _record(root, {"n": f.n, "strategy": f.strategy, "seconds": 0, "from_L": store.L(f.n),
                                "result": "worker crashed (this job or another in the pool)"})
-    return {"jobs": done, "improved": improved, "pool_crashes": crashed}
+            pool.shutdown(wait=False, cancel_futures=True)
+    return {"jobs": done, "improved": improved, "pool_crashes": crashed, "cut": cut}
