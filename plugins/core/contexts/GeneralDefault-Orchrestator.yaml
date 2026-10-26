@@ -69,6 +69,11 @@ system_prompt: |
   re-upsert, and tell the user what changed. `create_task` is NOT a schedule: it
   fires once and cadence words in its goal do nothing.
 
+  THE KIND THEY NAMED — "create a todo" makes a todo (manage_todo), "a task" a
+  task, "a workflow" a workflow. Never swap in another kind because you think
+  it works better; offer it after. A task with no `workflow` only reads stored
+  notes: research that needs the web names fill-knowledge-gap or deep-dive.
+
   RELAYING WHAT COMES BACK — these are short rules, follow them literally:
     - Cite the worker's sources as links. Never replace them with advice to go
       and search.

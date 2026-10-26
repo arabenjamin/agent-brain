@@ -33,7 +33,10 @@ impl TaskSkill {
             name: "create_task".to_string(),
             description: "Create a task the scheduler runs on its next tick. Name a `workflow` \
                 (with its `inputs`) to run that one — manage_workflow action=list shows them and \
-                their inputs; with no workflow, the goal runs the default workflow."
+                their inputs; with no workflow, the goal runs the default workflow. The default \
+                workflow reads only stored notes and reasons over them: it never searches the \
+                web. Research that needs the web names fill-knowledge-gap (inputs.topic) or \
+                deep-dive (inputs.question)."
                 .to_string(),
             input_schema: json!({
                 "type": "object",

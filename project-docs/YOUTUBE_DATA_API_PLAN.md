@@ -25,10 +25,38 @@ on PyPI).
 
 ## 2. The count
 
+### Measured: the baseline week (2026-10-17 22:46 → 2026-10-24 22:46)
+
+`lookup youtube_calls` over `external_calls` (Phase 0), all through
+`yt-proxy`, split at Phase 0b (first call on the new code 2026-10-20 16:39).
+Read 2026-10-26.
+
+| Op | Before 0b (2.5 days): calls / ok / errors | After 0b (4.1 days): calls / ok / errors | bot checks | backoffs |
+|---|---|---|---|---|
+| probe (poll, new feed item) | 50 / 50 / 0 | 88 / 85 / 1 | 2 (after) | 0 |
+| metadata (`ingest_media`) | 51 / 51 / 0 | 94 / 88 / 0 | 0 | 6 (after) |
+| captions | 51 / 27 / **24** | 88 / **88** / **0** | 0 | 0 |
+| audio (Whisper fallback) | **24** / 23 / 1 | **1** / 1 / 0 | 0 | 0 |
+| channel | 1 / 1 / 0 | 0 | 0 | 0 |
+| **Total** | **177** (≈70/day) | **271** (≈66/day) | **2** | **6** |
+
+- **Phase 0b worked.** Caption errors went from 47% (24 of 51) to 0 of 88,
+  and Whisper runs from 24 to 1 (one video with no captions at all). Every
+  watched video now gets YouTube's own transcript.
+- **Two bot checks in the week**, both on a poll probe (2026-10-21 and
+  2026-10-24), each followed by three metadata calls refused in backoff for
+  the same video. Both videos were watched later with captions, so nothing was
+  lost. The host rule was in place when checked on 2026-10-26
+  (`ip rule` 5200 present, `yt-egress-route.service` active and enabled), so
+  these are YouTube's ordinary checks, not a lost bypass.
+- **No live re-probes**: probe repeats are 0-1 (the estimate's worry).
+- **What is left is metadata.** After 0b, probe + metadata are 182 of 271
+  calls (67%). Phase 1 removes one call per watched video (~88 in 4.1 days,
+  ~640 a month); Phase 2 moves probes and metadata to the Data API.
+
 ### Measured (interim, 2026-10-17 22:46 → 2026-10-20 11:06, 2.5 days)
 
-`lookup youtube_calls` over `external_calls` (Phase 0). The week ends
-2026-10-24; this is the first 2.5 days, all through `yt-proxy`.
+Kept for the 429 diagnosis below; the week above supersedes its totals.
 
 | Op | Calls | ok | errors | bot checks | repeats | ~30 days |
 |---|---|---|---|---|---|---|
@@ -140,6 +168,9 @@ that `en` was refused for a video with an uploaded track too (ecCrC56NorY's
 `en` has no `tlang`), so the 429 is not only on translations. The rest of
 the baseline week (to 2026-10-24) measures it: `captions` errors and `audio`
 calls should be near zero.
+
+**Confirmed 2026-10-26** (§2): caption errors 24 of 51 → 0 of 88, audio
+calls 24 → 1. Phase 1 waits for the owner's go-ahead.
 
 ### Phase 1: one yt-dlp call per watched video (no key)
 

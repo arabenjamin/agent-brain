@@ -655,7 +655,7 @@ impl SearchSkill {
     /// Fails open in every direction — a graph error, a missing index, or no
     /// Neo4j at all yields `None` and the search proceeds untouched. This must
     /// never be able to break a search.
-    async fn prior_knowledge(&self, query: &str) -> Option<String> {
+    async fn prior_knowledge(&self, query: &str, days: i64) -> Option<String> {
         let neo4j = self.neo4j.as_ref()?;
         let mut lines: Vec<String> = Vec::new();
 
@@ -693,14 +693,15 @@ impl SearchSkill {
                 .execute(
                     neo4rs::query(
                         "MATCH (n:Note) WHERE n.id IN $ids \
-                           AND NOT coalesce(n.source_context, '') IN $logs \
+                           AND NOT coalesce(n.source_context, '') IN $logs AND ($days = 0 OR n.created_at >= datetime() - duration({days: $days})) \
                          RETURN n.id AS id, \
                                 substring(toString(n.created_at), 0, 10) AS d, \
-                                coalesce(n.source_context, '') AS sc, \
+                                left(split(coalesce(n.source_context, ''), '\\n')[0], 40) AS sc, \
                                 left(n.content, 160) AS t",
                     )
                     .param("ids", ids)
-                    .param("logs", LOG_CONTEXTS.to_vec()),
+                    .param("logs", LOG_CONTEXTS.to_vec())
+                    .param("days", days),
                 )
                 .await
             {
@@ -726,16 +727,17 @@ impl SearchSkill {
                          {limit: 60}) \
                          YIELD node AS n, score \
                          WHERE NOT (n)-[:PART_OF]->() \
-                           AND NOT coalesce(n.source_context, '') IN $logs \
+                           AND NOT coalesce(n.source_context, '') IN $logs AND ($days = 0 OR n.created_at >= datetime() - duration({days: $days})) \
                          RETURN count(n) AS total, \
                                 collect({ \
                                   t: left(n.content, 100), \
                                   d: substring(toString(n.created_at), 0, 10), \
-                                  s: coalesce(n.source_context, '') \
+                                  s: left(split(coalesce(n.source_context, ''), '\\n')[0], 40) \
                                 })[0..3] AS top",
                     )
                     .param("q", lucene.as_str())
-                    .param("logs", LOG_CONTEXTS.to_vec()),
+                    .param("logs", LOG_CONTEXTS.to_vec())
+                    .param("days", days),
                 )
                 .await
                 && let Some(row) = rows.first()
@@ -916,20 +918,20 @@ impl SearchSkill {
     }
 
     /// Prepend [`prior_knowledge`] to a successful search result.
-    async fn with_prior_knowledge(&self, query: &str, result: ToolCallResult) -> ToolCallResult {
-        if result.is_error == Some(true) {
-            return result;
+    async fn with_prior_knowledge(&self, q: &str, days: i64, r: ToolCallResult) -> ToolCallResult {
+        if r.is_error == Some(true) {
+            return r;
         }
-        let Some(block) = self.prior_knowledge(query).await else {
-            return result;
+        let Some(block) = self.prior_knowledge(q, days).await else {
+            return r;
         };
-        let body = Self::result_text(&result);
+        let body = Self::result_text(&r);
         ToolCallResult {
             content: vec![agent_brain_protocol::Content::text(format!(
                 "{block}\n{body}"
             ))],
-            is_error: result.is_error,
-            bulk: result.bulk,
+            is_error: r.is_error,
+            bulk: r.bulk,
         }
     }
 
@@ -1163,7 +1165,8 @@ impl SearchSkill {
         if !input.prior_knowledge {
             return result;
         }
-        self.with_prior_knowledge(&input.query, result).await
+        let days = Recency::parse(input.recency.as_deref().unwrap_or("")).map_or(0, Recency::days);
+        self.with_prior_knowledge(&input.query, days, result).await
     }
 
     async fn handle_get_search_usage(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -1427,7 +1430,7 @@ mod tests {
         let skill = SearchSkill::new(None, None);
         let original = ToolCallResult::success_json(serde_json::json!([{"link": "x"}]));
         let out = skill
-            .with_prior_knowledge("anything", original.clone())
+            .with_prior_knowledge("anything", 0, original.clone())
             .await;
         assert_eq!(
             SearchSkill::result_text(&out),
@@ -1441,7 +1444,7 @@ mod tests {
     async fn prior_knowledge_is_not_attached_to_an_error() {
         let skill = SearchSkill::new(None, None);
         let err = ToolCallResult::error("all engines failed");
-        let out = skill.with_prior_knowledge("anything", err).await;
+        let out = skill.with_prior_knowledge("anything", 0, err).await;
         assert_eq!(out.is_error, Some(true));
         assert!(SearchSkill::result_text(&out).contains("all engines failed"));
     }
