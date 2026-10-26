@@ -647,3 +647,23 @@ cases:
     then: tell the user the run reads it, finds its source article, and reports back in this chat
     decide: "the brain scraped the watch page, said it could not watch video, then failed ingest_media on store:\"true\" and told the owner it needed a code change; owner 2026-10-23: hand it to the ingest path, find the article it references and read that too"
     status: accepted
+
+  - id: ml-lab-status
+    question: "Can you tell me what the status is on out Ml lab competitions?"
+    source: chat 2026-10-26, x1
+    brain_did: {agents: [knowledge-worker], tools: [], profile: GeneralDefault-Orchrestator}
+    route: lookup:ml_lab_status
+    first_tool: {lookup: {view: ml_lab_status}}
+    then: report our latest scores, ranks and submissions from the reports, with their dates
+    decide: "the worker found little, said most of it 'could not be confirmed from the graph' and handed four checks back to the owner, while squares-report and playground-report had stored the runner's state that day (review 2026-10-26)"
+    status: accepted
+
+  - id: create-a-todo-research
+    question: "I need you to create a todo to research IBMs quantum computer API."
+    source: chat 2026-10-25, x1
+    brain_did: {agents: [], tools: [create_task], profile: GeneralDefault-Orchrestator}
+    route: self:manage_todo
+    first_tool: {manage_todo: {action: upsert, title: "Research IBM's quantum computer API"}}
+    then: offer to start the research now (fill-knowledge-gap or researcher)
+    decide: "the front door made a task instead, its default workflow read only notes, scored 1/5 and was marked completed; the owner asked for a todo (review 2026-10-26)"
+    status: accepted

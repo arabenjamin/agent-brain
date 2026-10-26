@@ -11,12 +11,23 @@
 // search the web: an inference and a `semantic` synthesis that both say
 // "no information", stored as if they were knowledge.
 //
-// Take a snapshot first, then run with the brain up:
+// Also the 8 GB video (ugKAkCVBcz0, watched 2026-10-24): its source record,
+// three chunks, three claims and their evidence notes carry caption garbles
+// ("Qwen 3.635B" for Qwen 3.6 35B). Its :Media node goes too, so the video
+// can be watched again with the description-aware summariser: run
+// manage_workflow run video-learning {url: https://youtu.be/ugKAkCVBcz0}
+// afterwards.
+//
+// Exported first: workspace/backups/retired-notes-2026-10-26.json (the 21
+// notes with their relationships) and retired-media-ugKAkCVBcz0.json; the
+// brain's snapshot_pre_prune_20261026_130420 also holds them all.
+//
+// Run with the brain up:
 //   export $(grep NEO4J_PASSWORD .env)
 //   docker exec -i agent-brain-neo4j-1 cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
 //     < scripts/retire_stale_news_inferences.cypher
 
-:param ids => ['caae447c-70f9-46b1-a7ce-957426dedc05', '3a4917d7-984f-4f9c-a8a8-7f755d4e8f59', 'cc654bb6-7d86-448e-835b-7e13d562cbc7', '928dd7b1-9750-4eea-bb04-c76b4d362d32', '886b2ae5', '3e9c6792', 'cc58bf88', 'c9fe9a35', 'd7a9ed5d', '67435b26-be57-4814-a1b5-e883904f194b', '57c5f955-85a1-4a0e-9b65-63489cb4fb31'];
+:param ids => ['caae447c-70f9-46b1-a7ce-957426dedc05', '3a4917d7-984f-4f9c-a8a8-7f755d4e8f59', 'cc654bb6-7d86-448e-835b-7e13d562cbc7', '928dd7b1-9750-4eea-bb04-c76b4d362d32', '886b2ae5', '3e9c6792', 'cc58bf88', 'c9fe9a35', 'd7a9ed5d', '67435b26-be57-4814-a1b5-e883904f194b', '57c5f955-85a1-4a0e-9b65-63489cb4fb31', '87ad97ae-ee5e-4a46-b46a-ce34b1de5e4f', '7ecb5042-b365-4d1b-926b-9af1ce4eca1c', '6dd0f174-896a-4279-b6ce-2af49b8294c2', 'e57310b7-df90-4a9a-961d-caef8a9f0afa', '8530db5d-43fc-4d32-86b5-0dd01567e356', 'f5954913-b484-4614-b0f3-2b87167ba941', '373f6641-3ef6-4463-94af-e92a2aca28e6', 'c59ea8f6-5b89-4259-891b-f5fa95a4c519', '0b2dd515-757f-41c9-b88d-c3806ca8bb8d', '86d57908-61ae-46fa-a9c2-54bd4360e6b0'];
 
 // -- Preview: short ids are prefixes ------------------------------------------
 MATCH (n:Note)
@@ -35,3 +46,8 @@ MATCH (n:Note)
 WHERE any(p IN $ids WHERE n.id STARTS WITH p)
 DETACH DELETE n
 RETURN count(*) AS deleted;
+
+// -- The 8 GB video's :Media node, so it can be watched again -------------------
+MATCH (m:Media {id: 'ugKAkCVBcz0'})
+DETACH DELETE m
+RETURN count(*) AS media_deleted;

@@ -1603,6 +1603,15 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
         let _ = self.neo4j.cancel_parked_children(&job.id).await;
         if let Some(tid) = task_id {
             self.handle_evaluator_requeue(tid, score, result_text).await;
+        } else if let Some(owner) = job_arg(job, "__owner_task_id").and_then(Value::as_str) {
+            // A workflow's own evaluator step (`is_evaluator` in its YAML)
+            // fails the run without a retry: the default chain retried could
+            // only read the same notes again (2026-10-25, IBM API research
+            // scored 1/5 and was marked completed).
+            let _ = self
+                .neo4j
+                .update_task_status(owner, TaskStatus::Failed)
+                .await;
         }
         true
     }

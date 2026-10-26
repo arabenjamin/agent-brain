@@ -20,11 +20,18 @@ steps:
     max_attempts: 3
     provider_hint: ollama
 
+  # The gate: a score under 2.5 cancels the steps below and marks the run
+  # failed, so "the notes do not cover this" is not reported as completed and
+  # synthesize_knowledge does not store it as knowledge (2026-10-25: IBM API
+  # research scored 1/5, was marked completed, and left a "no information"
+  # semantic note). No retry: this chain can only read the same notes again.
   - tool_name: reflect_on_work
     arguments:
       goal: "{{goal}}"
       current_state: "{{_prev}}"
       task_id: "{{task_id}}"
+    is_evaluator: true
+    min_score: 2.5
     priority: 1
     max_attempts: 3
     provider_hint: ollama

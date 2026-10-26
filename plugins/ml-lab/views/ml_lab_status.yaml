@@ -1,0 +1,16 @@
+# 2026-10-26: asked "what is the status on our ML lab competitions?", the
+# front door said most of it "could not be confirmed from the graph" and
+# handed the checks back to the owner, while squares-report and
+# playground-report had stored the runner's state that day. This names them.
+name: ml_lab_status
+kind: notes
+description: >-
+  Where the ML Lab's Kaggle competitions stand: the daily Squares in Squares
+  and Playground reports from the runner (local score, rank, last night's
+  search, submissions), newest first. For what public notebooks we studied
+  scored, the studies are in notes from squares_study and playground_study.
+words: [ml lab, ml lab status, kaggle, competitions, squares in squares, squares, playground, leaderboard, our score, submission]
+preset:
+  from: [squares_report, playground_report]
+  order: newest
+  limit: 6

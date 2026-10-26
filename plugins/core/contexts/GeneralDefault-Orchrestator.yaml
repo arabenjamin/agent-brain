@@ -170,6 +170,13 @@ routing:
   # the local model fills only `slots`, lookup runs the view, and the rows
   # become the turn's context. No agent loop. Offered as `lookup:<name>`.
   behaviors:
+    # 2026-10-26: "what is the status on our ML lab competitions?" went to a
+    # worker that found nothing and handed the checks back to the owner, while
+    # the runner's daily reports were in the graph.
+    - name: ml_lab_status
+      view: ml_lab_status
+      says: where the ML Lab's Kaggle competitions stand (Squares in Squares, Playground) - our latest scores, ranks, submissions, last night's search - from the runner's daily reports
+      when: '(?i)\b(ml ?lab|kaggle|squares|playground|competitions?|leaderboard)\b'
     - name: learned
       view: learned
       says: everything the brain learned (took in) in a time window - today, the last 24 hours, the last few days, this month - with each note's standing. Not for one subject, source, monitor, claim or video
@@ -198,6 +205,7 @@ routing:
     - A question about us (our notes, claims, agencies, monitors, topics, tasks, tools, agents, APIs, what we learned, the user's own history) goes to stored knowledge first: knowledge-worker. This holds even for advice about our own things.
     - A fact about the world: answer it from knowledge if it is well known and does not change; current or changing facts (news, versions, prices, "latest") go to researcher. Explicit "search the web" goes to researcher.
     - "Keep an eye on", "monitor", "make sure we're tracking": check the existing workflows first (self:manage_workflow).
+    - The user names the kind of item: "a todo", "to-do" or "remind me" goes to self:manage_todo, "a task" to self:create_task, "a workflow" or "a schedule" to self:manage_workflow, whatever the item is about.
     - A link the user hands over to watch, read or ingest (a YouTube video, an article) goes to self:manage_workflow: it runs video-learning or article-learning on it. Not researcher.
     - How a program or department is organized, or pausing, closing or reopening one: self:manage_program. How one is DOING (its numbers, what to change): program-manager.
     - Saving or writing a file goes to scribe; turning a stored API into a document or client goes to api-integrator.
