@@ -1,0 +1,68 @@
+# Weekly ML Lab digest (owner approved 2026-10-24, todo a4ee2ad6; built in
+# chat at runtime then, rewritten here 2026-10-26).
+#
+# The runtime version found its notes with search_notes, which has no date
+# argument, and asked the model to drop old ones: its first digest cited a
+# pandas `.describe()` note and August notes, and none of the week's Squares or
+# Playground work. The week's notes are now read by date and source here.
+name: ml-note-review
+description: "Weekly ML Lab digest: the last 7 days of the lab's own notes (Squares and Playground studies and reports, ml-study lessons), summarised with each note cited by id, plus what deserves follow-up."
+topic: ai-ml
+kind: maintenance
+every: 1w
+defaults:
+  priority: 1
+  max_attempts: 2
+  provider_hint: ollama
+steps:
+  # Two reads, not one labelled list: with a `whose` field per row, local
+  # E4B still called our own Squares score "a public notebook" (2026-10-26).
+  - id: ours
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.created_at >= datetime() - duration({days: 7}) AND n.source_context IN ['squares_report', 'playground_report', 'ml_study'] AND NOT (n)-[:PART_OF]->() RETURN n.id AS id, n.source_context AS source, substring(toString(n.created_at), 0, 10) AS day, left(n.content, 500) AS content ORDER BY n.created_at DESC LIMIT 15"
+    max_attempts: 3
+    description: "The week's notes on our own runs and lessons"
+
+  - id: public
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.created_at >= datetime() - duration({days: 7}) AND n.source_context IN ['squares_study', 'playground_study'] AND NOT (n)-[:PART_OF]->() RETURN n.id AS id, n.source_context AS source, substring(toString(n.created_at), 0, 10) AS day, left(n.content, 500) AS content ORDER BY n.created_at DESC LIMIT 10"
+    max_attempts: 3
+    description: "The week's studies of public notebooks"
+
+  - id: digest
+    tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT is this week's ML Lab notes, newest first, in two
+        blocks: OUR RUNS (our Squares and Playground scores, our lessons) and
+        PUBLIC NOTEBOOKS (other people's notebooks we studied).
+
+        ## THIS WEEK
+        At most six bullets on what changed: scores, ranks, what was tried
+        and whether it worked. Cite each bullet's notes as [note:<id>].
+
+        ## FOLLOW-UP
+        At most three: a result that needs re-checking, an idea not yet
+        tried, a lesson to redo. Each with its [note:<id>] and one line why.
+
+        Write both sections, with exactly these headings. A score from
+        PUBLIC NOTEBOOKS is someone else's: write "a public notebook
+        scored ...". A score from OUR RUNS is ours: write "we scored ...".
+        Use only the CONTEXT. Keep every number as written. If the CONTEXT
+        is empty, write "No ML Lab notes this week." and nothing else.
+      context: "## OUR RUNS\n{{steps.ours.rows}}\n\n## PUBLIC NOTEBOOKS\n{{steps.public.rows}}"
+      store_inference: false
+    # Once a week, one call: gpt-oss keeps ours and theirs apart where local
+    # E4B did not.
+    provider_hint: ollama-cloud
+    description: "Digest with note citations and follow-ups"
+
+  - tool_name: store_note
+    arguments:
+      content: "# ML Lab week to {{date}}\n\n{{steps.digest}}"
+      note_type: inference
+      source_context: ml_note_review
+    max_attempts: 3
+    description: "Store the weekly digest"

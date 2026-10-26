@@ -89,6 +89,11 @@ pub struct VideoMeta {
     /// because yt-dlp reports `duration: null` for it, which parses to 0 — and
     /// `0 > 10800` is false. See [`MediaService::ingest_media`].
     pub is_live: bool,
+    /// The uploader's description, first 3,000 chars (yt-dlp only; empty
+    /// elsewhere). The summariser spells names from it: auto-captions run
+    /// names and numbers together ("Qwen 3.635B" for Qwen 3.6 35B), and the
+    /// description of the same video spelled them right (2026-10-26).
+    pub description: String,
 }
 
 /// How a transcript target must be acquired, chosen by [`MediaService::classify_input`].
@@ -455,6 +460,7 @@ impl MediaService {
             published_at,
             duration_secs,
             is_live,
+            description: str_field(v, "description").chars().take(3000).collect(),
         })
     }
 
@@ -780,6 +786,18 @@ impl MediaService {
         // reporter Abdul El-Sayed" (a Senate candidate) in 4/4 runs, and the
         // error rode into a claim and the daily brief. With the title fenced
         // off and roles and pronouns tied to the transcript: 0/4 (2026-10-20).
+        // Captions mishear names; the uploader's description spells them.
+        let reference = if meta.description.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\nTHE UPLOADER'S DESCRIPTION (for spelling only: auto-captions run \
+                 names and numbers together, e.g. \"Qwen 3.635B\" for Qwen 3.6 35B; when \
+                 a name in the notes matches one here, write it as written here. Its \
+                 figures are the uploader's own; ignore sponsor text):\n{}",
+                meta.description
+            )
+        };
         let reduce_prompt = format!(
             "You are summarizing {} {} by {}. Its title is \"{}\"; a title is a \
              headline, often clipped or ambiguous, so take every fact from the \
@@ -787,7 +805,7 @@ impl MediaService {
              Write a cohesive 200-400 word prose summary and extract the key \
              concepts. Describe each person only by a role the notes give them, \
              and keep each \"his\", \"her\" and \"their\" attached to the person \
-             the notes mean; when it is unclear, use the name.\n\nNOTES:\n{}\n\n\
+             the notes mean; when it is unclear, use the name.{}\n\nNOTES:\n{}\n\n\
              Return ONLY a JSON object of the form:\n\
              {{\"summary\": \"<prose summary>\", \"key_concepts\": [\"concept\", ...]}}",
             if medium == Medium::Article { "an" } else { "a" },
@@ -799,6 +817,7 @@ impl MediaService {
             } else {
                 "its transcript"
             },
+            reference,
             notes
         );
         let v = llm
@@ -1061,6 +1080,7 @@ fn meta_from_markdown(url: &str, md: &str) -> VideoMeta {
         published_at: String::new(),
         duration_secs: 0,
         is_live: false,
+        description: String::new(),
     }
 }
 
@@ -1129,6 +1149,7 @@ fn article_meta(url: &str, html: &str) -> VideoMeta {
         published_at,
         duration_secs: 0,
         is_live: false,
+        description: String::new(),
     }
 }
 
@@ -1592,6 +1613,7 @@ fn meta_from_media_url(url: &str) -> VideoMeta {
         duration_secs: 0,
         // A published enclosure is a finished file, never a live broadcast.
         is_live: false,
+        description: String::new(),
     }
 }
 
@@ -1608,6 +1630,7 @@ fn meta_from_local_file(path: &std::path::Path) -> VideoMeta {
         duration_secs: 0,
         // A file on disk is finite by construction.
         is_live: false,
+        description: String::new(),
     }
 }
 
@@ -1889,6 +1912,23 @@ mod tests {
         let plain = serde_json::json!({"id": "x1", "title": "t", "duration": 120.0});
         let m = svc.parse_meta(&plain).expect("plain metadata parses");
         assert!(!m.is_live, "absent is_live must default to not-live");
+    }
+
+    #[test]
+    fn parse_meta_keeps_the_description_capped() {
+        let svc = MediaService::from_env();
+        let long = "Qwen 3.6 35B A3B ".repeat(400);
+        let v = serde_json::json!({"id": "d1", "title": "t", "description": long});
+        let m = svc.parse_meta(&v).expect("parses");
+        assert!(m.description.starts_with("Qwen 3.6 35B A3B"));
+        assert_eq!(m.description.chars().count(), 3000);
+        let none = serde_json::json!({"id": "d2", "title": "t"});
+        assert!(
+            svc.parse_meta(&none)
+                .expect("parses")
+                .description
+                .is_empty()
+        );
     }
 
     #[test]

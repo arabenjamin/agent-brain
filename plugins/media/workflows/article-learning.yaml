@@ -12,7 +12,8 @@ inputs:
     description: "What the person said about it, for the hand-off."
 steps:
   # Why: dev_docs get yaml/chains-article-learning-2
-  - tool_name: ingest_article
+  - id: read
+    tool_name: ingest_article
     arguments:
       url: "{{inputs.url}}"
     priority: 1
@@ -20,11 +21,32 @@ steps:
     provider_hint: ollama
     description: "Fetch article text + map-reduce summary"
 
+  # Hand-off: what the brain itself already does about this article (its
+  # workflows and programs), for the answer step below. Here, before this
+  # run stores its own notes; `reason` with a context does no graph search,
+  # so without this the answer saw only the article (2026-10-26: asked whether
+  # to apply Harness² to our brain, it never named our harness-improve loop).
+  - id: known
+    when: "{{inputs.session}}"
+    tool_name: neo4j_query
+    arguments:
+      cypher: |
+        WITH [w IN split(toLower(replace(replace(replace(replace(replace(replace($t, '?', ''), '(', ''), ')', ''), '²', ''), ':', ''), ',', '')), ' ') WHERE size(w) > 4 AND NOT w IN ['about', 'every', 'these', 'there', 'their', 'which', 'tested', 'video', 'explained', 'would', 'should', 'could', 'after', 'before', 'first', 'still', 'other', 'while', 'really', 'things', 'thing', 'better', 'never', 'actually', 'everything', 'nobody', 'people', 'world', 'today', 'engineering']] AS words
+        MATCH (x) WHERE (x:Workflow OR x:Program) AND coalesce(x.enabled, true) AND any(w IN words WHERE toLower(coalesce(x.name, '') + ' ' + coalesce(x.label, '') + ' ' + coalesce(x.description, '') + ' ' + coalesce(x.charter, '')) CONTAINS w)
+        RETURN labels(x)[0] AS kind, x.name AS name, left(coalesce(x.description, x.charter, ''), 240) AS what LIMIT 8
+      params:
+        t: "{{steps.read.title}}"
+    priority: 1
+    max_attempts: 2
+    optional: true
+    provider_hint: ollama
+    description: "Hand-off: the brain's own workflows and programs on this subject"
+
   # 2. Bank the summary so it survives past the reason step.
   - tool_name: push_context
     arguments:
       session_id: "article-{{task_id}}"
-      content: "## ARTICLE SUMMARY\n{{_prev}}"
+      content: "## ARTICLE SUMMARY\n{{steps.read}}"
       role: observation
     priority: 1
     max_attempts: 2
@@ -143,11 +165,12 @@ steps:
         already does.
         If that asks a question or for advice, write "Answer:" on its own
         line, then at most eight short bullets that answer it from the CONTEXT
-        (what the article says). Mark anything you add from your own knowledge
-        "(not from the article)". Check that each figure makes sense and say so
+        (what the article says). Where WHAT THE BRAIN ALREADY RUNS bears on it,
+        name that workflow or program; ignore the ones that do not. Mark
+        anything you add from your own knowledge "(not from the article)". Check that each figure makes sense and say so
         when one does not. If they asked nothing, write "Gist:" and the two
         points most worth knowing. Do not invent figures.
-      context: "{{steps.notes}}"
+      context: "{{steps.notes}}\n\n## WHAT THE BRAIN ALREADY RUNS (its workflows and programs)\n{{steps.known.rows}}"
       store_inference: false
     priority: 1
     max_attempts: 2
