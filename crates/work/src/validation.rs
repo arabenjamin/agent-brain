@@ -918,6 +918,54 @@ pub fn coerce_scalar_strings(schema: &Value, args: &mut Value) -> Vec<String> {
     changed
 }
 
+/// Drop an optional argument a model filled with a placeholder: `null` where
+/// the schema's type does not allow null, or `""` where it declares an enum
+/// without `""`. Absent is what the model meant; a field that may be null on
+/// purpose (`every: null` removes a schedule) declares it and is kept.
+///
+/// Found 2026-10-26: about a third of the sub-agent misfits in arg_checks'
+/// first week were gpt-oss writing every optional field as `null` or `""`.
+/// Worse than noise: `manage_program` upsert reads `null` as "remove", so a
+/// placeholder `charter: null` would have erased the charter.
+pub fn drop_placeholders(schema: &Value, args: &mut Value) -> Vec<String> {
+    let (Some(props), Some(given)) = (
+        schema.get("properties").and_then(Value::as_object),
+        args.as_object_mut(),
+    ) else {
+        return Vec::new();
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    // An untyped property accepts anything, null included.
+    let null_ok = |p: &Value| match p.get("type") {
+        Some(Value::String(t)) => t == "null",
+        Some(Value::Array(ts)) => ts.iter().any(|t| t == "null"),
+        _ => true,
+    };
+    let mut dropped = Vec::new();
+    given.retain(|key, value| {
+        let Some(p) = props.get(key).filter(|_| !required.contains(&key.as_str())) else {
+            return true;
+        };
+        let placeholder = match value {
+            Value::Null => !null_ok(p),
+            Value::String(s) if s.is_empty() => p
+                .get("enum")
+                .and_then(Value::as_array)
+                .is_some_and(|e| !e.contains(value)),
+            _ => false,
+        };
+        if placeholder {
+            dropped.push(format!("{key}: {value} dropped (optional)"));
+        }
+        !placeholder
+    });
+    dropped
+}
+
 /// What is wrong with one call's `arguments` against the tool's registered
 /// `input_schema`, in words a model can act on; empty when they fit.
 ///
@@ -1404,6 +1452,35 @@ mod tests {
         assert!(v[0].render().contains("steps.later"));
         assert!(v[0].render().contains("earlier step ids: news"));
         assert!(v[1].render().contains("used twice"));
+    }
+
+    #[test]
+    fn a_placeholder_optional_is_dropped_unless_the_schema_allows_it() {
+        // The 2026-10-23 intake calls: search_web and manage_program with
+        // every optional argument written as null or "".
+        let schema = json!({"required": ["query", "name"], "properties": {
+            "query": {"type": "string"}, "name": {"type": "string"},
+            "recency": {"type": "string", "enum": ["day", "week"]},
+            "source_list": {"type": "string"}, "topics": {"type": "array"},
+            "every": {"type": ["string", "null"]},
+            "kind": {"type": ["string", "null"], "enum": ["monitor", "", null]},
+            "free": {}
+        }});
+        let mut a = json!({"query": "q", "name": null, "recency": "", "source_list": null,
+                           "topics": null, "every": null, "kind": "", "free": null,
+                           "unknown": null});
+        let dropped = drop_placeholders(&schema, &mut a);
+        assert_eq!(dropped.len(), 3, "{dropped:?}");
+        for k in ["recency", "source_list", "topics"] {
+            assert!(a.get(k).is_none(), "{k} kept");
+        }
+        // Required, allowed by the schema, untyped or undeclared: the check's to judge.
+        for k in ["name", "every", "kind", "free", "unknown"] {
+            assert!(a.get(k).is_some(), "{k} dropped");
+        }
+        // An empty string where no enum constrains it may be meant.
+        let mut b = json!({"source_list": ""});
+        assert!(drop_placeholders(&schema, &mut b).is_empty());
     }
 
     #[test]

@@ -128,9 +128,36 @@ steps:
     provider_hint: ollama
     description: "Extract checkable claims from the article"
 
+  # Hand-off: answer what the person asked (2026-10-26: "which model should
+  # we run on an 8 GB card?" got a video summary and a program, never an
+  # answer). In every hand-off run, not `when: {{inputs.note}}`: a step left
+  # out of the run would render as a marker in the notification below.
+  - id: answer
+    when: "{{inputs.session}}"
+    tool_name: reason
+    arguments:
+      question: |
+        A person handed the brain this article and said: "{{inputs.note}}"
+        "The brain", "our brain" and "we" mean agent-brain, this AI system
+        and its owner, never a human brain: relate it to what the brain
+        already does.
+        If that asks a question or for advice, write "Answer:" on its own
+        line, then at most eight short bullets that answer it from the CONTEXT
+        (what the article says). Mark anything you add from your own knowledge
+        "(not from the article)". Check that each figure makes sense and say so
+        when one does not. If they asked nothing, write "Gist:" and the two
+        points most worth knowing. Do not invent figures.
+      context: "{{steps.notes}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 2
+    optional: true
+    provider_hint: ollama-cloud
+    description: "Hand-off: answer what the person asked"
+
   # Hand-off (only when a person handed this article over in chat: the run was
-  # given `session`; the media watcher's runs never are, so they skip these
-  # two). The intake agent finds the article or paper it is based on and
+  # given `session`; the media watcher's runs never are, so they skip
+  # the hand-off steps). The intake agent finds the article or paper it is based on and
   # starts reading it, places it in a program, and files a todo only if there
   # is something to act on; its report goes back into the person's chat.
   - when: "{{inputs.session}}"
@@ -159,7 +186,7 @@ steps:
   - when: "{{inputs.session}}"
     tool_name: notify_user
     arguments:
-      message: "Read {{inputs.url}}.\n\n{{_prev}}"
+      message: "Read {{inputs.url}}.\n\n{{steps.answer}}\n\n{{_prev}}"
       related_session_id: "{{inputs.session}}"
       context: "Hand-off: {{inputs.url}}"
     priority: 1

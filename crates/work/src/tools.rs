@@ -177,8 +177,9 @@ impl ToolHandler {
 }
 
 impl ToolHandler {
-    /// Fix a scalar written as a string where the tool's schema leaves no
-    /// doubt (`validation::coerce_scalar_strings`), before the check sees it,
+    /// Drop placeholder optionals (`validation::drop_placeholders`) and fix a
+    /// scalar written as a string where the tool's schema leaves no doubt
+    /// (`validation::coerce_scalar_strings`), before the check sees them,
     /// and record each fix in `arg_checks` (mode `coerced`) so it stays
     /// visible. Off with the check (`TOOL_ARG_CHECK=off`).
     fn coerce_arguments(
@@ -200,7 +201,8 @@ impl ToolHandler {
             return;
         };
         let original = args.to_string();
-        let changed = crate::validation::coerce_scalar_strings(&schema, args);
+        let mut changed = crate::validation::drop_placeholders(&schema, args);
+        changed.extend(crate::validation::coerce_scalar_strings(&schema, args));
         if changed.is_empty() {
             return;
         }

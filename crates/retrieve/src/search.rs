@@ -340,7 +340,7 @@ impl SearchSkill {
                     },
                     "recency": {
                         "type": "string",
-                        "enum": ["day", "week", "month", "year"],
+                        "enum": ["day", "week", "month", "year", "24h", "7d", "30d", "365d"],
                         "description": "Only results from this window, applied through each engine's \
                                         own date filter. Use it for anything current instead of \
                                         putting a date or 'today' in the query."
