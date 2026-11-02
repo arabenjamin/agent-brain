@@ -2,10 +2,14 @@ services:
   neo4j:
     image: neo4j:5
     environment:
-      - NEO4J_AUTH=neo4j/password
+      # The password applies only when the data volume is first created; an
+      # existing database changes it with scripts/rotate_neo4j_password.sh.
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
     ports:
-      - "7689:7687"    # Bolt (7689 to avoid conflict with agent-api on 7688)
-      - "7476:7474"    # Browser UI (7476 to avoid conflict with agent-api on 7475)
+      # Loopback only (OUTSIDE_REVIEW_PLAN Phase 0); the brain reaches it on
+      # brain-internal. 7689/7476 avoid agent-api's 7688/7475.
+      - "127.0.0.1:7689:7687"    # Bolt
+      - "127.0.0.1:7476:7474"    # Browser UI
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -24,7 +28,9 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "3001:3000"    # MCP HTTP endpoint (Use 3001 to avoid conflict if agent-api runs on 3000)
+      # Loopback only: host scripts and MCP clients. Other machines use the
+      # HBI on 3002, whose nginx holds the key. 3001 avoids agent-api's 3000.
+      - "127.0.0.1:3001:3000"
     env_file:
       - .env           # Load .env directly — avoids host shell env overriding API keys
     environment:
@@ -36,7 +42,7 @@ services:
       - TZ=${TZ:-America/Detroit}
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=password
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
       - LLM_PROVIDER=ollama-cloud
       - OLLAMA_URL=https://ollama.com
       # host Ollama — still the EMBEDDINGS backend (bge-m3) even after generation
@@ -195,7 +201,9 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - MCP_TRANSPORT=http
       - MCP_HTTP_BIND=0.0.0.0:3000
-      - MCP_API_KEY=   # disabled: env_file would otherwise enable auth from .env
+      # Required: without it every request is anonymous and none is the
+      # owner's, so a paid model never runs (OUTSIDE_REVIEW_PLAN Phase 0).
+      - MCP_API_KEY=${MCP_API_KEY:?set MCP_API_KEY in .env}
       - SERPAPI_KEY=${SERPAPI_KEY:-}
       # Keyed search_web engines. An engine with no key is dropped from the
       # ladder, so leaving one blank costs nothing. Tavily and Exa refill monthly
@@ -546,7 +554,14 @@ services:
       context: ./hbi-frontend
       dockerfile: Dockerfile
     ports:
-      - "3002:80"
+      # Whoever reaches this port is the owner: nginx adds the key. Set
+      # HBI_BIND in .env to the tailnet IP to reach it from other machines.
+      - "${HBI_BIND:-127.0.0.1}:3002:80"
+    environment:
+      # nginx's template step fills ${BRAIN_API_KEY} into the proxy headers;
+      # the filter keeps it from touching nginx's own $variables.
+      - BRAIN_API_KEY=${MCP_API_KEY:?set MCP_API_KEY in .env}
+      - NGINX_ENVSUBST_FILTER=^BRAIN_
     volumes:
       # Self-hosted map tiles (scripts/fetch_map_tiles.sh, MAP_PLAN).
       - ./maps:/usr/share/nginx/maps:ro

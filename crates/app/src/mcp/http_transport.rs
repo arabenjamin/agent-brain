@@ -596,7 +596,10 @@ impl HttpTransport {
             )
             // Inject REST state for the handlers above.
             .layer(axum::Extension(rest_state))
-            .layer(middleware::from_fn(initiator_middleware))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                initiator_middleware,
+            ))
             .layer(cors)
             .layer(middleware::from_fn_with_state(
                 state.clone(),
@@ -858,16 +861,23 @@ async fn relay_brain_event(event: BrainEvent, sessions: &SessionManager) {
 /// API — scripts, tools, other agents — is the brain's own.
 pub const INITIATOR_HEADER: &str = "x-brain-initiator";
 
-fn owner_request(headers: &HeaderMap) -> bool {
-    headers
-        .get(INITIATOR_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.trim().eq_ignore_ascii_case("owner"))
+/// The owner's request: the HBI's header on a request that authenticated.
+/// With auth off the header proves nothing, since anyone can send it.
+fn owner_request(auth: &ApiKeyAuth, headers: &HeaderMap) -> bool {
+    auth.is_enabled()
+        && headers
+            .get(INITIATOR_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("owner"))
 }
 
 /// Scope `OWNER_REQUEST` around a REST handler the owner's HBI called.
-async fn initiator_middleware(request: Request<Body>, next: Next) -> Response {
-    let owner = owner_request(request.headers());
+async fn initiator_middleware(
+    State(state): State<Arc<HttpTransportState>>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let owner = owner_request(&state.auth, request.headers());
     agent_brain_llm::routing::OWNER_REQUEST
         .scope(owner, next.run(request))
         .await
@@ -974,7 +984,7 @@ async fn handle_post_mcp(
                 session_id: Some(session_id.clone()),
                 request,
                 response_tx,
-                owner: owner_request(&headers),
+                owner: owner_request(&state.auth, &headers),
             };
 
             state
@@ -1113,8 +1123,10 @@ async fn handle_post_chat(
         .ok_or_else(|| McpHttpError::InternalError("Chat service not available".into()))?
         .clone();
 
-    let request: ChatRequest = serde_json::from_value(body)
+    let mut request: ChatRequest = serde_json::from_value(body)
         .map_err(|e| McpHttpError::InternalError(format!("Invalid chat request: {e}")))?;
+    // Holding the key makes the caller the owner; with auth off nobody is.
+    request.owner = state.auth.is_enabled();
 
     let (tx, rx) = tokio::sync::mpsc::channel::<ChatEvent>(64);
     tokio::spawn(async move {
@@ -1298,6 +1310,20 @@ mod tests {
             "places/My hotel",
         );
         assert!(format!("/{p}").parse::<axum::http::Uri>().is_ok());
+    }
+
+    /// The HBI's owner header counts only on a request that authenticated:
+    /// with auth off anyone can send it.
+    #[test]
+    fn the_owner_header_proves_nothing_without_auth() {
+        let mut headers = HeaderMap::new();
+        headers.insert(INITIATOR_HEADER, "owner".parse().unwrap());
+        assert!(!owner_request(&ApiKeyAuth::disabled(), &headers));
+        assert!(owner_request(&ApiKeyAuth::with_key("k"), &headers));
+        assert!(!owner_request(
+            &ApiKeyAuth::with_key("k"),
+            &HeaderMap::new()
+        ));
     }
 
     #[test]

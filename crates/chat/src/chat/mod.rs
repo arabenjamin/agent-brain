@@ -38,7 +38,9 @@ use crate::agent_runner::{
     AgentBudget, AgentRunner, LadderReport, RungAttempt, SubagentLoopRunner,
 };
 use agent_brain_llm::llm::{ChatMessage, LlmClient, LlmConfig, LlmProviderType};
-use agent_brain_llm::routing::{DataClass, Purpose, ROUTE_CONTEXT, RouteContext, RoutingPolicy};
+use agent_brain_llm::routing::{
+    DataClass, Initiator, Purpose, ROUTE_CONTEXT, RouteContext, RoutingPolicy,
+};
 use agent_brain_protocol::Content;
 use agent_brain_work::context_builder::ContextBuilderService;
 use agent_brain_work::tools::{ToolHandler, ToolRegistry};
@@ -193,6 +195,11 @@ pub struct ChatRequest {
     /// reason instead of answering on another model.
     #[serde(default)]
     pub model: Option<String>,
+    /// The owner started this turn, so a paid pin may run. Set by the HTTP
+    /// handler when the request authenticated, never from the body: a turn
+    /// nobody vouched for is the brain's.
+    #[serde(skip)]
+    pub owner: bool,
 }
 
 /// Server-side agentic chat service.

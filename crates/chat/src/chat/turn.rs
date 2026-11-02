@@ -598,7 +598,12 @@ impl ChatService {
         // The routing policy judges the pin for this turn's data class before it
         // may replace the default. A refused pin is reported in the stream and the
         // turn keeps the chat default, which the ladder walk judges in turn.
-        let route_ctx = RouteContext::new(Purpose::Chat, turn_class);
+        let route_ctx =
+            RouteContext::new(Purpose::Chat, turn_class).with_initiator(if request.owner {
+                Initiator::Owner
+            } else {
+                Initiator::Brain
+            });
         // A model chosen for this turn replaces the profile's pin, and is never
         // quietly swapped: when it cannot run, the turn says why and stops.
         if let Some(chosen) = request

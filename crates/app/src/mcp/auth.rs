@@ -115,6 +115,12 @@ impl ApiKeyAuth {
         Self::new(AuthConfig::disabled())
     }
 
+    /// Whether a request must carry the key. A request that got past an
+    /// enabled authenticator is the key holder's; with it off, nobody's is.
+    pub fn is_enabled(&self) -> bool {
+        self.config.is_enabled()
+    }
+
     /// Validate an authorization header value.
     pub fn validate_header(&self, header_value: &str) -> Result<(), AuthError> {
         // Parse "Bearer <token>"

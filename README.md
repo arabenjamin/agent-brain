@@ -18,7 +18,7 @@ I have a NVidia3060, and the goal was to get this to work locally on a small GPU
 - **Reasons** — LLM inference over stored knowledge with derivation tracking
 - **Plans** — goal decomposition into ordered sub-tasks, autonomous scheduling
 - **Executes** — durable priority job queue with per-provider concurrency
-- **Spends only when asked** — a paid model runs only on work the owner started: a chat turn, an HBI action (the HBI sends `x-brain-initiator: owner`), and the agents those delegate to. Scheduled and brain-started work never reaches a paid provider, even through a profile's paid pin (it runs on the chat default instead), unless its workflow is marked `paid: true`, which only the owner can set (YAML or HBI; a model-driven save is refused). `deep-dive-hard` is the one approved workflow
+- **Spends only when asked** — a paid model runs only on work the owner started: an authenticated chat turn, an HBI action (the HBI's nginx adds the key and `x-brain-initiator: owner`), and the agents those delegate to. Scheduled and brain-started work never reaches a paid provider, even through a profile's paid pin (it runs on the chat default instead), unless its workflow is marked `paid: true`, which only the owner can set (YAML or HBI; a model-driven save is refused). `deep-dive-hard` is the one approved workflow
 - **Extends** — runtime tool definition via stored procedure pipelines
 - **Integrates** — OpenAPI spec ingestion, credential injection, HTTP execution
 - **Routes** — before a front-door chat turn runs, the local model picks where it goes first (a behavior, an agent, a front-door tool, or a direct answer) under graded rules: what we have stored before the web, and our own names (topic aliases) read with `lookup`. A **behavior** (the routing block's `behaviors:`, such as "what did we learn today") is run by code: the local model fills its slots, `lookup` runs, and the front door phrases the rows with no agent loop. Every turn is logged (`turn:` in DuckDB) and HBI chat answers take a 👍/👎; the weekly `behavior-candidates` workflow mines both for turns an agent answered the same way each time, which are behaviors to write. `CHAT_ROUTER`, `project-docs/env.md`
@@ -178,10 +178,16 @@ cargo run --release -- serve --transport http --bind 0.0.0.0:8080 --api-key your
 ### Docker
 
 ```bash
+# .env must set MCP_API_KEY and NEO4J_PASSWORD; compose refuses to start without them.
 docker compose up -d --build
-# With API key
-MCP_API_KEY=secret docker compose up -d --build
 ```
+
+The brain (3001) and Neo4j (7689, 7476) listen on loopback only; the HBI
+(3002) listens on `HBI_BIND` (loopback unless set, e.g. to the tailnet IP),
+and its nginx adds the key, so whoever reaches it is the owner. Host scripts
+read the key with `scripts/brain_key.sh`. On an existing database, run
+`scripts/rotate_neo4j_password.sh` before the first deploy with a new
+`NEO4J_PASSWORD`.
 
 ### Keeping dependencies current
 
@@ -214,7 +220,7 @@ todo             Manage todos over HTTP
 | `OLLAMA_MODEL` | `qwen3.5:4b` | LLM model |
 | `MCP_TRANSPORT` | `stdio` | Transport type |
 | `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind |
-| `MCP_API_KEY` | — | HTTP auth |
+| `MCP_API_KEY` | — | HTTP bearer key; without it nothing is the owner's, so no paid model runs |
 | `SANDBOX_URL` | — | Code-execution sandbox endpoint (the `sandbox` plugin). Unset ⇒ no `execute_code` |
 | `PLUGINS_DIR` / `PLUGINS_ENABLED` | `plugins` / *(core only)* | Where the seed bundles live, and which load besides `core` (see `project-docs/env.md`) |
 | `TZ` | — (⇒ UTC) | Wall-clock timezone (e.g. `America/Detroit`). What the brain **says** about time is local; what it **stores** stays UTC. Unset means its "today" is UTC's, which is a different day for part of every day outside UTC |

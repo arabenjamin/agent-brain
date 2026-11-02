@@ -107,10 +107,12 @@ pub(super) async fn handle_chat_completions(
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    let request = match build_chat_request(&messages, &model, header_session) {
+    let mut request = match build_chat_request(&messages, &model, header_session) {
         Ok(r) => r,
         Err(msg) => return openai_error(StatusCode::BAD_REQUEST, &msg),
     };
+    // Holding the key makes the caller the owner; with auth off nobody is.
+    request.owner = state.auth.is_enabled();
     info!(
         model = %model,
         profile = ?request.context_profile,
@@ -232,6 +234,8 @@ fn build_chat_request(
         synthesis_model: None,
         // The front door's `model` names a profile, not a catalog model.
         model: None,
+        // The handler sets this from authentication.
+        owner: false,
     })
 }
 

@@ -9,6 +9,6 @@ export const getBrainUrl = (): string =>
   localStorage.getItem("brain_url") ?? import.meta.env.VITE_BRAIN_URL ?? "";
 
 export const getApiKey = (): string =>
-  localStorage.getItem("api_key") ?? import.meta.env.VITE_API_KEY ?? "openclaw";
+  localStorage.getItem("api_key") ?? import.meta.env.VITE_API_KEY ?? "";
 
 export const getMcpUrl  = (): string => `${getBrainUrl()}/mcp`;

@@ -19,6 +19,8 @@ with `nimble` on OLLAMA_URL (default http://localhost:11434).
 import argparse
 import json
 import os
+import pathlib
+import subprocess
 import sys
 import urllib.request
 
@@ -41,8 +43,13 @@ UNREGISTERED = {
 }
 
 
+KEY = subprocess.run([pathlib.Path(__file__).with_name("brain_key.sh")],
+                     capture_output=True, text=True).stdout
+
+
 def post(url, body, headers=None):
-    req = urllib.request.Request(url, data=body.encode(), headers={"Content-Type": "application/json", **(headers or {})})
+    auth = {"Authorization": f"Bearer {KEY}"} if KEY and url.startswith(BRAIN) else {}
+    req = urllib.request.Request(url, data=body.encode(), headers={"Content-Type": "application/json", **auth, **(headers or {})})
     with urllib.request.urlopen(req, timeout=300) as r:
         return r.read().decode(), dict(r.headers)
 

@@ -37,6 +37,7 @@ dependencies = [
  "neo4rs",
  "reqwest",
  "serde_json",
+ "serde_yaml",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",

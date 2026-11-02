@@ -20,6 +20,8 @@ tools and returned a grounded answer. A FAIL with an empty trace = E4B did not
 tool-call (the risk flagged before wiring) → keep knowledge lookups on cloud.
 """
 import json
+import pathlib
+import subprocess
 import sys
 import urllib.request
 
@@ -33,8 +35,14 @@ TASK = (
 EXPECT_TOOLS = {"recent_tasks", "list_apis"}
 
 
+KEY = subprocess.run([pathlib.Path(__file__).with_name("brain_key.sh")],
+                     capture_output=True, text=True).stdout
+
+
 def mcp(method, params, session_id=None):
     headers = {"Content-Type": "application/json"}
+    if KEY:
+        headers["Authorization"] = f"Bearer {KEY}"
     if session_id:
         headers["mcp-session-id"] = session_id
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()

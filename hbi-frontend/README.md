@@ -14,7 +14,7 @@ npm run build    # tsc -b + vite build
 docker compose up -d --build hbi-frontend   # rebuild the served UI
 ```
 
-The brain URL and API key live in the browser's localStorage (Settings → Connection); `VITE_BRAIN_URL` / `VITE_API_KEY` are the defaults.
+Served by compose, the HBI holds no key: its nginx adds the brain's key and `x-brain-initiator: owner` to every proxied request (`nginx.conf` is a template filled from `BRAIN_API_KEY` at start). Under `npm run dev` the browser sends them itself: the brain URL and API key live in localStorage (Settings → Connection), with `VITE_BRAIN_URL` / `VITE_API_KEY` as defaults.
 
 ## Workspaces
 

@@ -116,7 +116,8 @@ pub enum Initiator {
     /// direct MCP call from a tool or script. The default.
     #[default]
     Brain,
-    /// A chat turn, or an HBI action (`x-brain-initiator: owner`).
+    /// A chat turn or an HBI action that authenticated: the transport says so
+    /// (`ChatRequest::owner`, `OWNER_REQUEST`); nothing defaults to it.
     Owner,
     /// A queued step of a workflow marked `paid: true`.
     Approved,
@@ -153,16 +154,15 @@ tokio::task_local! {
 }
 
 impl RouteContext {
-    /// A chat turn is the owner's; anything else starts as the brain's.
+    /// Everything starts as the brain's, a chat turn included: only the
+    /// transport knows whether the owner authenticated, and says so with
+    /// `with_initiator`. Before 2026-10-29 a chat turn was the owner's by
+    /// default, so any caller of an unauthenticated port could run a paid pin.
     pub fn new(purpose: Purpose, data_class: DataClass) -> Self {
         Self {
             purpose,
             data_class,
-            initiator: if purpose == Purpose::Chat {
-                Initiator::Owner
-            } else {
-                Initiator::Brain
-            },
+            initiator: Initiator::Brain,
         }
     }
 
@@ -342,10 +342,14 @@ impl RoutingPolicy {
                 ));
             }
             if ctx.initiator == Initiator::Brain {
+                let whose = if ctx.purpose == Purpose::Chat {
+                    "this chat turn did not authenticate as the owner (MCP_API_KEY)".to_string()
+                } else {
+                    format!("this is the brain's own {} work", ctx.purpose)
+                };
                 return Err(format!(
                     "paid provider '{name}' runs only on work the owner started (chat, the \
-                     HBI) or on a workflow marked `paid: true`; this is the brain's own {} work",
-                    ctx.purpose
+                     HBI) or on a workflow marked `paid: true`; {whose}"
                 ));
             }
             let capped = e
@@ -618,7 +622,14 @@ mod tests {
         class: DataClass,
     ) -> Result<(), String> {
         let r = registry();
-        policy.check_entry(name, r.get(name), true, RouteContext::new(purpose, class))
+        // A chat turn here is the owner's, as an authenticated one would be.
+        let who = if purpose == Purpose::Chat {
+            Initiator::Owner
+        } else {
+            Initiator::Brain
+        };
+        let ctx = RouteContext::new(purpose, class).with_initiator(who);
+        policy.check_entry(name, r.get(name), true, ctx)
     }
 
     fn tier(t: &str) -> RoutingPolicy {
@@ -672,8 +683,14 @@ mod tests {
                 RouteContext::new(purpose, DataClass::Private).with_initiator(initiator),
             )
         };
-        // A chat turn is the owner's without saying so.
+        // A chat turn is the brain's until the transport says the owner started it.
         assert!(check(&p, "anthropic", Purpose::Chat, DataClass::Private).is_ok());
+        let err = at(Purpose::Chat, Initiator::Brain).unwrap_err();
+        assert!(err.contains("owner started"), "{err}");
+        assert_eq!(
+            RouteContext::new(Purpose::Chat, DataClass::Private).initiator,
+            Initiator::Brain
+        );
         for purpose in [Purpose::Subagent, Purpose::Background] {
             let err = at(purpose, Initiator::Brain).unwrap_err();
             assert!(err.contains("owner started"), "{err}");

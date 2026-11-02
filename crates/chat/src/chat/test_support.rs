@@ -73,5 +73,6 @@ pub(super) fn test_request() -> ChatRequest {
         synthesis_provider: None,
         synthesis_model: None,
         model: None,
+        owner: true,
     }
 }

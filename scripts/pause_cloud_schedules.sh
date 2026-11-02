@@ -70,8 +70,8 @@ TARGETS=(
 )
 
 cypher() {
-  python3 - "$BRAIN_URL" "$SID" "$1" <<'PY'
-import json, sys, urllib.request
+  MCP_API_KEY="$("$(dirname "$0")/brain_key.sh")" python3 - "$BRAIN_URL" "$SID" "$1" <<'PY'
+import json, os, sys, urllib.request
 url, sid, cypher = sys.argv[1], sys.argv[2], sys.argv[3]
 body = json.dumps({
     "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -79,8 +79,10 @@ body = json.dumps({
         "cypher": cypher, "readonly": cypher.lstrip().upper().startswith("MATCH")
                   and " SET " not in cypher.upper(), "limit": 50}},
 }).encode()
-req = urllib.request.Request(url + "/mcp", body,
-                             {"Content-Type": "application/json", "mcp-session-id": sid})
+headers = {"Content-Type": "application/json", "mcp-session-id": sid}
+if os.environ.get("MCP_API_KEY"):
+    headers["Authorization"] = "Bearer " + os.environ["MCP_API_KEY"]
+req = urllib.request.Request(url + "/mcp", body, headers)
 try:
     r = json.load(urllib.request.urlopen(req, timeout=30))
 except Exception as e:

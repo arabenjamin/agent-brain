@@ -1322,11 +1322,19 @@ fn model_admission(provider: &str, model: &str) -> Value {
         provider,
         model,
     );
+    // A chat turn is the owner's only when it authenticated, as this request
+    // did if `OWNER_REQUEST` is set; the picker shows what this caller's chat
+    // may run.
+    let chat_by = RouteContext::current().initiator;
     let mut out = serde_json::Map::new();
     for purpose in [Purpose::Background, Purpose::Subagent, Purpose::Chat] {
         let mut by_class = serde_json::Map::new();
         for class in [DataClass::Private, DataClass::Public] {
-            let verdict = policy.admit(&cfg, RouteContext::new(purpose, class));
+            let mut ctx = RouteContext::new(purpose, class);
+            if purpose == Purpose::Chat {
+                ctx = ctx.with_initiator(chat_by);
+            }
+            let verdict = policy.admit(&cfg, ctx);
             by_class.insert(
                 class.as_str().to_string(),
                 verdict.err().map(Value::String).unwrap_or(Value::Null),

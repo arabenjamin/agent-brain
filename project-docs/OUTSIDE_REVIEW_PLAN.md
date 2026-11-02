@@ -1,0 +1,229 @@
+# Outside review plan
+
+What we take from the first outside review, what we answer, and the order we
+fix things in. Planned 2026-10-28. A friend cloned the repo and had Fable
+review it cold; the review is in `workspace/fable-review.md`. Every claim
+below was checked against the code and the live brain on 2026-10-28.
+Decisions for the owner are in §9.
+
+## 1. The review in one paragraph
+
+The engineering is good (tests, strict lint, eval sets, measured config
+choices); the problem is sprawl. No center, a lot of code that copes with an
+8 GB GPU and free tiers, no way to tell what is actually running, heavy to
+operate, docs that drift. Security defaults need fixing before anyone else
+runs it. One suggestion from its own system: make every change the brain
+makes to itself versioned, reasoned and checked by the storage layer, not the
+prompt. Without the personal content, it says, "no center" mostly goes away:
+"an agent runtime for small GPUs that handles privacy and spend for you."
+
+## 2. What we found when we checked
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| Main endpoint has no login, bound to every interface | **True** | `docker-compose.yml:198` blanks `MCP_API_KEY`; `"3001:3000"` publishes on 0.0.0.0 |
+| Anyone can claim to be the owner and spend money | **True, and worse** | No header needed for chat: `RouteContext::new` makes every `Purpose::Chat` call `Initiator::Owner` (`crates/llm/src/routing.rs:161`). The header (`http_transport.rs:861`) only matters for REST |
+| Neo4j on the default password, open on every interface | **True** | `NEO4J_AUTH=neo4j/password` (`docker-compose.yml:5`); 7689 and 7476 published on 0.0.0.0 |
+| Hardcoded `"openclaw"` key in the HBI | **True** | `hbi-frontend/src/api/config.ts:12`; harmless today only because auth is off |
+| Also open, not in the review | **True** | HBI on `"3002:80"`, all interfaces; its nginx proxies `/mcp`, `/chat`, `/api` straight to the brain |
+| A runtime save silently shadows the YAML | **True in design, rare in practice** | 3 of 55 live workflows are runtime-owned, all brain-authored with no YAML file. But workflow and profile writes keep no history, need no reason, and last writer wins (`workflows::save`, `profiles::write`) |
+| Core ships personal workflows | **True** | 9 of the 26 `plugins/core/workflows` are the owner's interests (§5) |
+| Detroit and personal names in crates | **Mostly tests and doc comments** | `views.rs` test tz, `clock.rs` docs, test strings. Cosmetic |
+| Huge files | **True** | `work/queue.rs` 3,098; `retrieve/http.rs` 2,708; `api/rest.rs` 2,423; `skills/knowledge.rs` 2,419 lines |
+| Deployment knowledge lives in compose comments | **True** | 280 of 588 lines of `docker-compose.yml` are comments |
+| Can't tell what's running | **Partly** | `/health` returns only `{"status":"healthy"}`; no build or commit identity |
+
+Size today: core crates ~90K lines of Rust, plugin crates ~25K, 14 plugins,
+180 plugin YAML files, 200 commits in the last 30 days.
+
+## 3. What we answer
+
+- **The constraint code is the product, not coping.** Privacy-first routing,
+  spend caps, free-tier pacing and residency on an 8 GB card are what make a
+  small local model usable for real work. The review's own reframing names
+  them as the niche.
+- **The graph is the center, it just isn't written down where a reader
+  looks.** The thesis since the start: a model works best with its context
+  1/3 to 2/3 full, and the right graph queries fill it better than a stack of
+  markdown. Retrieval eval (recall@10 0.84 → 0.92), the `lookup` views and
+  the dev notes are that thesis at work. §5 writes it down.
+- **806 dev notes are by design.** Rules live in the graph so an agent gets
+  the ones it needs by query, not all of them. The reviewer saw only the seed
+  file `devdocs/devnotes.jsonl`.
+- **The stack is the design.** Neo4j, DuckDB, llama.cpp and Ollama each do a
+  job nothing else in the stack does. The cost of operating it is real; the
+  answer is documentation and a smaller core (§5, §8), not fewer services.
+- **Plugin coupling is already narrow.** Only `crates/host/Cargo.toml` names
+  plugin crates (10 of them); no other core crate depends on a plugin.
+- **Harness² does not write profiles.** An adopted edit is a todo the owner
+  copies into YAML by hand, so the self-edit risk today is workflows written
+  by agents (`manage_workflow`), not Harness².
+
+## 4. Phase 0: security defaults (first, small)
+
+Nothing to design except the trust boundary (§9.1).
+
+1. **Bind to loopback or the tailnet.** `3001` → `127.0.0.1:3001` (host
+   scripts, `.mcp.json`, `dev_docs.sh` all call localhost). `7689`/`7476` →
+   `127.0.0.1`. `3002` (HBI) → the tailnet IP, the way the home-lab stack
+   binds (`HOMELAB_MONITORING_PLAN.md`).
+2. **Turn auth on.** `MCP_API_KEY` from `.env`, not blanked in compose. The
+   browser does not hold the key: the HBI's nginx adds `Authorization` and
+   `x-brain-initiator: owner` server-side, so whoever can reach 3002 is the
+   owner and nobody else is. Remove the `"openclaw"` fallback. Add the
+   bearer header to `.mcp.json` and `scripts/session.env`.
+3. **Owner only when authenticated.** Chat no longer defaults to
+   `Initiator::Owner`; it is the owner's when the request authenticated and,
+   for the HBI, carries the header. With auth off (dev), nothing is the
+   owner's, so a paid model never runs on an open port.
+4. **Neo4j password from `.env`.** `NEO4J_AUTH` applies only when the data
+   volume is first created, so the live database needs a one-time
+   `ALTER CURRENT USER SET PASSWORD` before the compose change. Back up with
+   a snapshot first.
+5. **A test that fails on an open default.** A unit test over
+   `docker-compose.yml`: no `ports:` entry without a bind address, no literal
+   `NEO4J_AUTH` password, `MCP_API_KEY` not blanked.
+
+Done when: an unauthenticated request to 3001 from the host gets 401; 3001,
+7689 and 7476 refuse from another tailnet machine; the HBI works unchanged;
+a chat with no key cannot route to a paid provider (unit test).
+
+**Built 2026-10-29, not yet deployed.** As planned, with these choices:
+
+- The HBI binds `${HBI_BIND:-127.0.0.1}`: loopback until the owner sets the
+  tailnet IP in `.env`, so a fresh clone never starts open.
+- `RouteContext::new` makes everything the brain's; the transport upgrades
+  it. A chat turn is the owner's when it authenticated (`ChatRequest.owner`,
+  `#[serde(skip)]`); MCP and REST need the key and the HBI's header.
+- nginx's config is a template (`BRAIN_API_KEY`, `NGINX_ENVSUBST_FILTER`).
+  It also forwards `/v1` for Conduit, which loses 3001; there the client's
+  own key passes through.
+- `scripts/brain_key.sh` gives host scripts the key (environment, else
+  `.env`); `dev_docs.sh`, `session.env`, `pause_cloud_schedules.sh`, two
+  probe scripts and the fine-tuning harness and GPU lease (workspace) use it.
+- `scripts/rotate_neo4j_password.sh` moves the live database to `.env`'s
+  password; it runs before the deploy.
+- Guards: `config::tests::compose_publishes_nothing_open` (fails on the old
+  compose), `the_owner_header_proves_nothing_without_auth`,
+  `a_chat_body_cannot_claim_the_owner`, the routing tests. Dev notes:
+  `deploy/nothing-is-published-open-the-key-decides-who-the-owner-is`, and
+  the routing and front-door rules updated.
+
+Deploy order: a new `NEO4J_PASSWORD` in `.env` (and `HBI_BIND` if other
+machines use the HBI), then `scripts/rotate_neo4j_password.sh`, then deploy
+at once; Conduit's base URL becomes `http://<HBI_BIND>:3002/v1`, and Claude
+Code's `.mcp.json` needs the bearer header.
+
+## 5. Phase 1: write the center down and keep the core to it
+
+1. **The center, in the README's first paragraph** (wording is §9.2): a small
+   local model does good work because the graph gives it the right context,
+   with privacy and spend enforced underneath; plugins specialize it for a
+   doctor, a lawyer, a journalist or an analyst. Everything else is a plugin.
+2. **Move the owner's interests to the private bundle**
+   (`../agent-brain-personal/personal`, already mounted at
+   `/home/agent/plugins-private`):
+
+   | Move | Stay in core | Owner decides |
+   |---|---|---|
+   | hardware-tripwire, hn-ai-trial, intelligence-agency-claims-monitor, rnd-intake, rust-training-data-scout, sanctions-trade-watch, slm-benchmark-watch, surveillance-privacy-watch, tech-dependency-synthesis | api-match-digest, api-retire-check, behavior-candidates, consolidate, default, fill-knowledge-gap, health-monitor, item-dispatch, model-metadata-drift, overdue-todo-review, program-review, program-reviews, todo-snapshot | vulnerability-watch (a good generic example?), deep-dive / deep-dive-pick / deep-dive-hard (they place Rust in this codebase; generic with that removed?) |
+
+   Same pass over `plugins/core/sources/` and `topics/` (every interest topic
+   but `agent-brain` and `_scope`), `views/intel_findings.yaml` and the
+   `rnd-scout` context. Core keeps one small example topic and source list so
+   a fresh clone shows the shape. Programs that name a moved workflow move
+   with it. A moved file's workflow keeps its id and history: the seeder must
+   treat a plugin change as the same workflow, not a new one (check before
+   moving).
+3. **Core builds without plugins, enforced.** Each plugin crate becomes an
+   optional dependency of `crates/host` behind a feature, all on by default.
+   CI runs `cargo build` and `cargo test --lib` with
+   `--no-default-features` on `dev`. A core change that needs a plugin then
+   fails CI instead of drifting.
+4. **Neutral test fixtures.** Swap Detroit/Michigan in tests and doc
+   comments for neutral examples. Cheap; do it in the same pass.
+
+Done when: a fresh clone with no private bundle starts, seeds only generic
+workflows, and the no-plugin build passes in CI.
+
+## 6. Phase 2: versioned self-edits, enforced where they are stored
+
+The review's suggestion, scoped to what the brain edits about itself:
+workflows, agent profiles and programs. All three already have one write
+function (`workflows::save`, `profiles::write`, `programs::save`), which
+is where this goes, not the prompt.
+
+1. **Every save writes a revision.** `(:Workflow|:ContextProfile|:Program)
+   -[:REVISION]->(:Revision {kind, name, version, definition, content_hash,
+   prev_hash, author, reason, based_on, at})`. `author` is the agent, the
+   owner (HBI) or `seed:<plugin>/<file>`. The YAML file is the `seed`
+   revision; a runtime save stacks on top of it.
+2. **Append-only.** Neo4j Community cannot refuse an update the way a
+   Postgres trigger can, so the guarantee is in code: one repository function
+   creates revisions, none updates or deletes them, and a test fails if any
+   Cypher in the workspace `SET`s or `DELETE`s a `:Revision`. `prev_hash`
+   chains the hashes so an edit made outside that path shows up.
+3. **Compare-and-set.** A save names the version it read (`based_on`); if the
+   stored version moved, the save is refused with the current one, and the
+   caller re-reads. `manage_workflow`, the REST save routes and the HBI forms
+   all send it. The seeder is exempt (it writes `seed` revisions only).
+4. **A reason is required** on every non-seed save; it is stored on the
+   revision and shown in the HBI.
+5. **Revert is a new revision** copying an old definition, with a reason.
+6. **"What's running" is a query.** A `lookup` view lists workflows and
+   profiles whose live revision is not their seed, with the diff. The seeder,
+   which today skips a runtime-owned workflow with a log line, records the
+   divergence there instead. Runtime edits are never written back to repo
+   files by the brain (§9.4).
+7. **Backfill:** one `seed` or `baseline` revision for everything stored
+   today.
+
+Done when: two concurrent saves of one workflow leave one revision and one
+refusal; a save without a reason is refused; reverting a bad edit is one
+call; the view lists the 3 runtime-owned workflows.
+
+## 7. Phase 3: what's running, and operating it
+
+1. **`/health` says what it is:** git commit, build time and image id. The
+   post-commit hook passes the commit as a build arg. Auto-deploy on commit
+   stays (one operator, one box); the commit on `/health` is what makes it
+   traceable.
+2. **Compose comments become dev notes** (subsystem `deploy`), one rule or
+   history note per topic; compose keeps one-line comments that point to
+   them.
+3. **README refresh** around the §5 center: what it is, what core does, how
+   a plugin specializes it, how to run it without the private bundle.
+
+## 8. Phase 4: size, measured
+
+1. **Measure in tokens, not lines.** A script reports the token count of
+   core crates, each plugin, and the workspace; run in CI and printed, not
+   gating yet.
+2. **A budget** (§9.3), then a gate: core may not grow past it without the
+   owner raising it.
+3. **Split big files only where it cuts what an agent must read to change
+   one thing:** `work/queue.rs`, `retrieve/http.rs`, `api/rest.rs`,
+   `skills/knowledge.rs` are first in line. A split that only moves lines
+   does not count.
+
+## 9. Decisions for the owner
+
+1. **Trust boundary.** Is every device on the tailnet the owner (laptops,
+   Gizmatron)? Recommended: yes for the HBI on 3002, with a Tailscale ACL
+   limiting 3002 to the owner's own machines; 3001 and Neo4j loopback only.
+2. **The center sentence.** §5.1's wording, or the review's "an agent runtime
+   for small GPUs that handles privacy and spend for you." Recommended: ours,
+   since the graph is what the code is built around; theirs describes how it
+   is delivered.
+3. **Size budget.** Recommended: measure first (Phase 4.1), then set the
+   core budget at today's number so it can only shrink.
+4. **Runtime edits back to YAML?** Recommended: never automatic. The HBI shows
+   the diff and offers "copy to YAML" for the owner to commit, the way
+   Harness² adoptions work today.
+5. **The borderline workflows in §5.2.**
+
+## 10. Order
+
+Phase 0 now (no design beyond §9.1). Phase 1 next, since it settles what
+core is before Phase 2 versions it. Phase 3 can run beside either. Phase 4
+after Phase 1, so the measured core is the real one.

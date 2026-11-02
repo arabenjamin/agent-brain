@@ -234,4 +234,38 @@ mod tests {
             LogFormat::Pretty
         );
     }
+
+    /// The deployed stack has no open defaults (OUTSIDE_REVIEW_PLAN Phase 0):
+    /// every published port names a bind address, and Neo4j's password and
+    /// the API key come from `.env`, required. Before 2026-10-29 the brain,
+    /// the HBI and Neo4j listened on every interface, Neo4j on `password`,
+    /// and `MCP_API_KEY` was blanked.
+    #[test]
+    fn compose_publishes_nothing_open() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docker-compose.yml");
+        let text = std::fs::read_to_string(path).expect("read docker-compose.yml");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("parse docker-compose.yml");
+        let services = doc["services"].as_mapping().expect("services");
+        for (name, svc) in services {
+            let name = name.as_str().unwrap_or_default();
+            for port in svc["ports"].as_sequence().into_iter().flatten() {
+                let p = port.as_str().unwrap_or_default();
+                assert!(
+                    p.split(':').count() >= 3,
+                    "{name}: port {p:?} publishes on every interface; name a bind address"
+                );
+            }
+            for var in svc["environment"].as_sequence().into_iter().flatten() {
+                let Some((key, value)) = var.as_str().and_then(|v| v.split_once('=')) else {
+                    continue;
+                };
+                if matches!(key, "NEO4J_AUTH" | "NEO4J_PASSWORD" | "MCP_API_KEY") {
+                    assert!(
+                        value.contains("${") && value.contains(":?"),
+                        "{name}: {key} must be a required value from .env, got {value:?}"
+                    );
+                }
+            }
+        }
+    }
 }

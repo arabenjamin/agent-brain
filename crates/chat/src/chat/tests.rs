@@ -925,3 +925,16 @@ mod turn_tests {
 // ============================================================================
 // Running out of tool calls
 // ============================================================================
+
+// ============================================================================
+// Who started the turn
+// ============================================================================
+
+/// A request body cannot make itself the owner's: only the HTTP handler sets
+/// `owner`, from authentication.
+#[test]
+fn a_chat_body_cannot_claim_the_owner() {
+    let req: ChatRequest =
+        serde_json::from_value(serde_json::json!({"message": "hi", "owner": true})).unwrap();
+    assert!(!req.owner);
+}

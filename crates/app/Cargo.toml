@@ -72,3 +72,6 @@ http-transport = ["dep:agent-brain-api", "dep:axum", "dep:tower-http", "dep:towe
                   "dep:tokio-stream", "dep:async-stream"]
 telemetry      = ["agent-brain-repository/telemetry"]
 default        = ["http-transport", "telemetry"]
+
+[dev-dependencies]
+serde_yaml = { workspace = true }

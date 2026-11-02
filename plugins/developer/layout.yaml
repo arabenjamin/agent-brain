@@ -152,12 +152,12 @@ topology:
   containers:
     - name: agent-brain
       networks: [brain-internal, sandbox-net, ai-network, yt-link]
-      ports: ["3001:3000"]
+      ports: ["127.0.0.1:3001:3000"]
       note: This process.
     - name: neo4j
       component: neo4j
       networks: [brain-internal]
-      ports: ["7689:7687", "7476:7474"]
+      ports: ["127.0.0.1:7689:7687", "127.0.0.1:7476:7474"]
     - name: llamacpp
       component: llamacpp
       networks: [brain-internal]
@@ -172,7 +172,7 @@ topology:
       networks: [sandbox-net]
     - name: hbi-frontend
       networks: [ai-network]
-      ports: ["3002:80"]
+      ports: ["${HBI_BIND:-127.0.0.1}:3002:80"]
     - name: ml-runner
       networks: [brain-internal]
       note: ML Lab's Squares in Squares runner (overnight search, Kaggle's metric, submit). Runs only its own code, so it may reach Kaggle; the brain reads its /status.

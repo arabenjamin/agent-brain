@@ -966,6 +966,8 @@ impl AgentRunner {
             synthesis_model: None,
             // The run's model is `cfg`, chosen above.
             model: None,
+            // Who started it is `route_ctx`, scoped around the loop below.
+            owner: false,
         };
 
         let started = std::time::Instant::now();

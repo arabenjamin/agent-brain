@@ -8,11 +8,12 @@
 #   scripts/dev_docs.sh write rule|history|decision|plan "<subsystem>" "<title>" "<content>" [path,...] [id]
 #   (content "-" reads stdin; an existing id replaces that note)
 #
-# BRAIN_URL (default http://localhost:3001), MCP_API_KEY if the brain requires one.
+# BRAIN_URL (default http://localhost:3001); the key comes from scripts/brain_key.sh.
 set -euo pipefail
 URL="${BRAIN_URL:-http://localhost:3001}/mcp"
 H=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')
-[ -n "${MCP_API_KEY:-}" ] && H+=(-H "Authorization: Bearer $MCP_API_KEY")
+KEY=$("$(dirname "$0")/brain_key.sh")
+[ -n "$KEY" ] && H+=(-H "Authorization: Bearer $KEY")
 
 action="${1:-}"
 case "$action" in
