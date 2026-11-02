@@ -21,6 +21,7 @@ pub use chrono::{DateTime, Utc};
 pub use serde_json::{Map, Value};
 
 /// The protocol crate, for anything a tool needs beyond the re-exports.
+pub use agent_brain_decision as decision;
 pub use agent_brain_protocol as protocol;
 pub use agent_brain_protocol::{Skill, ToolCallResult, ToolDefinition, parse_args};
 

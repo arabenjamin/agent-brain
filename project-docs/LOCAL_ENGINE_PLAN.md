@@ -215,7 +215,7 @@ over-long text fails the way it does now.
 | llama.cpp against stored vectors | Notes up to 3,000 characters: 338, lowest 0.99919. Over 3,000: 56 of 207 under 0.999, lowest 0.9318. Ollama scores the same on those (0.9318), so the stored vectors came from other text, not another engine |
 | Retrieval | Before, on Ollama: recall@10 0.840, MRR 0.687. After: 0.880, 0.691. The old 0.92 / 0.74 no longer describes this graph. New notes were stored between the two runs |
 | Over-long text | 5,000 tokens returns 500 "too large", the shape the shrinking retry expects. 4,000 dense characters is 4,003 tokens and fits |
-| Nimble | Partial GPU does not fit: 15 layers alone wanted 4 GB. CPU, 4 threads: 2.4 s for 600 tokens, unchanged with 12 busy threads |
+| Nimble | Partial GPU does not fit: 15 layers alone wanted 4 GB. CPU, 4 threads: 2.4 s for 600 tokens, unchanged with 12 busy threads (**wrong**: 31.5 s with nothing reused, see the Phase 2 result) |
 | Guardian | CPU, 4 threads: 1.8 s for 600 tokens, unchanged with 12 busy threads. This is not its real prompt; Phase 3 measures that |
 | CPU models on the GPU | Each still held about 300 MiB of VRAM while loaded, not explained yet. Check in Phases 2 and 3 |
 
@@ -230,6 +230,21 @@ candidate outside `top_logprobs` must be an error, not 0.
 *Done when:* on `eval/api_tags_golden.yaml` and stored alias verdicts, compared
 with Ollama's answers, no tag crosses 0.7 and no verdict changes that was not read
 and accepted.
+
+*Phase 2 result, 2026-11-02 (staged).* `crates/decision/` holds the port. The reference is **Ollama 0.40.2**, the installed version: `main` builds a different prompt, and the scores move with the form (the same question ranged 0.75-0.86 across prompt forms). The Rust prompt is byte-identical to the Python one that matched Ollama's tokens on all 170 test prompts. Against Ollama, uncached:
+
+| Measure | Result |
+|---|---|
+| API kind, 12 APIs | same choice 12 of 12, largest difference 0.002 |
+| API topic, 144 questions | none crosses 0.7; mean difference 0.0038, largest 0.0776; both engines 142 of 144 right against the golden file |
+| Candidate rank in `top_logprobs` | worst 16 of 100, none missing |
+| Alias verdicts, all 345 | 326 match stored; of the 19 that changed, 16 agree with fresh Ollama and 3 split |
+
+Pairs that match stored were not re-asked of Ollama, so a pair that matches stored and splits from Ollama would not show. The three splits are the accept list: `muhammad bin salman / crown prince mohammed bin salman` (llama.cpp different 0.57, Ollama same 0.51; llama.cpp is wrong), `siemoniak / tomasz siemoniak` (same 0.56, different 0.51) and `meshtasticd / meshtastic 2.8.0` (different 0.493, related 0.491). `PROMPT_VERSION` is unchanged, so stored verdicts stay as they are; only new candidates get the new engine.
+
+Decisions send `cache_prompt: false`: a reused prefix moved one score from 0.809 to 0.827 on the same bytes, so an answer would have depended on what ran before it.
+
+**Cost:** a 612-token prompt with nothing reused takes 31.5 s on 4 threads, 17.5 s on 8 and 10.9 s on 16; the preset uses 8. That is 7-25 s a decision on real prompts. The spike's 2.4 s for 600 tokens was wrong for this use: the same prompt fully reused takes 0.37 s, so that figure must have reused most of its prompt. Guardian's 1.8 s came from the same spike and is suspect too; Phase 3 must measure it with nothing reused. Tagging a new API (13 decisions) took 111 s through the brain. Nimble uses no VRAM and about 1.9 GiB of RAM once loaded. This suits the two background callers. The chat router checker, off by default, would add 10-20 s to a turn and hits its 30 s limit past about 1,000 tokens, so it needs a faster path before anyone turns it on.
 
 **Phase 3: Guardian.** Render the `groundedness` prompt in Rust (only that criterion
 of the 14 KB template) and send it to `/v1/completions`. Time it; 16 s against 3-5 s

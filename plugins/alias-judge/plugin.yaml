@@ -1,5 +1,5 @@
-# Ranks entity merge candidates with a local classifier (nimble on host
-# Ollama's /v1/systemone). Rust code in crate/; no tools, an idle-time loop.
+# Ranks entity merge candidates with a local classifier (nimble on the local
+# router). Rust code in crate/; no tools, an idle-time loop.
 # ALIAS_JUDGE_MODEL=off stops it without disabling the plugin.
 name: alias-judge
 version: 1

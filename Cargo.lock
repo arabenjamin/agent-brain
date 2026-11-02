@@ -79,6 +79,7 @@ dependencies = [
 name = "agent-brain-chat"
 version = "0.1.0"
 dependencies = [
+ "agent-brain-decision",
  "agent-brain-graph",
  "agent-brain-knowledge",
  "agent-brain-llm",
@@ -99,6 +100,15 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "agent-brain-decision"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -218,9 +228,7 @@ version = "0.1.0"
 dependencies = [
  "agent-brain-plugin-api",
  "anyhow",
- "reqwest",
  "serde",
- "serde_json",
  "tokio",
  "tracing",
 ]
@@ -229,6 +237,7 @@ dependencies = [
 name = "agent-brain-plugin-api"
 version = "0.1.0"
 dependencies = [
+ "agent-brain-decision",
  "agent-brain-protocol",
  "anyhow",
  "async-trait",
@@ -422,6 +431,7 @@ dependencies = [
 name = "agent-brain-retrieve"
 version = "0.1.0"
 dependencies = [
+ "agent-brain-decision",
  "agent-brain-graph",
  "agent-brain-knowledge",
  "agent-brain-llm",

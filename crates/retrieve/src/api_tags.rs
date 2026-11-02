@@ -5,10 +5,11 @@
 //!
 //! Who tags: the caller of `define_api_context` / `ingest_api` when it passes
 //! `kind` or `topics` (`tags_by: caller`); otherwise, for an API not yet
-//! tagged, nimble on host Ollama (`tags_by: nimble`), measured in Phase 0:
+//! tagged, nimble on the local router (`tags_by: nimble`), measured in Phase 0:
 //! kind 12 of 12; topics right once kind `search` serves none. A tag below
 //! 0.7 is left off, never guessed.
 
+use agent_brain_decision::{self as decision, Question};
 use serde_json::{Value, json};
 use tracing::warn;
 
@@ -198,65 +199,20 @@ pub fn api_text(name: &str, description: &str, endpoints: &[String]) -> String {
     lines.join("\n")
 }
 
-fn q(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_default()
+/// What nimble reads: the API, as one field.
+#[derive(serde::Serialize)]
+struct ApiState<'a> {
+    api: &'a str,
 }
 
-/// A `/v1/systemone` body, written by hand: criteria keep their order (serde_json
-/// maps sort keys — the alias judge's lesson, HBI §11.10).
-pub fn kind_body(model: &str, text: &str, vocab: &Vocab) -> String {
-    let criteria = vocab
-        .kinds
-        .iter()
-        .map(|(n, d)| format!("{}:{}", q(n), q(d)))
-        .collect::<Vec<_>>()
-        .join(",");
+const KIND_QUESTION: &str =
+    "What kind of data does this API provide? Pick the one kind that fits it best.";
+
+/// The topic question for one topic.
+fn topic_question(label: &str, description: &str) -> String {
     format!(
-        "{{\"model\":{},\"keep_alive\":\"60s\",\"state\":{{\"api\":{}}},\"questions\":{{\"q\":{{\"type\":\"choice\",\"instructions\":{},\"criteria\":{{{criteria}}}}}}}}}",
-        q(model),
-        q(text),
-        q("What kind of data does this API provide? Pick the one kind that fits it best.")
-    )
-}
-
-pub fn topic_body(model: &str, text: &str, label: &str, description: &str) -> String {
-    let instructions = format!(
         "Is this API's data mainly about this topic, so that a workflow watching the topic would read it?\nTopic: {label}. {description}"
-    );
-    format!(
-        "{{\"model\":{},\"keep_alive\":\"60s\",\"state\":{{\"api\":{}}},\"questions\":{{\"q\":{{\"type\":\"noul\",\"instructions\":{}}}}}}}",
-        q(model),
-        q(text),
-        q(&instructions)
     )
-}
-
-fn http() -> &'static reqwest::Client {
-    static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    C.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .unwrap_or_default()
-    })
-}
-
-async fn ask(body: String) -> Result<Value, String> {
-    let base =
-        std::env::var("OLLAMA_LOCAL_URL").unwrap_or_else(|_| "http://localhost:11434".into());
-    let v: Value = http()
-        .post(format!("{}/v1/systemone", base.trim_end_matches('/')))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(v["answers"]["q"].clone())
 }
 
 /// What nimble proposes: a kind and topics at >= 0.7, with every score.
@@ -298,17 +254,28 @@ pub async fn propose(text: &str, vocab: &Vocab) -> Result<Proposal, String> {
     if vocab.kinds.is_empty() {
         return Err("no API kinds in the graph (apis/_kinds.yaml not seeded)".into());
     }
-    let a = ask(kind_body(&model, text, vocab)).await?;
-    let kind = a["choice"].as_str().unwrap_or_default().to_string();
-    if !vocab.kind_names().contains(&kind.as_str()) {
-        return Err(format!("{model} chose '{kind}', not a kind"));
-    }
-    let p_kind = a["probabilities"][&kind].as_f64().unwrap_or(0.0);
+    let state = ApiState { api: text };
+    let a = decision::ask(
+        &model,
+        &state,
+        "q",
+        &Question::Choice {
+            instructions: KIND_QUESTION,
+            criteria: &vocab.kinds,
+        },
+    )
+    .await?;
+    let p_kind = a.p(&a.choice);
+    let kind = a.choice;
     let mut topic_scores = Vec::new();
     if p_kind >= SURE && kind != SEARCH {
         for (name, label, d) in &vocab.topics {
-            match ask(topic_body(&model, text, label, d)).await {
-                Ok(t) => topic_scores.push((name.clone(), t["noul"].as_f64().unwrap_or(0.0))),
+            let instructions = topic_question(label, d);
+            let question = Question::YesNo {
+                instructions: &instructions,
+            };
+            match decision::ask(&model, &state, "q", &question).await {
+                Ok(t) => topic_scores.push((name.clone(), t.p_yes())),
                 Err(e) => warn!(topic = %name, error = %e, "API tagger: topic question failed"),
             }
         }
@@ -458,21 +425,25 @@ mod tests {
     }
 
     #[test]
-    fn the_kind_body_keeps_the_kinds_in_list_order() {
-        let body = kind_body("nimble", "API: x", &vocab());
-        let v: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(v["questions"]["q"]["type"], "choice");
+    fn the_kind_question_keeps_the_kinds_in_list_order() {
+        let v = vocab();
+        let body = decision::prompt(
+            &ApiState { api: "API: x" },
+            "q",
+            &Question::Choice {
+                instructions: KIND_QUESTION,
+                criteria: &v.kinds,
+            },
+        )
+        .unwrap();
         let order: Vec<usize> = ["news-feed", "search", "forecast"]
             .iter()
-            .map(|k| body.find(&format!("\"{k}\":")).unwrap())
+            .map(|k| body.find(&format!("\"value\": \"{k}\"")).unwrap())
             .collect();
         assert!(
             order.windows(2).all(|w| w[0] < w[1]),
             "criteria reordered: {body}"
         );
-        let t: Value =
-            serde_json::from_str(&topic_body("nimble", "API: x", "AI", "models")).unwrap();
-        assert_eq!(t["questions"]["q"]["type"], "noul");
     }
 
     #[test]

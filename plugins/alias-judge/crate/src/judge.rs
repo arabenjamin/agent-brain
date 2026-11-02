@@ -3,7 +3,7 @@
 //! sorts the list and says what the classifier saw.
 //!
 //! - **Model:** `nimble` (Bespoke Labs, a 9B decision model fine-tuned from
-//!   Qwen3.5) on host Ollama's `/v1/systemone`, which answers a fixed choice
+//!   Qwen3.5) on the local router (`decision`), which answers a fixed choice
 //!   with a probability per option and no free text. `ALIAS_JUDGE_MODEL`
 //!   names it; `off` turns the judge off.
 //! - **Measured** on 40 live candidates graded by hand (2026-10-09): 33 right,
@@ -13,23 +13,19 @@
 //! - **Stored:** `(from)-[:ALIAS_VERDICT {verdict, p_same, p_related,
 //!   p_different, model, version, at}]->(into)`, one per candidate pair. A
 //!   verdict from another prompt version or model is judged again.
-//! - **Runs** on idle time, one pair at a time, with a short `keep_alive` so
-//!   the model leaves the GPU right after a batch.
+//! - **Runs** on idle time, one pair at a time, on the CPU.
 //! - **Sorting** by the stored verdict (`rank`) is the core's
 //!   (`entity_resolution`): with this plugin off, candidates are unranked.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use agent_brain_plugin_api::decision::{self, Answer, Question};
 use agent_brain_plugin_api::graph::query;
 use agent_brain_plugin_api::{Graph, PluginContext};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
-use serde_json::Value;
 use tracing::{info, warn};
-
-/// Host Ollama when `OLLAMA_LOCAL_URL` is unset (the core's default).
-const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
 /// Bumped whenever the question, the criteria or their order change, so old
 /// verdicts are redone. `v2` was sent with alphabetical keys by mistake.
@@ -47,7 +43,8 @@ const DIFFERENT: &str = "Two different things, or the texts don't say enough to 
 /// Texts shown per side, and their length: the 40-pair measurement's sizes.
 const TEXTS_PER_SIDE: i64 = 2;
 const TEXT_CHARS: usize = 500;
-const KEEP_ALIVE: &str = "60s";
+/// The question's name, which is part of the prompt.
+const QUESTION_NAME: &str = "same";
 /// Pairs judged per idle pass, re-checking for real work between pairs.
 const BATCH: usize = 10;
 
@@ -72,7 +69,7 @@ pub struct Verdict {
 /// of the texts and of the options: sent alphabetically (as `serde_json`'s
 /// `json!` map does), "Mills" and "Doug Mills" went from different (0.81) to
 /// same (0.95). Structs serialize in declaration order, so the request is
-/// built from structs, never from a `Value` map.
+/// a struct, never a `Value` map.
 #[derive(Debug, Clone, Serialize)]
 pub struct State {
     pub entity_a: String,
@@ -82,93 +79,25 @@ pub struct State {
     pub texts_mentioning_b: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct Request<'a> {
-    model: &'a str,
-    keep_alive: &'a str,
-    state: &'a State,
-    questions: Questions,
+/// The options, in the measured order: same, related, different.
+fn criteria() -> [(String, String); 3] {
+    [
+        ("same".to_string(), SAME.to_string()),
+        ("related".to_string(), RELATED.to_string()),
+        ("different".to_string(), DIFFERENT.to_string()),
+    ]
 }
 
-#[derive(Serialize)]
-struct Questions {
-    same: Question,
-}
-
-#[derive(Serialize)]
-struct Question {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    instructions: &'static str,
-    criteria: Criteria,
-}
-
-/// In the measured order: same, related, different.
-#[derive(Serialize)]
-struct Criteria {
-    same: &'static str,
-    related: &'static str,
-    different: &'static str,
-}
-
-/// The `/v1/systemone` request body for one pair, as JSON text in field order.
-pub fn request(model: &str, state: &State) -> String {
-    serde_json::to_string(&Request {
-        model,
-        keep_alive: KEEP_ALIVE,
-        state,
-        questions: Questions {
-            same: Question {
-                kind: "choice",
-                instructions: INSTRUCTIONS,
-                criteria: Criteria {
-                    same: SAME,
-                    related: RELATED,
-                    different: DIFFERENT,
-                },
-            },
-        },
-    })
-    .unwrap_or_default()
-}
-
-/// Read the answer to the `same` question. An error names what came back.
-pub fn parse_answer(resp: &Value) -> Result<Verdict> {
-    let a = &resp["answers"]["same"];
-    let Some(choice) = a["choice"].as_str() else {
-        bail!(
-            "no answer to 'same' in {}",
-            truncate(&resp.to_string(), 200)
-        );
-    };
-    if !matches!(choice, "same" | "related" | "different") {
-        bail!("unexpected choice '{choice}'");
+/// The verdict in an answer. An option off the list is an error naming it.
+pub fn verdict(a: &Answer) -> Result<Verdict> {
+    if !matches!(a.choice.as_str(), "same" | "related" | "different") {
+        bail!("unexpected choice '{}'", a.choice);
     }
-    let p = |k: &str| a["probabilities"][k].as_f64().unwrap_or(0.0);
     Ok(Verdict {
-        verdict: choice.to_string(),
-        p_same: p("same"),
-        p_related: p("related"),
-        p_different: p("different"),
-    })
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        format!("{}…", s.chars().take(n).collect::<String>())
-    }
-}
-
-fn http() -> &'static reqwest::Client {
-    static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    C.get_or_init(|| {
-        reqwest::Client::builder()
-            // The first call loads ~9.5 GB from disk.
-            .timeout(Duration::from_secs(300))
-            .build()
-            .unwrap_or_default()
+        verdict: a.choice.clone(),
+        p_same: a.p("same"),
+        p_related: a.p("related"),
+        p_different: a.p("different"),
     })
 }
 
@@ -208,24 +137,19 @@ async fn state(graph: &Arc<dyn Graph>, from: &str, into: &str) -> Result<State> 
 /// Judge one candidate pair and store the verdict.
 pub async fn judge(graph: &Arc<dyn Graph>, from: &str, into: &str) -> Result<Verdict> {
     let model = model().context("the alias judge is off (ALIAS_JUDGE_MODEL=off)")?;
-    let base = std::env::var("OLLAMA_LOCAL_URL").unwrap_or_else(|_| DEFAULT_OLLAMA_URL.to_string());
-    let body = request(&model, &state(graph, from, into).await?);
-    let resp = http()
-        .post(format!("{}/v1/systemone", base.trim_end_matches('/')))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .send()
-        .await
-        .context("alias judge: request failed")?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!(
-            "alias judge: {model} answered {status}: {}",
-            truncate(&text, 200)
-        );
-    }
-    let v = parse_answer(&serde_json::from_str(&text).context("alias judge: not JSON")?)?;
+    let state = state(graph, from, into).await?;
+    let answer = decision::ask(
+        &model,
+        &state,
+        QUESTION_NAME,
+        &Question::Choice {
+            instructions: INSTRUCTIONS,
+            criteria: &criteria(),
+        },
+    )
+    .await
+    .map_err(|e| anyhow!("alias judge: {e}"))?;
+    let v = verdict(&answer)?;
     graph
         .run(
             query(
@@ -319,29 +243,33 @@ pub fn spawn(ctx: &PluginContext) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
+    fn answer(choice: &str) -> Answer {
+        Answer {
+            choice: choice.to_string(),
+            probabilities: vec![
+                ("same".to_string(), 0.1),
+                ("related".to_string(), 0.8),
+                ("different".to_string(), 0.1),
+            ],
+        }
+    }
 
     #[test]
-    fn parses_a_choice_with_probabilities() {
-        let r = json!({"answers": {"same": {"type": "choice", "choice": "related",
-            "probabilities": {"same": 0.1, "related": 0.8, "different": 0.1}}}});
-        let v = parse_answer(&r).unwrap();
+    fn reads_a_verdict_with_probabilities() {
+        let v = verdict(&answer("related")).unwrap();
         assert_eq!(v.verdict, "related");
         assert!((v.p_related - 0.8).abs() < 1e-9);
     }
 
     #[test]
-    fn a_missing_or_unknown_answer_is_an_error_naming_it() {
-        let e = parse_answer(&json!({"error": "model not found"}))
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("model not found"), "{e}");
-        let r = json!({"answers": {"same": {"choice": "maybe", "probabilities": {}}}});
-        assert!(parse_answer(&r).unwrap_err().to_string().contains("maybe"));
+    fn an_unknown_answer_is_an_error_naming_it() {
+        let e = verdict(&answer("maybe")).unwrap_err().to_string();
+        assert!(e.contains("maybe"), "{e}");
     }
 
     #[test]
-    fn the_request_keeps_the_measured_order() {
+    fn the_prompt_keeps_the_measured_order() {
         let st = State {
             entity_a: "who".into(),
             entity_b: "world health organization".into(),
@@ -349,20 +277,24 @@ mod tests {
             texts_mentioning_a: vec![],
             texts_mentioning_b: vec![],
         };
-        let r = request("nimble", &st);
+        let c = criteria();
+        let r = decision::prompt(
+            &st,
+            QUESTION_NAME,
+            &Question::Choice {
+                instructions: INSTRUCTIONS,
+                criteria: &c,
+            },
+        )
+        .unwrap();
         let at = |k: &str| r.find(k).unwrap_or_else(|| panic!("{k} missing in {r}"));
         // Options: same, related, different. Texts: both, then a, then b.
+        assert!(at("\"value\": \"same\"") < at("\"value\": \"related\""));
+        assert!(at("\"value\": \"related\"") < at("\"value\": \"different\""));
         assert!(
-            at("\"same\":\"One thing") < at("\"related\":")
-                && at("\"related\":") < at("\"different\":")
+            at("texts_mentioning_both") < at("texts_mentioning_a")
+                && at("texts_mentioning_a") < at("texts_mentioning_b\\\"")
         );
-        assert!(
-            at("\"texts_mentioning_both\":") < at("\"texts_mentioning_a\":")
-                && at("\"texts_mentioning_a\":") < at("\"texts_mentioning_b\":")
-        );
-        let v: Value = serde_json::from_str(&r).unwrap();
-        assert_eq!(v["keep_alive"], KEEP_ALIVE);
-        assert_eq!(v["questions"]["same"]["type"], "choice");
-        assert_eq!(v["state"]["entity_a"], "who");
+        assert!(r.ends_with("Requested field: \"same\""), "{r}");
     }
 }

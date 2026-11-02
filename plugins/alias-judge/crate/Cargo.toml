@@ -8,8 +8,6 @@ edition.workspace = true
 [dependencies]
 agent-brain-plugin-api = { path = "../../../crates/plugin-api" }
 anyhow = { workspace = true }
-reqwest = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -14,10 +14,9 @@
 //!   web. Rule, not model: both models sent "Have you looked at Nebula" and
 //!   "tell me more about Adam Kinzinger" straight to the web. With it, 56.
 //! - **Checker (off unless `CHAT_ROUTER_CHECKER` names a model):** Nimble on
-//!   host Ollama answers the same choice with a probability; agreement or a
+//!   the router's CPU answers the same choice with a probability; agreement or a
 //!   confident pick goes, a split runs both, stored first (59 tried, 5
-//!   confidently wrong vs 9). Off by default: on the shared 8 GB GPU it evicts
-//!   bge-m3 every turn, and on the CPU it adds ~8.5 s.
+//!   confidently wrong vs 9). Off by default: on the router's CPU it adds 10-20 s to a turn.
 //! - A router failure or timeout leaves the turn as it was, and says so in the
 //!   log: routing is advice to the front door, never a reason to fail a turn.
 //! - **Behaviors (Phase B):** a pick of `lookup:<name>` is run by code. E4B
@@ -520,51 +519,40 @@ pub(super) async fn run_behavior(
     Ok((args, serde_json::from_str(&text)?))
 }
 
-/// The checker's `/v1/systemone` body. Written by hand: the criteria must keep
-/// their order, and serde_json maps sort keys (the alias judge's lesson).
-pub(super) fn check_body(
+/// What the checker reads.
+#[derive(serde::Serialize)]
+struct CheckState<'a> {
+    turn: &'a str,
+}
+
+/// The checker's instructions for this front door.
+fn check_instructions(spec: &RoutingSpec) -> String {
+    format!(
+        "Where should agent-brain's front door send this chat turn first?\n{}",
+        spec.rules.trim()
+    )
+}
+
+async fn check(
     model: &str,
     choices: &[(String, String)],
     spec: &RoutingSpec,
     turn: &str,
-) -> String {
-    let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
-    let criteria = choices
-        .iter()
-        .map(|(n, s)| format!("{}:{}", q(n), q(s)))
-        .collect::<Vec<_>>()
-        .join(",");
-    let instructions = format!(
-        "Where should agent-brain's front door send this chat turn first?\n{}",
-        spec.rules.trim()
-    );
-    format!(
-        "{{\"model\":{},\"keep_alive\":\"15m\",\"state\":{{\"turn\":{}}},\"questions\":{{\"route\":{{\"type\":\"choice\",\"instructions\":{},\"criteria\":{{{criteria}}}}}}}}}",
-        q(model),
-        q(turn),
-        q(&instructions)
+) -> anyhow::Result<(String, f64)> {
+    let instructions = check_instructions(spec);
+    let a = agent_brain_decision::ask(
+        model,
+        &CheckState { turn },
+        "route",
+        &agent_brain_decision::Question::Choice {
+            instructions: &instructions,
+            criteria: choices,
+        },
     )
-}
-
-async fn check(model: &str, body: String, names: &[String]) -> anyhow::Result<(String, f64)> {
-    let base =
-        std::env::var("OLLAMA_LOCAL_URL").unwrap_or_else(|_| "http://localhost:11434".into());
-    let v: Value = http()
-        .post(format!("{}/v1/systemone", base.trim_end_matches('/')))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let a = &v["answers"]["route"];
-    let choice = a["choice"].as_str().unwrap_or_default().to_string();
-    if !names.contains(&choice) {
-        anyhow::bail!("checker {model} chose '{choice}', not a choice");
-    }
-    let p = a["probabilities"][&choice].as_f64().unwrap_or(0.0);
-    Ok((choice, p))
+    .await
+    .map_err(anyhow::Error::msg)?;
+    let p = a.p(&a.choice);
+    Ok((a.choice, p))
 }
 
 /// The checker's model, or `None` (the default: no checker).
@@ -597,8 +585,7 @@ pub(super) async fn route(
     let picking = tokio::time::timeout(PICK_TIMEOUT, pick(&cfg, &prompt, &names));
     let checking = async {
         let model = checker_model()?;
-        let body = check_body(&model, &choices, spec, &turn);
-        match tokio::time::timeout(CHECK_TIMEOUT, check(&model, body, &names)).await {
+        match tokio::time::timeout(CHECK_TIMEOUT, check(&model, &choices, spec, &turn)).await {
             Ok(Ok(c)) => Some(c),
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "router: the checker failed; the picker decides alone");
@@ -724,15 +711,23 @@ mod tests {
     }
 
     #[test]
-    fn the_checker_body_keeps_the_criteria_in_order() {
+    fn the_checker_prompt_keeps_the_criteria_in_order() {
         let c = vec![
             ("zeta".to_string(), "z".to_string()),
-            ("alpha".to_string(), "a \"q\"".to_string()),
+            ("alpha".to_string(), "a".to_string()),
         ];
-        let body = check_body("nimble", &c, &spec(), "User: hi");
-        let v: Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(v["questions"]["route"]["criteria"]["alpha"], "a \"q\"");
+        let instructions = check_instructions(&spec());
+        let body = agent_brain_decision::prompt(
+            &CheckState { turn: "User: hi" },
+            "route",
+            &agent_brain_decision::Question::Choice {
+                instructions: &instructions,
+                criteria: &c,
+            },
+        )
+        .unwrap();
         assert!(body.find("\"zeta\"").unwrap() < body.find("\"alpha\"").unwrap());
+        assert!(body.ends_with("Requested field: \"route\""), "{body}");
     }
 
     #[test]

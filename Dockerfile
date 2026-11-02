@@ -34,6 +34,7 @@ COPY crates/chat/Cargo.toml ./crates/chat/
 COPY crates/work/Cargo.toml ./crates/work/
 COPY crates/knowledge/Cargo.toml ./crates/knowledge/
 COPY crates/graph/Cargo.toml ./crates/graph/
+COPY crates/decision/Cargo.toml ./crates/decision/
 # In-tree plugin crates (workspace members plugins/*/crate).
 COPY plugins/osint-data/crate/Cargo.toml ./plugins/osint-data/crate/
 COPY plugins/media/crate/Cargo.toml ./plugins/media/crate/
@@ -63,6 +64,7 @@ RUN mkdir -p crates/protocol/src \
              crates/work/src \
              crates/knowledge/src \
              crates/graph/src \
+             crates/decision/src \
              plugins/osint-data/crate/src \
              plugins/media/crate/src \
              plugins/alias-judge/crate/src \
@@ -74,6 +76,7 @@ RUN mkdir -p crates/protocol/src \
              plugins/websocket/crate/src \
              plugins/maps/crate/src && \
     echo "" > crates/protocol/src/lib.rs && \
+    echo "" > crates/decision/src/lib.rs && \
     echo "" > crates/models/src/lib.rs && \
     echo "" > crates/repository/src/lib.rs && \
     echo "" > crates/app/src/lib.rs && \
