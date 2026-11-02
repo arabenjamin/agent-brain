@@ -83,11 +83,15 @@ pre_load_query: ''
 # Investigative: each step depends on what the last one returned (a compile
 # error to fix, a search hit to read). That is the loop the local E4B does not
 # close (CLAUDE.md "Going local"), so this runs on the cloud worker.
-# 2026-11-01: moved off Ollama Cloud (free tier ending 11-09); this model not yet measured on this agent.
-model_preference: ministral-14b-latest
-provider_hint: mistral
+# 2026-11-02 (owner): GLM. Measured 3 of 3 usable at 18-31 tool calls, where Ministral
+# stopped at 3-5. Reached only from `deep-dive`, which is `paid: true`, or from the
+# owner's chat; the brain's other work is refused and steps down. Past the spend cap it
+# steps down too (LOCAL_ENGINE_PLAN.md).
+model_preference: z-ai/glm-5.3-flash
+provider_hint: openrouter-paid
 fallback_models:
-  - codestral-latest
+  - ministral-14b-latest
+  - "nvidia/nemotron-3-ultra-550b-a55b:free"
 # Enforced on every search_notes this agent makes (RetrievalExclude). The brain's
 # own uncited answers — including earlier deep dives — are not shown to it: a
 # 2026-10-03 re-run cited the first run's wrong answer instead of reading the spec.

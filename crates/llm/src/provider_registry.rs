@@ -122,6 +122,11 @@ pub struct ProviderEntry {
     /// Where the `billing` / `data_policy` claim came from, and when it was checked.
     #[serde(default)]
     pub terms: Option<String>,
+    /// Top-level fields added to every chat request to this provider, such as
+    /// OpenRouter's `provider: {zdr: true, ignore: [...]}`. A `data_policy` that
+    /// relies on one of these is only true while it is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_extra: Option<Value>,
 }
 
 fn default_enabled() -> bool {
@@ -285,6 +290,24 @@ pub fn model_limits(provider: &str, model: &str) -> Option<Limits> {
 }
 
 /// Look up a provider by any of its accepted spellings.
+/// Add `extra`'s top-level fields to a request body. The provider's declaration
+/// wins, so a caller cannot drop a privacy requirement by setting the same field.
+pub fn merge_request_extra(body: &mut Value, extra: &Value) {
+    if let (Some(b), Some(e)) = (body.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            b.insert(k.clone(), v.clone());
+        }
+    }
+}
+
+/// Add the named provider's declared `request_extra` to a request body.
+pub fn apply_request_extra(provider: &str, body: &mut Value) {
+    if let Some(extra) = get(provider).and_then(|e| e.request_extra) {
+        merge_request_extra(body, &extra);
+        tracing::info!(provider, extra = %extra, "provider request_extra sent");
+    }
+}
+
 pub fn get(name: &str) -> Option<ProviderEntry> {
     slot()
         .read()
@@ -323,6 +346,16 @@ pub fn snapshot_json() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_declared_request_field_is_sent_and_cannot_be_overridden() {
+        let mut body = serde_json::json!({"model": "m", "provider": {"zdr": false}});
+        let extra = serde_json::json!({"provider": {"zdr": true, "ignore": ["Groq"]}});
+        merge_request_extra(&mut body, &extra);
+        assert_eq!(body["model"], "m");
+        assert_eq!(body["provider"]["zdr"], true);
+        assert_eq!(body["provider"]["ignore"][0], "Groq");
+    }
 
     fn parse(yaml: &str) -> ProviderEntry {
         serde_yaml::from_str(yaml).expect("entry parses")

@@ -5,6 +5,8 @@ kind: learning
 every: 1d
 enabled: true
 data_class: public
+# Approved for paid models (owner, 2026-11-02): ml-student runs on GLM, capped in models.yaml.
+paid: true
 defaults:
   max_attempts: 2
   provider_hint: mistral
@@ -123,7 +125,6 @@ steps:
     tool_name: run_agent
     arguments:
       agent: ml-student
-      model: ministral-14b-latest
       max_rounds: 10
       # Every study stores its note, whatever the answer says: on 10-25 a
       # fallback model (gpt-oss returned empty) summarised the source well

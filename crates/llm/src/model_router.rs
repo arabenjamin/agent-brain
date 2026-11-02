@@ -53,6 +53,11 @@ pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -
     match provider_registry::get(&name) {
         Some(entry) => config_for_provider(base, &name, &entry, model),
         None => {
+            tracing::warn!(
+                provider = %name,
+                model = %model,
+                "provider is not in the registry; building a host-Ollama config for this model"
+            );
             let local = provider_registry::get("ollama")
                 .unwrap_or_else(|| provider_registry::builtin()["ollama"].clone());
             config_for_provider(base, "ollama", &local, model)

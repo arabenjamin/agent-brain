@@ -101,6 +101,7 @@ impl ProviderTurn for OpenAiTurn {
         if offer_tools {
             body["tools"] = Value::Array(self.tools.clone());
         }
+        agent_brain_llm::provider_registry::apply_request_extra(&self.provider_label, &mut body);
 
         let mut req = self
             .client

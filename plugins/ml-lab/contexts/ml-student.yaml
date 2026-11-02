@@ -49,10 +49,12 @@ system_prompt: |
   Reply in one line: "Stored: <id> — ran: yes/no — <the key number>".
   If the lesson has a `propose:` line, add a second line "RUNG: " and the
   JSON it asks for (or "RUNG: none"), using only what it allows.
-# Free on purpose: the brain's own scheduled work never reaches a paid model
-# (routing rule, 2026-10-23). gpt-oss writes passing self-contained code when
-# told to run it first (HARNESS2_PLAN §5).
-# 2026-11-01: moved off Ollama Cloud (free tier ending 11-09); this model not yet measured on this agent.
-model_preference: ministral-14b-latest
-provider_hint: mistral
+# 2026-11-02 (owner): GLM, on the study workflows, which are `paid: true`. It ran the
+# code 3 of 3 (LOCAL_ENGINE_PLAN.md). The pin is here and not on the step because a
+# refused step pin kills the job, and a refused profile pin steps down to Ministral,
+# which also ran the code 3 of 3.
+model_preference: z-ai/glm-5.3-flash
+provider_hint: openrouter-paid
+fallback_models:
+  - ministral-14b-latest
 spawnable: true

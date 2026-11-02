@@ -79,8 +79,9 @@ Research & Development
   outcome model on public game data); each candidate is a todo the owner
   picks or drops.
 
-Constraints: free models only (paid is owner-started work, see
-`routing/a-paid-model-runs-only-on-work-the-owner-started`). The Python sandbox
+Constraints: the study workflows are approved for one paid model, GLM, under a
+spend cap (owner 2026-11-02, LOCAL_ENGINE_PLAN §7.7); everything else is free, see
+`routing/a-paid-model-runs-only-on-work-the-owner-started`. The Python sandbox
 has no egress, 2 GB, 60 CPU-seconds and 120 s per run. It now carries scipy and
 scikit-learn alongside numpy, sympy and pandas. The GPU is the shared 8 GB
 card. Code the brain writes in narrow, self-contained units runs well on

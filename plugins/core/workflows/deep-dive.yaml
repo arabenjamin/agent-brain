@@ -5,6 +5,8 @@ inputs:
   - name: question
     description: "The one specific question to answer."
 data_class: private
+# Approved for paid models (owner, 2026-11-02): deep-diver runs on GLM, capped in models.yaml.
+paid: true
 steps:
   - tool_name: run_agent
     arguments:

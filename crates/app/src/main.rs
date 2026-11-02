@@ -223,6 +223,8 @@ async fn run_repair_notes(config: &Config, dry_run: bool) -> Result<()> {
     use std::sync::Arc;
 
     let client = connect_neo4j(config).await?;
+    ModelCatalog::load_or_default(&PathBuf::from(&config.telemetry.model_catalog_path))
+        .install_providers();
     // SharedLlm is the LlmProvider impl; it reads a live config handle, so wrap
     // the static config the same way the server does.
     let llm_config = build_llm_config(config);
@@ -281,6 +283,8 @@ async fn run_eval_retrieval(
         return Ok(());
     }
 
+    ModelCatalog::load_or_default(&PathBuf::from(&config.telemetry.model_catalog_path))
+        .install_providers();
     let llm_config = build_llm_config(config);
     let shared = Arc::new(tokio::sync::RwLock::new(Some(llm_config)));
     let llm: Arc<dyn agent_brain::services::traits::LlmProvider> =
@@ -530,15 +534,16 @@ async fn run_serve(
 ) -> Result<()> {
     let client = connect_neo4j(config).await?;
 
-    // Configure LLM
-    let llm_config = build_llm_config(config);
-
     // Load model catalog and determine active system prompt
     let catalog_path = PathBuf::from(&config.telemetry.model_catalog_path);
     let catalog = ModelCatalog::load_or_default(&catalog_path);
     // Before anything builds a config from the catalog: endpoints and key env
     // var names for every provider come from here.
     catalog.install_providers();
+
+    // Configure LLM. After the install: a provider declared only in models.yaml
+    // (mistral) is unknown before it, and an unknown name builds a host-Ollama config.
+    let llm_config = build_llm_config(config);
     {
         let ladder = catalog.resolve_background_fallback_ladder(&llm_config, &llm_config.model);
         info!(

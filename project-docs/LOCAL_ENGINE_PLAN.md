@@ -74,9 +74,47 @@ Harness² judges and workers).
    Cloud, and the key stays in `.env` so going back is one line. For a few days read
    which workflows fail or fall to E4B, and compare `ml-student`, `deep-diver` and
    `intake`. *Not started.*
-4. **Re-measure the judges.** Harness² moved its judges to nemotron-3-ultra because
-   gpt-oss judged right 2 of 6 and it 3 of 3. Run the known-answer test on Ministral
-   before trusting a harness proposal. *Not started.*
+4. **Judges re-measured 2026-11-02: Ministral fails.** Two known-answer runs (47066863,
+   90b7a48d) on the original inputs. Neither reached a checked fix: in the first the
+   reference probe made no tool calls and no candidate probe ran; in the second one
+   editor made no calls and the reflector says the final run never executed. The
+   composer still chose an edit both times, and both reflectors, with 0 tool calls,
+   named a report file they did not write. Both runs read `completed`. Judges moved to free Nemotron Ultra, below.
+
+Probes 2026-11-02, 3 each, one task per agent, side effects stubbed (no todo, note or
+task left behind). Small sample; behaviour only, not whether the conclusions are right.
+
+| Agent | Ministral | Codestral | E4B |
+|---|---|---|---|
+| intake | 3 of 3 used tools, 2 started the source | 0 tool calls, 3 of 3 | 0 calls in 2 of 3, none started the source |
+| ml-student | 3 of 3 ran the code | 2 of 3 | 1 of 3 |
+| deep-diver | 3-5 calls, read the code | 2 searches, no file read | 0 calls, 3 of 3 |
+
+Each model had a run claiming work it did not do (Ministral `intake`: "started reading";
+Codestral and E4B `ml-student`: `ran: yes`). `deep-diver` averaged 13 calls on gpt-oss in
+real runs, on other tasks with no 10-round cap, so that gap is a warning, not a measurement.
+Codestral was dropped on 2026-11-02 (owner).
+
+OpenRouter, 2026-11-02 ($10 of credit: 1000 free requests/day). Judges moved to free
+`nemotron-3-ultra-550b-a55b`: 2 of 2 known-answer runs found the `manage_todo` fix, wrote
+their reports and ran the candidates, though both reflectors cited steps of a reference run
+that had made no tool calls, so read them. As a worker it is not dependable: 10 of 58 calls
+were 5xx, each benching it, and pinned probes then ran on E4B.
+
+Priced models, `openrouter-paid` (`provider: {zdr: true, ignore: [Groq]}` on every request,
+seen in the logs before any private task; Qwen left out by the owner). 3 probes per cell,
+one task per agent, real spend $0.14:
+
+| Agent | GLM 5.3 Flash | DeepSeek V4 Flash | gpt-oss 120B |
+|---|---|---|---|
+| intake: started the source | 0 of 3 | 2 of 3 | 0 of 3 |
+| ml-student: ran the code | 3 of 3 | 3 of 3 | 0 of 3, all claiming `ran: yes` |
+| deep-diver: usable answer | 3 of 3, 18-31 calls | 1 of 3; 2 ended in raw tool-call markup | Yes, but one claims a compile error in code that compiles |
+
+Citations checked by hand on a sample: GLM mostly right with some wrong lines (`YtDlpGate` at
+service.rs:1754, not 1778); DeepSeek's `on_job_dead` line is wrong. All found the same thing,
+that a job retries at once during the yt-dlp backoff and dies; not yet checked as a real bug.
+Result: GLM for `deep-diver` and `ml-student`, Ministral stays on `intake` (§7.7).
 
 Mistral's headers on 2026-11-01: 30 requests and 937,500 tokens a minute, no monthly
 figure, so the free plan's monthly ceiling is unknown. Everything now shares
@@ -84,6 +122,10 @@ figure, so the free plan's monthly ceiling is unknown. Everything now shares
 
 Left alone: `zero-trust-architecture-research` still names the provider; it is
 runtime-owned and disabled.
+
+Incident 2026-11-02: queued `reason` steps on the active config all failed with a 404 from
+host Ollama, 5 tasks dead, because startup built that config before loading `models.yaml`.
+Fixed the same day.
 
 Done when: several days after deploy show no failing workflow that was not decided
 on, the ledger has no `ollama-cloud` rows, and the judges have a measured answer.
@@ -200,7 +242,7 @@ caller of `constrained` must ask for JSON in its prompt.
 
 ## 7. Decisions for the owner
 
-All decided by the owner 2026-11-01.
+All decided by the owner, 2026-11-01 unless dated.
 
 1. **Where the Ollama Cloud load goes: Mistral, for now.** That makes a `may_train`
    provider the default for private work, not the overflow it was on 10-10; the
@@ -211,6 +253,16 @@ All decided by the owner 2026-11-01.
    that the flag is real, not something we support.
 4. **No local vision.** No workflow declares `vision` (checked 2026-11-01); E4B keeps
    `--no-mmproj`.
+
+7. **GLM on `deep-diver` and `ml-student` (2026-11-02): yes, for now, and the
+   `openrouter-paid` monthly cap goes from $1 to $3.** `deep-dive`, `ml-study`,
+   `squares-study` and `playground-study` are `paid: true`. The pin is on the profiles
+   because a refused profile pin steps down to Ministral, and a refused step pin kills
+   the job. `intake` stays on Ministral. The cap is the ledger's figure, which runs high
+   (about $0.56 against $0.17 real during the test).
+   One real `deep-dive` on GLM cost $0.053 by the ledger. Those four workflows are about
+   85 runs a month, so the ledger could reach $3 before the month ends; past the cap the
+   agents step down to Ministral. Watch it for the first month.
 
 ## 8. Order
 

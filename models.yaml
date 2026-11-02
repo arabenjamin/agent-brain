@@ -81,11 +81,27 @@ providers:
     data_policy: may_train
     base_url_default: "https://openrouter.ai/api"
     api_key_env: OPENROUTER_API_KEY
-    limits: { rpm: 20, rpd: 50, concurrency: 1 }
-    terms: ":free endpoints — upstream providers may log and train on prompts; 50 requests/day without credits"
-    # Owner's decision (2026-10-10), same as mistral. Sub-agents are still
-    # refused here by the 50 requests/day limit, not by privacy.
+    # $10 of credit bought 2026-11-02: 1000 free-model requests/day (/api/v1/key).
+    # `billing: free` holds only while every model here is `:free`. A priced model
+    # goes in its own provider entry with billing: paid and a spend cap.
+    limits: { rpm: 20, rpd: 1000, concurrency: 1 }
+    terms: ":free endpoints — upstream providers may log and train on prompts; 1000 requests/day with $10 of credit bought, 50 without"
+    # Owner's decision (2026-10-10), same as mistral.
     private_ok_for: [chat, subagent, background]
+  # Priced models on the same key, measured 2026-11-02 (LOCAL_ENGINE_PLAN §2). Private
+  # work may come here because every request requires a zero-data-retention host
+  # (OpenRouter refuses when none qualifies); that is what `no_log` rests on. Groq is
+  # excluded by the owner's rule. Qwen is not for private work (owner, 2026-11-02).
+  openrouter-paid:
+    kind: openai_compat
+    billing: paid
+    data_policy: no_log
+    base_url_default: "https://openrouter.ai/api"
+    api_key_env: OPENROUTER_API_KEY
+    limits: { rpm: 20, concurrency: 1 }
+    spend: { daily_usd: 1, monthly_usd: 3 }
+    request_extra: { provider: { zdr: true, ignore: ["Groq"] } }
+    terms: "provider.zdr on every request, openrouter.ai/docs/guides/features/zdr, checked 2026-11-02"
   anthropic:
     kind: anthropic
     billing: paid
@@ -627,27 +643,45 @@ models:
       - fast
       - vision
 
-  codestral-latest:
-    provider: mistral
-    model: "codestral-latest"
-    context_window: 256000
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    selection_rank: 104
-    limits: { rpm: 125 }   # per model, from the response headers
-    capabilities:
-      - code
-
-  "nvidia/nemotron-3-super-120b-a12b:free":
+  "nvidia/nemotron-3-ultra-550b-a55b:free":
     provider: openrouter
-    model: "nvidia/nemotron-3-super-120b-a12b:free"
-    context_window: 262144
+    model: "nvidia/nemotron-3-ultra-550b-a55b:free"
+    context_window: 1000000
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
     selection_rank: 106
     capabilities:
       - reasoning
       - code
+
+  # Measured, not yet used by anything. No capabilities, so only an explicit pin
+  # reaches them. Costs are the dearer zero-retention hosts', so the cap errs early.
+  "openai/gpt-oss-120b":
+    provider: openrouter-paid
+    model: "openai/gpt-oss-120b"
+    context_window: 131072
+    cost_per_1k_input: 0.00015
+    cost_per_1k_output: 0.0006
+    selection_rank: 400
+    capabilities: []
+
+  "z-ai/glm-5.3-flash":
+    provider: openrouter-paid
+    model: "z-ai/glm-5.3-flash"
+    context_window: 1048576
+    cost_per_1k_input: 0.00015
+    cost_per_1k_output: 0.0005
+    selection_rank: 401
+    capabilities: []
+
+  "deepseek/deepseek-v4-flash":
+    provider: openrouter-paid
+    model: "deepseek/deepseek-v4-flash"
+    context_window: 1048576
+    cost_per_1k_input: 0.00021
+    cost_per_1k_output: 0.00056
+    selection_rank: 402
+    capabilities: []
 
   "google/gemma-4-31b-it:free":
     provider: openrouter
@@ -760,8 +794,7 @@ models:
 # sub-agent loops, so it is the last cloud rung.
 chat_fallback_ladder:
   - ministral-14b-latest
-  - codestral-latest
-  - "nvidia/nemotron-3-super-120b-a12b:free"
+  - "nvidia/nemotron-3-ultra-550b-a55b:free"
   - gemma4-e4b
 
 # ── Background fallback ladder ────────────────────────────────────────────────
@@ -773,6 +806,5 @@ chat_fallback_ladder:
 # straight from Ollama Cloud to local E4B.
 background_fallback_ladder:
   - ministral-14b-latest
-  - codestral-latest
-  - "nvidia/nemotron-3-super-120b-a12b:free"
+  - "nvidia/nemotron-3-ultra-550b-a55b:free"
   - "google/gemma-4-31b-it:free"

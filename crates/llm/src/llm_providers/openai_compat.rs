@@ -177,9 +177,13 @@ impl LlmProvider for OpenAiCompatProvider {
             input: text,
         };
 
+        let mut body = serde_json::to_value(&req).map_err(|e| {
+            LlmProviderError::GenerationFailed(format!("request did not serialize: {e}"))
+        })?;
+        crate::provider_registry::apply_request_extra(&self.config.provider_name, &mut body);
         let response = self
             .maybe_auth(self.client.post(&url))
-            .json(&req)
+            .json(&body)
             .send()
             .await?;
 

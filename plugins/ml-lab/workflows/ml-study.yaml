@@ -6,6 +6,8 @@ every: 3d
 enabled: true
 # Public course material on a public topic.
 data_class: public
+# Approved for paid models (owner, 2026-11-02): ml-student runs on GLM, capped in models.yaml.
+paid: true
 defaults:
   max_attempts: 2
   provider_hint: mistral
@@ -81,7 +83,6 @@ steps:
     # before any step has run, so it would always drop this step.
     arguments:
       agent: ml-student
-      model: ministral-14b-latest
       max_rounds: 10
       verify:
         answer_requires:

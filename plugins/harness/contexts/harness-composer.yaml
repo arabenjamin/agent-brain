@@ -5,9 +5,9 @@ tools:
   - dev_docs
 # 2026-10-23: nemotron-3-ultra judged without pasting the task into a candidate
 # and cited each run's own steps; gpt-oss did neither reliably (HARNESS2_PLAN §5).
-# 2026-11-01: moved off Ollama Cloud (free tier ending 11-09); this model not yet measured on this agent.
-model_preference: ministral-14b-latest
-provider_hint: mistral
+# 2026-11-02: free Nemotron Ultra via OpenRouter; Ministral failed the known-answer test, this passed 2 of 2 (LOCAL_ENGINE_PLAN §2).
+model_preference: "nvidia/nemotron-3-ultra-550b-a55b:free"
+provider_hint: openrouter
 specialty: "Compares three runs of an agent and decides which harness to adopt."
 description: |
   Compares three runs of an agent and decides which harness to keep.

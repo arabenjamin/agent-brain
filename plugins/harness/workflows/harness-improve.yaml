@@ -15,7 +15,7 @@ inputs:
     description: run the agent's probes on this model instead of its own; leave empty for its own
     required: false
   - name: judge_model
-    description: run the editor, composer and reflector on this model instead of theirs (ministral-14b-latest); to compare judges
+    description: run the editor, composer and reflector on this model instead of theirs (free Nemotron Ultra); to compare judges
     required: false
   - name: harness
     description: 'start from this harness instead of the agent''s profile: JSON {"system_prompt": ..., "tools": [...]} (the known-answer test)'
