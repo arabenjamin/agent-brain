@@ -56,9 +56,11 @@ services:
       # Embeddings are unaffected either way. See services/llm.rs build_local_llm_config.
       - LOCAL_LLM_BACKEND=llamacpp
       - LLAMACPP_URL=http://llamacpp:8080
-      # Ledger/log label only — a single-model llama-server serves whatever GGUF it
-      # was launched with (see the llamacpp service --alias) regardless of this name.
+      # A section of llamacpp/preset.ini: the router serves the model a request names.
       - LLAMACPP_MODEL=gemma4-e4b
+      # Embeddings on the same router; `ollama` (or unset) puts them back on host Ollama.
+      - LOCAL_EMBED_BACKEND=${LOCAL_EMBED_BACKEND:-llamacpp}
+      - LLAMACPP_EMBED_MODEL=${LLAMACPP_EMBED_MODEL:-bge-m3}
       # The model every background/scheduled job runs on. Swapped off
       # gemma4:latest 2026-09-01 on a clean benchmark (brain stopped, no model
       # resident, real video_learning payload):
@@ -406,23 +408,20 @@ services:
     # flag) — it leaks its reasoning into the answer and emits no JSON. It needs
     # `--reasoning off`. A 12B does NOT fit resident here (Gemma-3-12B Q3_K_M
     # spills to CPU ~21 tok/s); E4B is the resident/fast choice.
+    #
+    # Since 2026-11-02 this is a router: one port, and a request's `model` picks a
+    # section of llamacpp/preset.ini, where the flags above now live. E4B and bge-m3
+    # load at startup, both on the GPU (LOCAL_ENGINE_PLAN.md Phase 1). LLAMA_CACHE is
+    # not set on purpose: with it, the router also lists every old download in the
+    # volume as a model.
     command: >
-      -hf unsloth/gemma-4-E4B-it-GGUF:Q4_K_M
-      --alias gemma4-e4b
+      --models-preset /preset.ini
+      --models-max 4
       --host 0.0.0.0 --port 8080
-      -ngl 99
-      -c 32768
-      -np 2
-      --flash-attn on
-      --cache-type-k q8_0 --cache-type-v q8_0
-      --jinja
-      --reasoning off
       --no-webui
-      --no-mmproj
-    environment:
-      - LLAMA_CACHE=/models
     volumes:
       - llamacpp_cache:/models
+      - ./llamacpp/preset.ini:/preset.ini:ro
     deploy:
       resources:
         reservations:

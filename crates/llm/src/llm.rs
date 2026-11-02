@@ -27,6 +27,21 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// permit for the whole call.
 const DEFAULT_LOCAL_TIMEOUT_SECS: u64 = 600;
 
+/// Where embeddings go when `LOCAL_EMBED_BACKEND=llamacpp`: the sidecar's URL and
+/// the router's name for the model. `None` keeps them on host Ollama.
+fn llamacpp_embed_target() -> Option<(String, String)> {
+    let backend = std::env::var("LOCAL_EMBED_BACKEND").ok()?;
+    if !matches!(
+        backend.trim(),
+        "llamacpp" | "llama-cpp" | "llama.cpp" | "llama_cpp"
+    ) {
+        return None;
+    }
+    let url = std::env::var("LLAMACPP_URL").unwrap_or_else(|_| DEFAULT_LLAMACPP_URL.to_string());
+    let model = std::env::var("LLAMACPP_EMBED_MODEL").unwrap_or_else(|_| "bge-m3".to_string());
+    Some((url, model))
+}
+
 /// Resolve the local model's request timeout from `OLLAMA_LOCAL_TIMEOUT_SECS`,
 /// falling back to [`DEFAULT_LOCAL_TIMEOUT_SECS`]. An unparseable or zero
 /// value warns and uses the default rather than disabling the timeout.
@@ -473,7 +488,26 @@ impl LlmClient {
         };
 
         // Initialize embedding provider (separate from generation if requested)
-        let embed_provider = if let Some(ref embed_model) = config.embed_model {
+        let embed_provider = if let Some((url, model)) = llamacpp_embed_target() {
+            // LOCAL_EMBED_BACKEND=llamacpp: the llama-server router's own model.
+            let embed_config = ProviderConfig {
+                provider_name: "llamacpp".to_string(),
+                model,
+                api_key: None,
+                base_url: Some(url),
+                timeout: config.timeout,
+                temperature: 0.0,
+                max_tokens: None,
+                keep_alive: None,
+                num_ctx: None,
+            };
+            Arc::new(
+                crate::llm_providers::openai_compat::OpenAiCompatProvider::new(
+                    embed_config,
+                    LlmProviderType::LlamaCpp,
+                ),
+            ) as Arc<dyn crate::llm_providers::LlmProvider>
+        } else if let Some(ref embed_model) = config.embed_model {
             let embed_base = config.embed_base_url.clone().or(config.base_url.clone());
             let embed_config = ProviderConfig {
                 provider_name: "ollama".to_string(),
@@ -546,12 +580,13 @@ impl LlmClient {
         }
     }
 
-    /// Embeddings run on host Ollama (bge-m3 lives on the GPU), so a GPU lease
+    /// Embeddings run on the local engine (bge-m3 lives on the GPU), so a GPU lease
     /// pauses them: a single search would otherwise reload bge-m3 mid-training.
     /// Callers already degrade (search to BM25; a stored note is marked
     /// `embedding_pending` and backfilled on release).
     fn refuse_embeddings_if_gpu_leased(&self) -> Result<(), LlmError> {
-        let local = self.config.embed_base_url.is_some()
+        let local = llamacpp_embed_target().is_some()
+            || self.config.embed_base_url.is_some()
             || self.config.embed_model.is_some()
             || matches!(self.config.provider, LlmProviderType::Ollama);
         match crate::gpu_lease::refusal() {

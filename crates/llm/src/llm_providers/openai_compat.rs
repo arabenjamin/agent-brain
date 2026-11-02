@@ -170,47 +170,56 @@ impl LlmProvider for OpenAiCompatProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError> {
-        let text = super::prepare_embed_input(text)?;
+        // Same shrinking retry as Ollama: the ceiling is in tokens, the cap in chars.
         let url = format!("{}/embeddings", self.root);
-        let req = EmbedRequest {
-            model: &self.config.model,
-            input: text,
-        };
+        super::embed_with_backoff(text, |input| {
+            let url = url.clone();
+            async move {
+                let req = EmbedRequest {
+                    model: &self.config.model,
+                    input: &input,
+                };
 
-        let mut body = serde_json::to_value(&req).map_err(|e| {
-            LlmProviderError::GenerationFailed(format!("request did not serialize: {e}"))
-        })?;
-        crate::provider_registry::apply_request_extra(&self.config.provider_name, &mut body);
-        let response = self
-            .maybe_auth(self.client.post(&url))
-            .json(&body)
-            .send()
-            .await?;
+                let mut body = serde_json::to_value(&req).map_err(|e| {
+                    LlmProviderError::GenerationFailed(format!("request did not serialize: {e}"))
+                })?;
+                crate::provider_registry::apply_request_extra(
+                    &self.config.provider_name,
+                    &mut body,
+                );
+                let response = self
+                    .maybe_auth(self.client.post(&url))
+                    .json(&body)
+                    .send()
+                    .await?;
 
-        crate::budget::observe_headers(
-            &self.config.provider_name,
-            &self.config.model,
-            response.status().as_u16(),
-            response.headers(),
-        );
+                crate::budget::observe_headers(
+                    &self.config.provider_name,
+                    &self.config.model,
+                    response.status().as_u16(),
+                    response.headers(),
+                );
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(LlmProviderError::GenerationFailed(format!(
-                "OpenAI-compat embeddings error ({}): {}",
-                status, body
-            )));
-        }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(LlmProviderError::GenerationFailed(format!(
+                        "OpenAI-compat embeddings error ({}): {}",
+                        status, body
+                    )));
+                }
 
-        let resp: EmbedResponse = response.json().await?;
-        resp.data
-            .into_iter()
-            .next()
-            .map(|d| d.embedding)
-            .ok_or_else(|| {
-                LlmProviderError::GenerationFailed("Empty embedding response".to_string())
-            })
+                let resp: EmbedResponse = response.json().await?;
+                resp.data
+                    .into_iter()
+                    .next()
+                    .map(|d| d.embedding)
+                    .ok_or_else(|| {
+                        LlmProviderError::GenerationFailed("Empty embedding response".to_string())
+                    })
+            }
+        })
+        .await
     }
 
     async fn health_check(&self) -> bool {

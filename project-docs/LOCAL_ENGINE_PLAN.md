@@ -204,6 +204,25 @@ vectors compare ≥ 0.999 on a large sample of real notes (the 5 above were
 hand-written; long notes near the ~5.8K-character limit matter most), and an
 over-long text fails the way it does now.
 
+*Phase 1 measured and deployed 2026-11-02:*
+
+| Check | Result |
+|---|---|
+| VRAM | E4B 3,656 + bge-m3 930 MiB (8192 batch: 1,142; through Ollama: 648-667) |
+| E4B | `n_ctx_slot` 16384, 2 slots, 80 tok/s; 15.8k tokens fits, 17k returns 400 |
+| bge-m3 speed | 32 ms a text over 546 notes; Ollama 120 ms |
+| Same text, llama.cpp against Ollama | 546 real notes: lowest 0.99889, median 0.99981, 2 under 0.999, both notes over 3,000 characters |
+| llama.cpp against stored vectors | Notes up to 3,000 characters: 338, lowest 0.99919. Over 3,000: 56 of 207 under 0.999, lowest 0.9318. Ollama scores the same on those (0.9318), so the stored vectors came from other text, not another engine |
+| Retrieval | Before, on Ollama: recall@10 0.840, MRR 0.687. After: 0.880, 0.691. The old 0.92 / 0.74 no longer describes this graph. New notes were stored between the two runs |
+| Over-long text | 5,000 tokens returns 500 "too large", the shape the shrinking retry expects. 4,000 dense characters is 4,003 tokens and fits |
+| Nimble | Partial GPU does not fit: 15 layers alone wanted 4 GB. CPU, 4 threads: 2.4 s for 600 tokens, unchanged with 12 busy threads |
+| Guardian | CPU, 4 threads: 1.8 s for 600 tokens, unchanged with 12 busy threads. This is not its real prompt; Phase 3 measures that |
+| CPU models on the GPU | Each still held about 300 MiB of VRAM while loaded, not explained yet. Check in Phases 2 and 3 |
+
+Nimble and Guardian stay on Ollama until Phases 2 and 3, so Ollama's Guardian still shares the GPU:
+7,040 MiB in use right after deploy. Rollback: `LOCAL_EMBED_BACKEND=ollama`. The 12 busy threads
+are the ML runner's `cpus: 12` of this machine's 32, not 12 of 16 as written above.
+
 **Phase 2: the decision module.** Port Ollama's prompt building and scoring
 (`decision/systemone.go`, `prompts.go`; MIT, keep the notice) to one Rust module
 over `logprobs`; `api_tags`, the router checker and the alias judge call it. A
