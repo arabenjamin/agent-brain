@@ -149,8 +149,8 @@ spawnable: false
 specialty: null
 data_class: private
 fallback_models:
-- gemma4:31b-cloud
-- gpt-oss:120b-cloud
+- ministral-14b-latest
+- codestral-latest
 - gemini-2.5-flash
 # The router (GRAPH_CONTEXT_PLAN Phase 3): before each turn the local model
 # picks where it goes first, from the live roster and these choices, and the

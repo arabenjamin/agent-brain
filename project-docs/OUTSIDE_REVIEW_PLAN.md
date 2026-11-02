@@ -50,9 +50,11 @@ Size today: core crates ~90K lines of Rust, plugin crates ~25K, 14 plugins,
 - **806 dev notes are by design.** Rules live in the graph so an agent gets
   the ones it needs by query, not all of them. The reviewer saw only the seed
   file `devdocs/devnotes.jsonl`.
-- **The stack is the design.** Neo4j, DuckDB, llama.cpp and Ollama each do a
-  job nothing else in the stack does. The cost of operating it is real; the
-  answer is documentation and a smaller core (§5, §8), not fewer services.
+- **Most of the stack is the design.** Neo4j and DuckDB each do a job nothing
+  else in the stack does; the answer to their operating cost is documentation
+  and a smaller core (§5, §8). Corrected 2026-11-01: llama.cpp and Ollama do not
+  each do a unique job. Measured, llama.cpp alone can serve every local model,
+  so one engine is chosen at install (`LOCAL_ENGINE_PLAN.md`).
 - **Plugin coupling is already narrow.** Only `crates/host/Cargo.toml` names
   plugin crates (10 of them); no other core crate depends on a plugin.
 - **Harness² does not write profiles.** An adopted edit is a todo the owner
@@ -88,7 +90,7 @@ Done when: an unauthenticated request to 3001 from the host gets 401; 3001,
 7689 and 7476 refuse from another tailnet machine; the HBI works unchanged;
 a chat with no key cannot route to a paid provider (unit test).
 
-**Built 2026-10-29, not yet deployed.** As planned, with these choices:
+**Built 2026-10-29, deployed 2026-11-01 (`f19240a`).** As planned, with these choices:
 
 - The HBI binds `${HBI_BIND:-127.0.0.1}`: loopback until the owner sets the
   tailnet IP in `.env`, so a fresh clone never starts open.
@@ -113,6 +115,13 @@ Deploy order: a new `NEO4J_PASSWORD` in `.env` (and `HBI_BIND` if other
 machines use the HBI), then `scripts/rotate_neo4j_password.sh`, then deploy
 at once; Conduit's base URL becomes `http://<HBI_BIND>:3002/v1`, and Claude
 Code's `.mcp.json` needs the bearer header.
+
+Deployed 2026-11-01. The first start failed: the commit deployed before the
+rotation ran, and the brain's login retries kept Neo4j locked until it was stopped.
+Stopping the brain, running the script and starting it again fixed it. Checked
+after: unauthenticated `/mcp` gets 401, 3001 and Neo4j bind loopback, the HBI binds
+the tailnet IP and reaches the API. Not checked: a refused connection from another
+tailnet machine, and the Tailscale ACL on 3002 (§9.1).
 
 ## 5. Phase 1: write the center down and keep the core to it
 

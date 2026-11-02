@@ -80,7 +80,7 @@ steps:
         {{_prev}}
     priority: 1
     max_attempts: 2
-    provider_hint: ollama-cloud
+    provider_hint: mistral
 
   - tool_name: store_note
     arguments:

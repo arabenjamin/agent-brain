@@ -14,8 +14,8 @@ steps:
   - tool_name: extract_relations
     arguments:
       limit: 30
-    model: gpt-oss:120b-cloud
-    provider_hint: ollama-cloud
+    model: ministral-14b-latest
+    provider_hint: mistral
     priority: 3
     max_attempts: 1
     description: "Propose the relationships 30 claims state"

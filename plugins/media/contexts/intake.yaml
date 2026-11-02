@@ -56,8 +56,9 @@ system_prompt: |
   Why: <one line>
 # Pinned 2026-10-23: on the same hand-off, gpt-oss started the source in 22
 # of 30 probes, nemotron-3-ultra in 0 of 4 (and filed two todos a run).
-model_preference: gpt-oss:120b-cloud
-provider_hint: ollama-cloud
+# 2026-11-01: moved off Ollama Cloud (free tier ending 11-09); this model not yet measured on this agent.
+model_preference: ministral-14b-latest
+provider_hint: mistral
 spawnable: true
 # What the person hands over comes from private chat.
 data_class: private

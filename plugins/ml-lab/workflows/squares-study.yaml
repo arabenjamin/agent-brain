@@ -7,7 +7,7 @@ enabled: true
 data_class: public
 defaults:
   max_attempts: 2
-  provider_hint: ollama-cloud
+  provider_hint: mistral
 steps:
   - id: done
     tool_name: neo4j_query
@@ -58,7 +58,7 @@ steps:
     tool_name: run_agent
     arguments:
       agent: ml-student
-      model: gpt-oss:120b-cloud
+      model: ministral-14b-latest
       max_rounds: 10
       verify:
         answer_requires:

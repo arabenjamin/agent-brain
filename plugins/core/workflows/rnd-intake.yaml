@@ -7,7 +7,7 @@ enabled: true
 data_class: private
 defaults:
   max_attempts: 2
-  provider_hint: ollama-cloud
+  provider_hint: mistral
 steps:
   - id: reports
     tool_name: neo4j_query

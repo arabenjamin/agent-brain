@@ -32,7 +32,7 @@ steps:
         agent-brain. Today is {{date}}.
     priority: 1
     max_attempts: 2
-    provider_hint: ollama-cloud
+    provider_hint: mistral
     description: "Deep dive: investigate, prototype, place"
 
   - tool_name: store_note

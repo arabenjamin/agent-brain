@@ -184,7 +184,7 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
-    provider_hint: ollama-cloud
+    provider_hint: mistral
     description: "Dated delta report with attributed claims"
 
   - id: record

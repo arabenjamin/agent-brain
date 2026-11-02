@@ -199,7 +199,7 @@ steps:
     priority: 2
     max_attempts: 3
     # Why: dev_docs get yaml/schedules-hardware-tripwire-5
-    provider_hint: ollama-cloud
+    provider_hint: mistral
     required_capabilities: ["deep_reasoning"]
     description: "Delta analysis vs prior baseline"
 

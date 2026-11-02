@@ -56,7 +56,7 @@ steps:
       store_inference: false
     # Once a week, one call: gpt-oss keeps ours and theirs apart where local
     # E4B did not.
-    provider_hint: ollama-cloud
+    provider_hint: mistral
     description: "Digest with note citations and follow-ups"
 
   - tool_name: store_note

@@ -56,4 +56,4 @@ steps:
         agent: "{{steps.pick.rows.0.agent}}"
         task: "{{steps.pick.rows.0.task}}"
         why: "{{steps.pick.rows.0.why}}"
-        model: gpt-oss:120b-cloud
+        model: ministral-14b-latest

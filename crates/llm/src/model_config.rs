@@ -483,18 +483,17 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// Tier 1 — local plus $0 Ollama Cloud. This is the deployed configuration,
-    /// so these are the models the seven cloud-routed chain/schedule steps get.
-    const TIER1: &[&str] = &["ollama", "ollama-cloud"];
+    /// Tier 1: local plus free Mistral, the deployed configuration since
+    /// Ollama Cloud went off (2026-11-01, LOCAL_ENGINE_PLAN §2).
+    const TIER1: &[&str] = &["ollama", "mistral"];
 
     #[test]
     fn reasoning_routes_to_the_fastest_clean_cloud_model() {
-        // 1.8s and 0/4 empty completions on the 2026-08-25 trials. The failure
-        // being locked down: minimax-m3:cloud taking this on window size alone,
-        // at 20.2s a call.
+        // The owner's choice for free cloud (2026-11-01); a catalog edit that
+        // moves it should fail here.
         assert_eq!(
             routes_to(&real_catalog(), "reasoning", TIER1),
-            "gpt-oss:120b-cloud"
+            "ministral-14b-latest"
         );
     }
 
@@ -504,7 +503,7 @@ mod tests {
         // reasoning winner — the gpt-oss entries have no vision to offer.
         let c = real_catalog();
         let winner = routes_to(&c, "vision", TIER1);
-        assert_eq!(winner, "gemma4:31b-cloud");
+        assert_eq!(winner, "ministral-14b-latest");
         assert!(c.models[&winner].capabilities.iter().any(|x| x == "vision"));
     }
 
@@ -536,15 +535,15 @@ mod tests {
     /// `CLOUD_TIER=2`. This is the deployed routing; lock it by name like the
     /// tier-1 guard above so a future catalog edit that steals `reasoning` from
     /// Gemini (or hands it to a paid model on cost) is caught at build time.
-    const TIER2: &[&str] = &["ollama", "ollama-cloud", "gemini", "anthropic"];
+    const TIER2: &[&str] = &["ollama", "mistral", "gemini", "anthropic"];
 
     #[test]
-    fn reasoning_at_tier2_routes_to_gpt_oss() {
-        // 2026-10-02: gemini-2.5-flash moved behind the ollama-cloud band after
-        // a week of 503s and 31s reasoning calls; gpt-oss had none.
+    fn reasoning_at_tier2_routes_to_mistral() {
+        // gemini-2.5-flash stays behind it: a week of 503s and 31s reasoning
+        // calls (2026-10-02), and a 5 requests/minute cap.
         assert_eq!(
             routes_to(&real_catalog(), "reasoning", TIER2),
-            "gpt-oss:120b-cloud"
+            "ministral-14b-latest"
         );
     }
 
@@ -573,19 +572,19 @@ mod tests {
     fn a_paid_reasoner_does_not_capture_plain_reasoning() {
         assert_eq!(
             routes_to(&real_catalog(), "reasoning", TIER2),
-            "gpt-oss:120b-cloud"
+            "ministral-14b-latest"
         );
     }
 
     /// `gemini-2.5-flash` deliberately does not claim `vision`, and the one
     /// Gemini entry that does (`gemini-3-flash`) is ranked far below
-    /// gemma4:31b-cloud, so vision stays on the free ollama-cloud vision model
+    /// ministral-14b-latest, so vision stays on free Mistral
     /// even at tier 2 — no accidental capture from adding the flash models.
     #[test]
-    fn vision_at_tier2_stays_on_the_ollama_cloud_vision_model() {
+    fn vision_at_tier2_stays_on_mistral() {
         assert_eq!(
             routes_to(&real_catalog(), "vision", TIER2),
-            "gemma4:31b-cloud"
+            "ministral-14b-latest"
         );
     }
 
@@ -682,11 +681,14 @@ mod tests {
             DataClass::Private,
             &deployed_policy(),
         );
-        assert_eq!(got.first().map(String::as_str), Some("gpt-oss:120b-cloud"));
+        assert_eq!(
+            got.first().map(String::as_str),
+            Some("ministral-14b-latest")
+        );
     }
 
     #[test]
-    fn public_reasoning_routes_to_gpt_oss_like_private() {
+    fn public_reasoning_routes_to_mistral_like_private() {
         use crate::routing::DataClass;
         let got = routes_under_policy(
             &real_catalog(),
@@ -694,7 +696,10 @@ mod tests {
             DataClass::Public,
             &deployed_policy(),
         );
-        assert_eq!(got.first().map(String::as_str), Some("gpt-oss:120b-cloud"));
+        assert_eq!(
+            got.first().map(String::as_str),
+            Some("ministral-14b-latest")
+        );
         // Gemini stays reachable as a later rung, ahead of local.
         assert!(got.iter().any(|m| m == "gemini-2.5-flash"), "{got:?}");
     }
@@ -776,9 +781,8 @@ mod tests {
         }
     }
 
-    /// Private reasoning keeps preferring Ollama Cloud; Mistral is the next
-    /// cloud rung, ahead of every local model, and Gemini (no override for
-    /// background) is never admitted.
+    /// Private reasoning goes to Mistral, ahead of every local model, and Gemini
+    /// (no override for background) is never admitted.
     #[test]
     fn private_reasoning_overflows_to_mistral_before_local() {
         use crate::routing::DataClass;
@@ -789,7 +793,10 @@ mod tests {
             &deployed_policy(),
         );
         let pos = |m: &str| got.iter().position(|x| x == m);
-        assert_eq!(got.first().map(String::as_str), Some("gpt-oss:120b-cloud"));
+        assert_eq!(
+            got.first().map(String::as_str),
+            Some("ministral-14b-latest")
+        );
         let mistral = pos("ministral-14b-latest").expect("mistral admitted");
         let local = pos("gemma4:latest").expect("local admitted");
         assert!(mistral < local, "{got:?}");

@@ -83,10 +83,11 @@ pre_load_query: ''
 # Investigative: each step depends on what the last one returned (a compile
 # error to fix, a search hit to read). That is the loop the local E4B does not
 # close (CLAUDE.md "Going local"), so this runs on the cloud worker.
-model_preference: gpt-oss:120b-cloud
-provider_hint: ollama-cloud
+# 2026-11-01: moved off Ollama Cloud (free tier ending 11-09); this model not yet measured on this agent.
+model_preference: ministral-14b-latest
+provider_hint: mistral
 fallback_models:
-  - gemma4:31b-cloud
+  - codestral-latest
 # Enforced on every search_notes this agent makes (RetrievalExclude). The brain's
 # own uncited answers — including earlier deep dives — are not shown to it: a
 # 2026-10-03 re-run cited the first run's wrong answer instead of reading the spec.

@@ -671,7 +671,7 @@ pub fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<Strin
                 "step {n} (`{tool}`): no `provider_hint`, so it routes to the active \
                  model (a cloud model) rather than local. Set `provider_hint: \"ollama\"` \
                  unless this step genuinely needs the cloud, in which case set it \
-                 explicitly to `\"ollama-cloud\"`."
+                 explicitly to a cloud provider such as `\"mistral\"`."
             ));
         }
 

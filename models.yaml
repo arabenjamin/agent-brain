@@ -50,10 +50,15 @@ providers:
     base_url_env: LLAMACPP_URL
     base_url_default: "http://localhost:8080"
     limits: { concurrency: 2 }   # llama-server -np 2
+  # Off since 2026-11-01 (LOCAL_ENGINE_PLAN §2): the free tier ends 2026-11-09 and
+  # ollama.com/pricing now lists only pay-per-token. Disabled and declared paid so
+  # nothing can bill untracked; turning it back on means raising `spend:` as well.
   ollama-cloud:
+    enabled: false
     kind: openai_compat
-    billing: free
+    billing: paid
     data_policy: no_log
+    spend: { daily_usd: 0, monthly_usd: 0 }
     base_url_env: OLLAMA_URL
     base_url_default: "https://ollama.com"
     api_key_env: OLLAMA_API_KEY
@@ -615,7 +620,7 @@ models:
     context_window: 262144
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
-    selection_rank: 100
+    selection_rank: 96
     limits: { rpm: 30 }   # per model, from the response headers
     capabilities:
       - reasoning
@@ -754,14 +759,10 @@ models:
 # OpenRouter's 50 requests/day is metered by the budget and refused for
 # sub-agent loops, so it is the last cloud rung.
 chat_fallback_ladder:
-  - gpt-oss:120b-cloud
-  - nemotron-3-super:cloud
-  - gpt-oss:20b-cloud
-  - nemotron-3-nano:30b-cloud
   - ministral-14b-latest
   - codestral-latest
   - "nvidia/nemotron-3-super-120b-a12b:free"
-  - granite4:latest
+  - gemma4-e4b
 
 # ── Background fallback ladder ────────────────────────────────────────────────
 # Cloud rungs a background `generate()` (queue steps, `reason`, capability-

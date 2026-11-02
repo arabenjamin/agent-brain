@@ -50,7 +50,7 @@ steps:
       store_inference: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama-cloud
+    provider_hint: mistral
     required_capabilities: ["reasoning"]
 
   - tool_name: create_task

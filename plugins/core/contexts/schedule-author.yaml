@@ -67,7 +67,7 @@ system_prompt: |
   step_warnings:
     - EVERY step needs `provider_hint`. Omitting it does NOT mean local — it
       falls through to the active CLOUD model. Use `"ollama"` unless a step
-      genuinely needs the cloud, in which case set `"ollama-cloud"` on purpose.
+      genuinely needs the cloud, in which case set `"mistral"` on purpose.
     - A `reason` step past the first needs `context` naming an earlier output
       (`"{{_prev}}"`, or `"{{steps.<id>}}"` for a step with that `id`), or it
       reasons over the knowledge graph and never sees what the chain fetched.

@@ -50,6 +50,7 @@ system_prompt: |
 # Free on purpose: rnd-intake is the brain's own weekly work, which never
 # reaches a paid model (routing rule, 2026-10-23). gpt-oss is the worker
 # that held intake's four-field manage_todo contract (HARNESS2_PLAN §5).
-model_preference: gpt-oss:120b-cloud
-provider_hint: ollama-cloud
+# 2026-11-01: moved off Ollama Cloud (free tier ending 11-09); this model not yet measured on this agent.
+model_preference: ministral-14b-latest
+provider_hint: mistral
 spawnable: true

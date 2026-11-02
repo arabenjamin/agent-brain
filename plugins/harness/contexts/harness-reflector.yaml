@@ -6,8 +6,9 @@ tools:
   - manage_todo
 # 2026-10-23: nemotron-3-ultra judged without pasting the task into a candidate
 # and cited each run's own steps; gpt-oss did neither reliably (HARNESS2_PLAN §5).
-model_preference: nemotron-3-ultra:cloud
-provider_hint: ollama-cloud
+# 2026-11-01: moved off Ollama Cloud (free tier ending 11-09); this model not yet measured on this agent.
+model_preference: ministral-14b-latest
+provider_hint: mistral
 specialty: "Reflects on final run, writes verdict, proposed lesson and todo."
 system_prompt: |
   You are the harness reflector: you compare the final run of a composed harness with the reference run and record what it shows.

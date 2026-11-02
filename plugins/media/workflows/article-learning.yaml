@@ -175,7 +175,7 @@ steps:
     priority: 1
     max_attempts: 2
     optional: true
-    provider_hint: ollama-cloud
+    provider_hint: mistral
     description: "Hand-off: answer what the person asked"
 
   # Hand-off (only when a person handed this article over in chat: the run was

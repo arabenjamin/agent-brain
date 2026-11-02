@@ -176,7 +176,7 @@ steps:
     # Paid synthesis: `deep_reasoning` is held only by claude-sonnet-5-5. When the
     # spend cap or ROUTING_PAID_FOR refuses it, the step runs on this
     # provider_hint (gpt-oss) instead — see the note in models.yaml.
-    provider_hint: ollama-cloud
+    provider_hint: mistral
     required_capabilities: ["deep_reasoning"]
     description: "Delta analysis + updated Tier 2 list"
 

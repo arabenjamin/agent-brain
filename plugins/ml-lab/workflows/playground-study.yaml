@@ -7,7 +7,7 @@ enabled: true
 data_class: public
 defaults:
   max_attempts: 2
-  provider_hint: ollama-cloud
+  provider_hint: mistral
 steps:
   - id: done
     tool_name: neo4j_query
@@ -123,7 +123,7 @@ steps:
     tool_name: run_agent
     arguments:
       agent: ml-student
-      model: gpt-oss:120b-cloud
+      model: ministral-14b-latest
       max_rounds: 10
       # Every study stores its note, whatever the answer says: on 10-25 a
       # fallback model (gpt-oss returned empty) summarised the source well
@@ -151,7 +151,7 @@ steps:
         {{steps.nbtext.body}}
         ===== END SOURCE TEXT =====
     priority: 2
-    provider_hint: ollama-cloud
+    provider_hint: mistral
     description: "ml-student studies the source and proposes a rung"
 
   # The proposal, if any, as the runner wants it. The runner validates it
