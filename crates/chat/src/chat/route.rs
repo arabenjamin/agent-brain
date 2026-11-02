@@ -14,9 +14,9 @@
 //!   web. Rule, not model: both models sent "Have you looked at Nebula" and
 //!   "tell me more about Adam Kinzinger" straight to the web. With it, 56.
 //! - **Checker (off unless `CHAT_ROUTER_CHECKER` names a model):** Nimble on
-//!   the router's CPU answers the same choice with a probability; agreement or a
+//!   the router answers the same choice with a probability; agreement or a
 //!   confident pick goes, a split runs both, stored first (59 tried, 5
-//!   confidently wrong vs 9). Off by default: on the router's CPU it adds 10-20 s to a turn.
+//!   confidently wrong vs 9). Off by default: it adds 2-4 s to a turn.
 //! - A router failure or timeout leaves the turn as it was, and says so in the
 //!   log: routing is advice to the front door, never a reason to fail a turn.
 //! - **Behaviors (Phase B):** a pick of `lookup:<name>` is run by code. E4B

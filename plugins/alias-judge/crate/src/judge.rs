@@ -13,7 +13,7 @@
 //! - **Stored:** `(from)-[:ALIAS_VERDICT {verdict, p_same, p_related,
 //!   p_different, model, version, at}]->(into)`, one per candidate pair. A
 //!   verdict from another prompt version or model is judged again.
-//! - **Runs** on idle time, one pair at a time, on the CPU.
+//! - **Runs** on idle time, one pair at a time.
 //! - **Sorting** by the stored verdict (`rank`) is the core's
 //!   (`entity_resolution`): with this plugin off, candidates are unranked.
 

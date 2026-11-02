@@ -215,7 +215,7 @@ over-long text fails the way it does now.
 | llama.cpp against stored vectors | Notes up to 3,000 characters: 338, lowest 0.99919. Over 3,000: 56 of 207 under 0.999, lowest 0.9318. Ollama scores the same on those (0.9318), so the stored vectors came from other text, not another engine |
 | Retrieval | Before, on Ollama: recall@10 0.840, MRR 0.687. After: 0.880, 0.691. The old 0.92 / 0.74 no longer describes this graph. New notes were stored between the two runs |
 | Over-long text | 5,000 tokens returns 500 "too large", the shape the shrinking retry expects. 4,000 dense characters is 4,003 tokens and fits |
-| Nimble | Partial GPU does not fit: 15 layers alone wanted 4 GB. CPU, 4 threads: 2.4 s for 600 tokens, unchanged with 12 busy threads (**wrong**: 31.5 s with nothing reused, see the Phase 2 result) |
+| Nimble | Partial GPU does not fit: 15 layers alone wanted 4 GB. CPU, 4 threads: 2.4 s for 600 tokens, unchanged with 12 busy threads (with the GPU visible; see the Phase 2 result) |
 | Guardian | CPU, 4 threads: 1.8 s for 600 tokens, unchanged with 12 busy threads. This is not its real prompt; Phase 3 measures that |
 | CPU models on the GPU | Each still held about 300 MiB of VRAM while loaded, not explained yet. Check in Phases 2 and 3 |
 
@@ -231,20 +231,35 @@ candidate outside `top_logprobs` must be an error, not 0.
 with Ollama's answers, no tag crosses 0.7 and no verdict changes that was not read
 and accepted.
 
-*Phase 2 result, 2026-11-02 (staged).* `crates/decision/` holds the port. The reference is **Ollama 0.40.2**, the installed version: `main` builds a different prompt, and the scores move with the form (the same question ranged 0.75-0.86 across prompt forms). The Rust prompt is byte-identical to the Python one that matched Ollama's tokens on all 170 test prompts. Against Ollama, uncached:
+*Phase 2 result, 2026-11-02.* `crates/decision/` holds the port. The reference is **Ollama 0.40.2**, the installed version: `main` builds a different prompt, and the scores move with the form (the same question ranged 0.75-0.86 across prompt forms). The Rust prompt is byte-identical to the Python one that matched Ollama's tokens on all 170 test prompts. Against Ollama, uncached, on the setup below:
 
 | Measure | Result |
 |---|---|
-| API kind, 12 APIs | same choice 12 of 12, largest difference 0.002 |
-| API topic, 144 questions | none crosses 0.7; mean difference 0.0038, largest 0.0776; both engines 142 of 144 right against the golden file |
+| API kind, 12 APIs | same choice 12 of 12, largest difference 0.0059 |
+| API topic, 144 questions | none crosses 0.7; mean difference 0.0036, largest 0.1022 (`serpapi` / `batteries-materials`, 0.486 vs 0.588); both engines 142 of 144 right against the golden file |
 | Candidate rank in `top_logprobs` | worst 16 of 100, none missing |
-| Alias verdicts, all 345 | 326 match stored; of the 19 that changed, 16 agree with fresh Ollama and 3 split |
+| Alias verdicts, all 345 | 327 match stored; of the 18 that changed, 14 agree with fresh Ollama and 4 split |
+| Repeatability | 4 pairs asked 3 times each: identical |
 
-Pairs that match stored were not re-asked of Ollama, so a pair that matches stored and splits from Ollama would not show. The three splits are the accept list: `muhammad bin salman / crown prince mohammed bin salman` (llama.cpp different 0.57, Ollama same 0.51; llama.cpp is wrong), `siemoniak / tomasz siemoniak` (same 0.56, different 0.51) and `meshtasticd / meshtastic 2.8.0` (different 0.493, related 0.491). `PROMPT_VERSION` is unchanged, so stored verdicts stay as they are; only new candidates get the new engine.
+Pairs that match stored were not re-asked of Ollama, so a pair that matches stored and splits from Ollama would not show. The four splits are all near ties on both engines and are the accept list: `siemoniak / tomasz siemoniak` (same 0.499, Ollama different 0.512), `meshtasticd / meshtastic 2.8.0` (different 0.502, Ollama related 0.514), `u.s. news & world report / us news` (different 0.496, Ollama same 0.494), `seals / u.s. navy seals` (same 0.457, Ollama different 0.453). `PROMPT_VERSION` is unchanged, so stored verdicts stay as they are; only new candidates get the new engine.
 
 Decisions send `cache_prompt: false`: a reused prefix moved one score from 0.809 to 0.827 on the same bytes, so an answer would have depended on what ran before it.
 
-**Cost:** a 612-token prompt with nothing reused takes 31.5 s on 4 threads, 17.5 s on 8 and 10.9 s on 16; the preset uses 8. That is 7-25 s a decision on real prompts. The spike's 2.4 s for 600 tokens was wrong for this use: the same prompt fully reused takes 0.37 s, so that figure must have reused most of its prompt. Guardian's 1.8 s came from the same spike and is suspect too; Phase 3 must measure it with nothing reused. Tagging a new API (13 decisions) took 111 s through the brain. Nimble uses no VRAM and about 1.9 GiB of RAM once loaded. This suits the two background callers. The chat router checker, off by default, would add 10-20 s to a turn and hits its 30 s limit past about 1,000 tokens, so it needs a faster path before anyone turns it on.
+Comparing runs needs the same input. The judge's text comes from the live graph: `meshtastic 2.8.0 / meshtastic` moved from `same` 0.31 to 0.95 between two runs on both engines, because the input changed, not the engine.
+
+**Where Nimble runs.** The file is 9.5 GB, the card 8 GB, so it cannot fit whole; Ollama runs it 80% CPU, 20% GPU in 1.9 GB. Times are one 612-token prompt with nothing reused:
+
+| Setup | Time | VRAM |
+|---|---|---|
+| `device = none`, 4 / 8 / 16 threads (CPU only) | 31.5 / 17.5 / 10.9 s | 0 |
+| **0 layers, GPU visible (the preset)**, any thread count | **2.3 s** | **330 MiB** |
+| 7 layers | 1.9 s | 2.8 GB |
+| 10 layers | 1.7 s | 3.5 GB |
+| 26 layers, the most that fit, E4B unloaded | 0.76 s | 7.2 GB |
+
+At 0 layers the weights stay in RAM but the GPU does the work: 60-78% utilization, about 3 CPU cores, and thread count makes no difference. Unloading E4B would save 1.5 s a decision and stop chat routing and background work during each swap (E4B reloads in about 3 s from a warm file cache), so no swapping for now. The router checker, off by default, would add 2-4 s to a turn.
+
+An earlier draft of this result used `device = none`, called the spike's 2.4 s a cached figure, and said the checker needed a faster path. All three were wrong: the flag was the slowdown. Guardian's 1.8 s holds on the same setup (300 MiB of VRAM; with `device = none`, 21.8 s on 8 threads), and it does not fit whole on an empty card at an 8,192-token context.
 
 **Phase 3: Guardian.** Render the `groundedness` prompt in Rust (only that criterion
 of the 14 KB template) and send it to `/v1/completions`. Time it; 16 s against 3-5 s

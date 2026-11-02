@@ -167,8 +167,8 @@ services:
       - SECRETS_INDEX=/home/agent/vault/index.yaml
       # The front door's router (GRAPH_CONTEXT_PLAN Phase 3): the profile's
       # `routing:` block picks each turn's first stop on the local E4B. "off"
-      # turns it off. The Nimble check is off by default; on the router's CPU it adds 10-20
-      # seconds to a turn (a section of llamacpp/preset.ini).
+      # turns it off. The Nimble check is off by default; it adds 2-4 seconds
+      # to a turn (a section of llamacpp/preset.ini).
       - CHAT_ROUTER=${CHAT_ROUTER:-on}
       - CHAT_ROUTER_CHECKER=${CHAT_ROUTER_CHECKER:-off}
       - OLLAMA_EMBED_MODEL=bge-m3:latest
