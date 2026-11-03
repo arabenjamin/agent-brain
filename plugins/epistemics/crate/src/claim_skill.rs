@@ -423,7 +423,7 @@ impl ClaimSkill {
         // Grounding gate: do the cited results, read together, say what the
         // claim says? A second model, because the judge that picked the
         // results is the one being checked. When the check cannot run, the
-        // support still counts and the edge says it was unchecked: an Ollama
+        // support still counts and the edge says it was unchecked: a router
         // outage must not stall verification, and must not hide either.
         let mut grounding_status: Option<String> = None;
         if verdict.verdict == "supports"

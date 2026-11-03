@@ -178,9 +178,9 @@ services:
       - ALIAS_JUDGE_MODEL=${ALIAS_JUDGE_MODEL:-nimble}
       - API_TAGGER_MODEL=${API_TAGGER_MODEL:-nimble}
       # Every "supports" in claim verification is checked against its cited results
-      # by this host-Ollama guardian model (plugins/epistemics/crate/src/grounding.rs);
-      # "off" turns the check off. Needs `ollama pull granite4.1-guardian:8b`.
-      - GROUNDING_CHECK_MODEL=${GROUNDING_CHECK_MODEL:-granite4.1-guardian:8b}
+      # by this guardian model (plugins/epistemics/crate/src/grounding.rs), a section
+      # of llamacpp/preset.ini; "off" turns the check off.
+      - GROUNDING_CHECK_MODEL=${GROUNDING_CHECK_MODEL:-guardian}
       # Wikimedia asks automated clients for a contact in the user agent; entity
       # linking (plugins/reference/crate/src/wiki.rs) refuses to look anything up without one. Set in .env.
       - WIKIMEDIA_CONTACT=${WIKIMEDIA_CONTACT-}

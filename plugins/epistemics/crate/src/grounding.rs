@@ -8,16 +8,22 @@
 //! claim pointing at "this maritime junction", "Hurricane Isa" by articles
 //! about Hurricane Isaias.
 //!
-//! - **Model:** IBM's `granite4.1-guardian` on host Ollama, criterion
-//!   `groundedness`: the cited results are the document, the claim is the
-//!   answer, and it says `yes` (risk: not grounded) or `no`.
+//! - **Model:** IBM's `granite4.1-guardian`, a section of `llamacpp/preset.ini`,
+//!   criterion `groundedness`: the cited results are the document, the claim is
+//!   the answer, and it says `yes` (risk: not grounded) or `no`.
+//! - **The prompt is ours to render** (`groundedness_prompt.txt`): the GGUF has no
+//!   usable template, so this is the one branch of the model's 14 KB Ollama
+//!   template we use, byte for byte what Ollama 0.40.2 rendered (Apache 2.0, IBM).
+//!   Sent to `/v1/completions`, with the prompt cache off so a verdict does not
+//!   depend on what ran before it.
 //! - **All cited results in one document**, never one at a time: a snippet is
 //!   a fragment, so per result it flagged 37 of 60 good citations. Together it
 //!   caught 5 of the 7 bad claims and flagged 6 of 18 good ones, 4 of those
 //!   for real wording faults ("embargo" for temporary restrictions, "Activist
 //!   Post claims" for a MintPress article).
-//! - **Thinking off** (`think: false`): 3-5 s a check instead of ~57 s, and no
-//!   worse on the measured sets (crude 72/72 either way; hard 9 vs 10 of 14).
+//! - **Thinking off** (the prompt's `<no-think>` form): seconds a check instead
+//!   of ~57 s, and no worse on the measured sets (crude 72/72 either way; hard 9
+//!   vs 10 of 14).
 //! - It does not check who said it (0 of 4 attribution faults caught), and it
 //!   passes vague claims; the stand-alone check at extraction owns those.
 //! - **It also vetoes a contradiction** (`claim_skill.rs`): results that
@@ -29,16 +35,15 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
-/// Host Ollama when `OLLAMA_LOCAL_URL` is unset (the core's default).
-const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
-const DEFAULT_MODEL: &str = "granite4.1-guardian:8b";
-/// Leaves the GPU soon after a sweep (20 claims per 6 h).
-const KEEP_ALIVE: &str = "60s";
-/// Eight results' titles and snippets fit with room to spare.
-const NUM_CTX: u32 = 8192;
+/// The router when `LLAMACPP_URL` is unset (compose sets it).
+const DEFAULT_URL: &str = "http://localhost:8080";
+const DEFAULT_MODEL: &str = "guardian";
+/// The answer is `<score> yes </score>`; anything longer is not an answer.
+const MAX_TOKENS: u32 = 20;
+/// The model's prompt for this criterion, with `{{document}}` and `{{claim}}`.
+const PROMPT: &str = include_str!("groundedness_prompt.txt");
 /// Per result, so one long page cannot crowd out the rest.
 const RESULT_CHARS: usize = 1200;
 
@@ -85,68 +90,20 @@ pub fn cited_document(evidence: &str, cited: &[String]) -> String {
     parts.join("\n\n")
 }
 
-#[derive(Serialize)]
-struct Message<'a> {
-    role: &'a str,
-    content: &'a str,
-}
-
-#[derive(Serialize)]
-struct Options {
-    temperature: f32,
-    num_ctx: u32,
-}
-
-#[derive(Serialize)]
-struct Request<'a> {
-    model: &'a str,
-    messages: Vec<Message<'a>>,
-    stream: bool,
-    think: bool,
-    keep_alive: &'a str,
-    options: Options,
-}
-
-/// The `/api/chat` body: guardian's template reads the criterion from the
-/// system turn and the source from the `document` turn, and scores the last
-/// assistant turn.
-pub fn request(model: &str, document: &str, claim: &str) -> String {
-    serde_json::to_string(&Request {
-        model,
-        messages: vec![
-            Message {
-                role: "system",
-                content: "groundedness",
-            },
-            Message {
-                role: "document",
-                content: document,
-            },
-            Message {
-                role: "user",
-                content: "What do these sources report?",
-            },
-            Message {
-                role: "assistant",
-                content: claim,
-            },
-        ],
-        stream: false,
-        think: false,
-        keep_alive: KEEP_ALIVE,
-        options: Options {
-            temperature: 0.0,
-            num_ctx: NUM_CTX,
-        },
-    })
-    .unwrap_or_default()
+/// The prompt for this document and claim. Each is placed once and not
+/// re-read, so a marker inside a search result stays text. Not JSON-escaped:
+/// the template puts the document in its `text` field as it stands.
+pub fn prompt(document: &str, claim: &str) -> String {
+    let (head, rest) = PROMPT.split_once("{{document}}").unwrap_or((PROMPT, ""));
+    let (middle, tail) = rest.split_once("{{claim}}").unwrap_or((rest, ""));
+    [head, document, middle, claim, tail].concat()
 }
 
 /// `true` when the claim is grounded in the document (guardian answered
 /// `no`: no risk), `false` when it is not (`yes`). An answer without a score
 /// is an error naming what came back.
 pub fn parse_answer(resp: &Value) -> Result<bool> {
-    let content = resp["message"]["content"].as_str().unwrap_or("");
+    let content = resp["choices"][0]["text"].as_str().unwrap_or("");
     let score = content
         .split("<score>")
         .nth(1)
@@ -166,7 +123,7 @@ fn http() -> &'static reqwest::Client {
     static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     C.get_or_init(|| {
         reqwest::Client::builder()
-            // The first call loads ~8 GB from disk, mostly onto the CPU.
+            // The first call may load the model from a cold disk.
             .timeout(Duration::from_secs(300))
             .build()
             .unwrap_or_default()
@@ -175,11 +132,16 @@ fn http() -> &'static reqwest::Client {
 
 /// Ask the model whether `claim` is grounded in `document`.
 pub async fn is_grounded(model: &str, document: &str, claim: &str) -> Result<bool> {
-    let base = std::env::var("OLLAMA_LOCAL_URL").unwrap_or_else(|_| DEFAULT_OLLAMA_URL.to_string());
+    let base = std::env::var("LLAMACPP_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
     let resp = http()
-        .post(format!("{}/api/chat", base.trim_end_matches('/')))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(request(model, document, claim))
+        .post(format!("{}/v1/completions", base.trim_end_matches('/')))
+        .json(&json!({
+            "model": model,
+            "prompt": prompt(document, claim),
+            "temperature": 0,
+            "max_tokens": MAX_TOKENS,
+            "cache_prompt": false,
+        }))
         .send()
         .await
         .context("grounding check: request failed")?;
@@ -197,11 +159,10 @@ pub async fn is_grounded(model: &str, document: &str, claim: &str) -> Result<boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn a_score_of_no_is_grounded_and_yes_is_not() {
-        let r = |c: &str| json!({ "message": { "content": c } });
+        let r = |c: &str| json!({ "choices": [{ "text": c }] });
         assert!(parse_answer(&r("\n<score> no </score>")).unwrap());
         assert!(!parse_answer(&r("<score> yes </score>")).unwrap());
         let err = parse_answer(&r("I think so")).unwrap_err().to_string();
@@ -224,20 +185,27 @@ mod tests {
         assert_eq!(cited_document("not json", &["x".to_string()]), "");
     }
 
+    /// What Ollama 0.40.2 rendered for this input (`_debug_render_only`).
     #[test]
-    fn the_request_turns_thinking_off_and_puts_the_claim_last() {
-        let v: Value = serde_json::from_str(&request("g", "DOC", "CLAIM")).unwrap();
-        assert_eq!(v["think"], false);
-        assert_eq!(v["messages"][0]["content"], "groundedness");
-        assert_eq!(v["messages"][1]["role"], "document");
-        assert_eq!(v["messages"][3]["role"], "assistant");
-        assert_eq!(v["messages"][3]["content"], "CLAIM");
+    fn the_prompt_is_what_ollama_rendered() {
+        let p = prompt(
+            "[1] DOC \"ONE\"\nbody <b>&amp;\n\n[2] é two",
+            "CLAIM \"x\" <y> é",
+        );
+        assert_eq!(p, include_str!("groundedness_rendered_by_ollama.txt"));
     }
 
-    /// Against the real model on host Ollama:
+    #[test]
+    fn a_marker_inside_a_result_stays_text() {
+        let p = prompt("about {{claim}} here", "THE CLAIM");
+        assert!(p.contains("about {{claim}} here"), "{p}");
+        assert_eq!(p.matches("THE CLAIM").count(), 1, "{p}");
+    }
+
+    /// Against the real model on the router (`LLAMACPP_URL`):
     /// `cargo test -p agent-brain-plugin-epistemics --lib grounding -- --ignored`
     #[tokio::test]
-    #[ignore = "needs host Ollama with the guardian model"]
+    #[ignore = "needs the router with the guardian model"]
     async fn the_live_model_passes_a_stated_fact_and_flags_an_invented_link() {
         let doc = "[1] UK lawmaker says Russian attacks cost Britain $3.3bn\n\
             Graeme Downie and a government spokesperson claim sustained Russian hybrid and \

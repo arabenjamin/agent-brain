@@ -241,7 +241,7 @@ and accepted.
 | Alias verdicts, all 345 | 327 match stored; of the 18 that changed, 14 agree with fresh Ollama and 4 split |
 | Repeatability | 4 pairs asked 3 times each: identical |
 
-Pairs that match stored were not re-asked of Ollama, so a pair that matches stored and splits from Ollama would not show. The four splits are all near ties on both engines and are the accept list: `siemoniak / tomasz siemoniak` (same 0.499, Ollama different 0.512), `meshtasticd / meshtastic 2.8.0` (different 0.502, Ollama related 0.514), `u.s. news & world report / us news` (different 0.496, Ollama same 0.494), `seals / u.s. navy seals` (same 0.457, Ollama different 0.453). `PROMPT_VERSION` is unchanged, so stored verdicts stay as they are; only new candidates get the new engine.
+Pairs that match stored were not re-asked of Ollama, so a pair that matches stored and splits from Ollama would not show. The four splits are all near ties on both engines and are the accept list: `siemoniak / tomasz siemoniak` (same 0.499, Ollama different 0.512), `meshtasticd / meshtastic 2.8.0` (different 0.502, Ollama related 0.514), `u.s. news & world report / us news` (different 0.496, Ollama same 0.494), `seals / u.s. navy seals` (same 0.457, Ollama different 0.453). The owner accepted all four on 2026-11-02. `PROMPT_VERSION` is unchanged, so stored verdicts stay as they are; only new candidates get the new engine.
 
 Decisions send `cache_prompt: false`: a reused prefix moved one score from 0.809 to 0.827 on the same bytes, so an answer would have depended on what ran before it.
 
@@ -265,6 +265,19 @@ An earlier draft of this result used `device = none`, called the spike's 2.4 s a
 of the 14 KB template) and send it to `/v1/completions`. Time it; 16 s against 3-5 s
 is a real cost at this call volume. Measure before accepting.
 *Done when:* on real claims, verdicts match Ollama's, and `unchecked` does not rise.
+
+*Phase 3 result, 2026-11-02.* `plugins/epistemics/crate/src/grounding.rs` renders the prompt from `groundedness_prompt.txt`, the one branch of the 14 KB template we use, and sends it to `/v1/completions` with the prompt cache off. Guardian is a section of the preset: 0 layers, GPU visible, as for Nimble. It does not fit whole on an empty card at an 8,192-token context.
+
+| Measure, 600 checks | Result |
+|---|---|
+| Prompt, against Ollama's `_debug_render_only` | byte-identical on 600 of 600 |
+| 540 real stored verdicts (523 grounded, 17 not) | fresh Ollama reproduces all 540; llama.cpp 538 |
+| 60 claims against the wrong document | both engines 59 flagged, 1 passed, the same on every pair |
+| Failed checks | none on either engine |
+| Time a check, llama.cpp | median 4.0 s, 95th percentile 5.5 s, worst 9.0 s |
+| Time a check, Ollama | median 5.1 s, 95th percentile 7.4 s, worst 12.8 s |
+
+The plan's feared 16 s was the CPU-only setup. The two differences both reject a support Ollama passed, repeat on all 3 runs, and are borderline: one claim says "BATS" where the source says BAASS, and one names outlets the cited results do not name. Ollama itself answered no, then yes, on the first when asked twice. Through the deployed brain, 4 claims gave 1 grounded and 2 rejected through the router, with Ollama idle, 0 `unchecked` and 5.2 GB of VRAM. Two rejections of three is too few to read as a rate. Rejected supports leave no edge, so the rate cannot be compared with history from the graph; the `Support rejected` log line is what to watch.
 
 **Phase 4: engines and roles.** §4: the entries, roles, capability gate, `local`,
 one client, `ollama_loop` and the Ollama provider gone or reduced to its entry.
