@@ -2,6 +2,8 @@
 
 A persistent, self-improving ( lol hardly ) autonomous agent ( kinda ) backed by a Neo4j knowledge graph (thats true).
 
+A small local model does good work when the graph gives it the right context, with privacy and spend enforced underneath. Plugins specialize it for a doctor, a lawyer, a journalist or an analyst; everything else is a plugin.
+
 ## tl;dr
 Human here, this project got out of hand quickly. It started as an mcp server, that grew into something very different. 
 Let me just say I dont care for the name, but thats what I picked when I started it. 
@@ -227,7 +229,7 @@ todo             Manage todos over HTTP
 | `MCP_API_KEY` | — | HTTP bearer key; without it nothing is the owner's, so no paid model runs |
 | `SANDBOX_URL` | — | Code-execution sandbox endpoint (the `sandbox` plugin). Unset ⇒ no `execute_code` |
 | `PLUGINS_DIR` / `PLUGINS_ENABLED` | `plugins` / *(core only)* | Where the seed bundles live, and which load besides `core` (see `project-docs/env.md`) |
-| `TZ` | — (⇒ UTC) | Wall-clock timezone (e.g. `America/Detroit`). What the brain **says** about time is local; what it **stores** stays UTC. Unset means its "today" is UTC's, which is a different day for part of every day outside UTC |
+| `TZ` | — (⇒ UTC) | Wall-clock timezone (e.g. `America/New_York`). What the brain **says** about time is local; what it **stores** stays UTC. Unset means its "today" is UTC's, which is a different day for part of every day outside UTC |
 
 ## Development
 

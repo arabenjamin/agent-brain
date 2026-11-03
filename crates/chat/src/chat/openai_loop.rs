@@ -593,7 +593,7 @@ mod tests {
         const CALL: &str = concat!(
             "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[",
             "{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",",
-            "\"arguments\":\"{\\\"city\\\":\\\"Detroit\\\"}\"},",
+            "\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\"}\"},",
             "\"extra_content\":{\"google\":{\"thought_signature\":\"SIG123\"}}}]},",
             "\"finish_reason\":null}]}\n\n",
             "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],",

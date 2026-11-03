@@ -442,7 +442,7 @@ mod tests {
     fn a_cut_and_a_skipped_row_are_said() {
         let l = layer("", OK).unwrap();
         let rows = vec![
-            json!({"lat": 42.3, "lon": -83.0, "label": "Detroit", "id": "e1", "drawer": "entity", "weight": 4}),
+            json!({"lat": 42.3, "lon": -83.0, "label": "A city", "id": "e1", "drawer": "entity", "weight": 4}),
             json!({"lat": null, "lon": -83.0, "label": "no point"}),
             json!({"lat": 95.0, "lon": 0.0, "label": "off the earth"}),
             json!({"lat": 1.0, "lon": 1.0, "label": "one too many"}),

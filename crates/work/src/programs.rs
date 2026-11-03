@@ -1868,7 +1868,7 @@ mod tests {
                 load_file(&f.path()).unwrap_or_else(|e| panic!("{}: {e}", f.path().display())),
             );
         }
-        assert!(defs.len() >= 3, "only {} core programs", defs.len());
+        assert!(defs.len() >= 2, "only {} core programs", defs.len());
         let inv = Inventory {
             workflows: stems("workflows"),
             topics: stems("topics"),

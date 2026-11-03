@@ -309,7 +309,7 @@ pub async fn bootstrap(neo4j: &Neo4jClient, n: usize) -> Result<String> {
 /// capped at `max` chars. Used as a query seed, not as ground truth.
 fn first_substantial_line(content: &str, max: usize) -> String {
     // Prefer a real prose line over a markdown heading — a heading like
-    // "# METRO DETROIT — raw" is a banner, not a question, and makes a poor
+    // "# METRO AREA — raw" is a banner, not a question, and makes a poor
     // query seed. Fall back to any substantial line (heading-stripped) if the
     // note is all headings.
     let substantial = |l: &str| l.split_whitespace().count() >= 4;
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn query_seed_strips_heading_and_finds_words() {
         let content =
-            "# METRO DETROIT — raw\nThe city council approved the new water bond measure today.";
+            "# METRO AREA — raw\nThe city council approved the new water bond measure today.";
         let q = first_substantial_line(content, 90);
         assert!(q.starts_with("The city council"), "got: {q}");
     }

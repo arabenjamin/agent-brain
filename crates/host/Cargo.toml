@@ -16,16 +16,16 @@ agent-brain-work = { path = "../work" }
 agent-brain-scheduler = { path = "../scheduler" }
 agent-brain-retrieve = { path = "../retrieve" }
 # In-tree plugin crates, compiled in and enabled at runtime (plugins.rs).
-agent-brain-plugin-osint-data = { path = "../../plugins/osint-data/crate" }
-agent-brain-plugin-research = { path = "../../plugins/research/crate" }
-agent-brain-plugin-media = { path = "../../plugins/media/crate" }
-agent-brain-plugin-alias-judge = { path = "../../plugins/alias-judge/crate" }
-agent-brain-plugin-reference = { path = "../../plugins/reference/crate" }
-agent-brain-plugin-developer = { path = "../../plugins/developer/crate" }
-agent-brain-plugin-epistemics = { path = "../../plugins/epistemics/crate" }
-agent-brain-plugin-sandbox = { path = "../../plugins/sandbox/crate" }
-agent-brain-plugin-websocket = { path = "../../plugins/websocket/crate" }
-agent-brain-plugin-maps = { path = "../../plugins/maps/crate" }
+agent-brain-plugin-osint-data = { path = "../../plugins/osint-data/crate", optional = true }
+agent-brain-plugin-research = { path = "../../plugins/research/crate", optional = true }
+agent-brain-plugin-media = { path = "../../plugins/media/crate", optional = true }
+agent-brain-plugin-alias-judge = { path = "../../plugins/alias-judge/crate", optional = true }
+agent-brain-plugin-reference = { path = "../../plugins/reference/crate", optional = true }
+agent-brain-plugin-developer = { path = "../../plugins/developer/crate", optional = true }
+agent-brain-plugin-epistemics = { path = "../../plugins/epistemics/crate", optional = true }
+agent-brain-plugin-sandbox = { path = "../../plugins/sandbox/crate", optional = true }
+agent-brain-plugin-websocket = { path = "../../plugins/websocket/crate", optional = true }
+agent-brain-plugin-maps = { path = "../../plugins/maps/crate", optional = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
@@ -37,6 +37,22 @@ serde_yaml = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+
+
+[features]
+# Each compiled plugin is optional, so core must build without them (CI checks it).
+default = ["plugins"]
+plugins = ["plugin-osint-data", "plugin-research", "plugin-media", "plugin-alias-judge", "plugin-reference", "plugin-developer", "plugin-epistemics", "plugin-sandbox", "plugin-websocket", "plugin-maps"]
+plugin-osint-data = ["dep:agent-brain-plugin-osint-data"]
+plugin-research = ["dep:agent-brain-plugin-research"]
+plugin-media = ["dep:agent-brain-plugin-media"]
+plugin-alias-judge = ["dep:agent-brain-plugin-alias-judge"]
+plugin-reference = ["dep:agent-brain-plugin-reference"]
+plugin-developer = ["dep:agent-brain-plugin-developer"]
+plugin-epistemics = ["dep:agent-brain-plugin-epistemics"]
+plugin-sandbox = ["dep:agent-brain-plugin-sandbox"]
+plugin-websocket = ["dep:agent-brain-plugin-websocket"]
+plugin-maps = ["dep:agent-brain-plugin-maps"]
 
 [dev-dependencies]
 tempfile = "3"

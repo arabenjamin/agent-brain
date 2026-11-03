@@ -19,7 +19,7 @@ self_names:
   - this brain
   - our brain
   # Only with a bookkeeping verb and noun: "the system recorded 2208
-  # completed tasks" (the brief), not "Michigan's voter-registration system".
+  # completed tasks" (the brief), not "the state's voter-registration system".
   - the system
 verb_window: 4
 verbs:

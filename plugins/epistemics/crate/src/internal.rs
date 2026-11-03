@@ -173,7 +173,7 @@ mod tests {
             "The brain processed visual input faster after training, the study found.",
             "The code knowledge graph described in the DeepLearningAI video remains dynamic.",
             "Researchers recorded activity in the brain of 40 patients.",
-            "Barry County Sheriff Dar Leaf accused Michigan's voter-registration system of enrolling non-citizens.",
+            "A county sheriff accused the state's voter-registration system of enrolling non-citizens.",
         ] {
             assert!(!r.is_internal(c), "{c}");
         }
@@ -186,7 +186,7 @@ mod tests {
                      ### WHAT I DID & LEARNED (last 24h)\n- watched 40 videos\n\
                      ## **SYSTEM STATUS**\n- 3 failed jobs\n\
                      ### YOUR ITEMS\n- renew passport\n\
-                     ### METRO DETROIT\n- Detroit council votes on budget.\n\
+                     ### METRO AREA\n- City council votes on budget.\n\
                      #hashtag stays\n";
         let prefixes: Vec<String> = [
             "EXECUTIVE SUMMARY",
@@ -200,7 +200,7 @@ mod tests {
         let (text, removed) = strip_sections(brief, &prefixes);
         assert_eq!(removed.len(), 4);
         assert!(text.contains("DAILY BRIEF"));
-        assert!(text.contains("Detroit council votes"));
+        assert!(text.contains("City council votes"));
         assert!(text.contains("#hashtag stays"));
         for gone in ["176 notes", "40 videos", "failed jobs", "passport"] {
             assert!(!text.contains(gone), "{gone}");

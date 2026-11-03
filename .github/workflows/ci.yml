@@ -34,6 +34,9 @@ jobs:
       - run: cargo clippy --all-targets
       - run: scripts/check_plugin_deps.sh
       - run: cargo test --lib
+      # Core must build and pass with no compiled plugin (OUTSIDE_REVIEW_PLAN Phase 1).
+      - run: cargo build -p agent-brain --no-default-features --features http-transport,telemetry
+      - run: cargo test -p agent-brain -p agent-brain-host --lib --no-default-features --features agent-brain/http-transport,agent-brain/telemetry
 
   # ---------------------------------------------------------------------------
   # dev: fmt + clippy + unit tests + release build
@@ -73,6 +76,12 @@ jobs:
 
       - name: Unit tests
         run: cargo test --lib
+
+      # Core must build and pass with no compiled plugin (OUTSIDE_REVIEW_PLAN Phase 1).
+      - name: Core without plugins
+        run: |
+          cargo build -p agent-brain --no-default-features --features http-transport,telemetry
+          cargo test -p agent-brain -p agent-brain-host --lib --no-default-features --features agent-brain/http-transport,agent-brain/telemetry
 
       - name: Plugin crates depend only on plugin-api
         run: scripts/check_plugin_deps.sh

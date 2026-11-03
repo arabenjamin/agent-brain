@@ -30,19 +30,30 @@ pub use agent_brain_graph::bundles::*;
 
 /// The plugin crates compiled into this binary. Each is instantiated only
 /// when its bundle loaded.
+#[allow(unused_mut, clippy::vec_init_then_push)]
 pub fn compiled() -> Vec<Arc<dyn Plugin>> {
-    vec![
-        Arc::new(agent_brain_plugin_osint_data::OsintData),
-        Arc::new(agent_brain_plugin_media::Media),
-        Arc::new(agent_brain_plugin_alias_judge::AliasJudge),
-        Arc::new(agent_brain_plugin_reference::Reference),
-        Arc::new(agent_brain_plugin_developer::Developer),
-        Arc::new(agent_brain_plugin_epistemics::Epistemics),
-        Arc::new(agent_brain_plugin_sandbox::Sandbox),
-        Arc::new(agent_brain_plugin_research::Research),
-        Arc::new(agent_brain_plugin_websocket::Websocket),
-        Arc::new(agent_brain_plugin_maps::Maps),
-    ]
+    let mut plugins: Vec<Arc<dyn Plugin>> = Vec::new();
+    #[cfg(feature = "plugin-osint-data")]
+    plugins.push(Arc::new(agent_brain_plugin_osint_data::OsintData));
+    #[cfg(feature = "plugin-media")]
+    plugins.push(Arc::new(agent_brain_plugin_media::Media));
+    #[cfg(feature = "plugin-alias-judge")]
+    plugins.push(Arc::new(agent_brain_plugin_alias_judge::AliasJudge));
+    #[cfg(feature = "plugin-reference")]
+    plugins.push(Arc::new(agent_brain_plugin_reference::Reference));
+    #[cfg(feature = "plugin-developer")]
+    plugins.push(Arc::new(agent_brain_plugin_developer::Developer));
+    #[cfg(feature = "plugin-epistemics")]
+    plugins.push(Arc::new(agent_brain_plugin_epistemics::Epistemics));
+    #[cfg(feature = "plugin-sandbox")]
+    plugins.push(Arc::new(agent_brain_plugin_sandbox::Sandbox));
+    #[cfg(feature = "plugin-research")]
+    plugins.push(Arc::new(agent_brain_plugin_research::Research));
+    #[cfg(feature = "plugin-websocket")]
+    plugins.push(Arc::new(agent_brain_plugin_websocket::Websocket));
+    #[cfg(feature = "plugin-maps")]
+    plugins.push(Arc::new(agent_brain_plugin_maps::Maps));
+    plugins
 }
 
 /// A plugin whose tools were accepted, with its context, for `start`.
@@ -682,6 +693,8 @@ mod tests {
             .clone()
     }
 
+    // Some kinds are owned by compiled plugins, so this needs them built.
+    #[cfg(feature = "plugins")]
     #[test]
     fn the_shipped_core_bundle_loads_with_every_seed_kind() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");

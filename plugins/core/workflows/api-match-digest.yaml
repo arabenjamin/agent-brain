@@ -14,7 +14,7 @@ steps:
   # - beat kinds (news-feed, advisories, job-postings; `beat` in
   #   apis/_kinds.yaml) need the topics to agree both ways: a topic-less feed
   #   matches only topic-less needs (the dry run proposed HN for 26 topical
-  #   news steps, Michigan news included), and a topic-less need matches only
+  #   news steps, local news included), and a topic-less need matches only
   #   topic-less feeds (the cybersecurity RSS feeds were proposed for
   #   daily-news business, 2026-10-19).
   # - a step that already calls the API (context_name or base_url) is not a

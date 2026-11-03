@@ -781,7 +781,7 @@ mod tests {
             &view_slots,
             "User: what did we learn today?",
             "2026-10-14",
-            "America/Detroit",
+            "America/New_York",
         );
         assert!(
             prompt.contains("Today is 2026-10-14")

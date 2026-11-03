@@ -155,6 +155,28 @@ tailnet machine, and the Tailscale ACL on 3002 (§9.1).
 Done when: a fresh clone with no private bundle starts, seeds only generic
 workflows, and the no-plugin build passes in CI.
 
+**Built 2026-11-02.** As planned, with these choices, which are the owner's to change (§9.2, §9.5):
+
+- **The center** is §5.1's wording, one sentence added under the README's title. The owner's own tl;dr below it is untouched.
+- **`vulnerability-watch` stays in core.** It is a generic example of a monitor, seeded off, and it keeps the `cybersecurity` topic and source list as the shape a fresh clone shows.
+- **`deep-dive`, `-pick`, `-hard` and `deep-diver` stay in core, unchanged.** About a dozen core files know them, and "place it in this codebase" is true for anyone running this codebase. They stay Rust-shaped, which is this repo's language, not an interest.
+- **`ai-ml` also stays,** because `model-metadata-drift` needs it, so core has three topics rather than one example plus `agent-brain`.
+
+Moved to `agent-brain-personal`: the 9 workflows of §5.2, `rnd-scout`, `intel_findings`, 2 programs (`ai-ml-research`, `research-development`), 5 topics, 7 source lists and `eetimes_rss`. The `ml-lab` program moved to its own plugin. Compose's default `PLUGINS_ENABLED` drops `personal` and `ml-lab`, `TZ` defaults to UTC, and `MEDIA_WATCH_ENABLED` defaults off: this box's `.env` sets all three to what it had.
+
+Checked on the live graph, before and after: 55 workflows with the same id, steps, enabled state, owner and last run, only `plugin` changing on the 9. Programs, topics with their note counts, source lists and APIs identical. `rnd-scout` changed only its plugin.
+
+Checked on a fresh clone with no private bundle: it starts and seeds 30 workflows, core 17, media 4, developer 4, epistemics 2, harness 2, reference 1; topics `agent-brain`, `ai-ml`, `cybersecurity`; source lists `cybersecurity`, `platforms`, `state-media`; programs `brain-ops`, `shared-services`.
+
+Core builds and passes with no plugin compiled: `crates/host` holds each as an optional feature, `plugins` on by default. `cargo tree` shows only `agent-brain-plugin-api` left. CI runs the same build and tests on pushes to `dev` and on pull requests; run here by hand, not yet seen on GitHub. One test needs plugins, since it checks kinds they own, and is gated on the feature.
+
+Fixtures: Detroit and Michigan went from tests, doc comments and one YAML example, and so did a real sheriff's name from a test. Left: Michigan in `demonyms.yaml`, which is data, and "Detroit" among the example names in the entity extraction prompt in `knowledge/entities.rs`, which is live model input, so changing it is not cosmetic.
+
+Still the owner's, in the repo:
+
+- `plugins/media/sources-media/watchlist.yaml`: 21 channels the owner chose. A fresh clone seeds them, inert with polling off. Not moved, because the owner has uncommitted edits in the file. It belongs in the private bundle.
+- `agent-api`'s `ai-network` and the fixed yt subnets, which are this box's arrangement, harmless on a clone.
+
 ## 6. Phase 2: versioned self-edits, enforced where they are stored
 
 The review's suggestion, scoped to what the brain edits about itself:
@@ -220,7 +242,7 @@ call; the view lists the 3 runtime-owned workflows.
 1. **Trust boundary.** Is every device on the tailnet the owner (laptops,
    Gizmatron)? Recommended: yes for the HBI on 3002, with a Tailscale ACL
    limiting 3002 to the owner's own machines; 3001 and Neo4j loopback only.
-2. **The center sentence.** §5.1's wording, or the review's "an agent runtime
+2. **The center sentence.** Used §5.1's for now (2026-11-02). §5.1's wording, or the review's "an agent runtime
    for small GPUs that handles privacy and spend for you." Recommended: ours,
    since the graph is what the code is built around; theirs describes how it
    is delivered.
@@ -229,7 +251,7 @@ call; the view lists the 3 runtime-owned workflows.
 4. **Runtime edits back to YAML?** Recommended: never automatic. The HBI shows
    the diff and offers "copy to YAML" for the owner to commit, the way
    Harness² adoptions work today.
-5. **The borderline workflows in §5.2.**
+5. **The borderline workflows in §5.2.** Kept in core for now (2026-11-02; reasons in §5).
 
 ## 10. Order
 

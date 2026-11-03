@@ -1415,7 +1415,7 @@ mod tests {
 
     #[test]
     fn a_coordinate_is_the_preferred_earthly_one() {
-        // Detroit-ish, a normal and a preferred claim: the preferred wins.
+        // A normal and a preferred claim: the preferred wins.
         let e = json!({"claims": {"P625": [coord(1.0, 2.0, "normal", "Q2"), coord(42.33, -83.05, "preferred", "Q2")]}});
         assert_eq!(
             coord_of(&e),

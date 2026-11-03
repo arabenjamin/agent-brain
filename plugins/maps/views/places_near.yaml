@@ -19,7 +19,7 @@ input_schema:
     place:
       type: string
       default: ""
-      description: A place the brain knows, by name ("Detroit", "Taiwan"). Leave empty to use lat and lon.
+      description: A place the brain knows, by name ("Oslo", "Taiwan"). Leave empty to use lat and lon.
     lat:
       type: number
       default: null

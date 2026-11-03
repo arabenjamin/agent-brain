@@ -93,8 +93,7 @@ mod tests {
             Some("https://youtu.be/x")
         );
         // A brief that opens with a second-level heading, and one with none.
-        let brief =
-            "## EXECUTIVE SUMMARY for 2026-10-05  \n- Detroit officials https://example.com/x";
+        let brief = "## EXECUTIVE SUMMARY for 2026-10-05  \n- City officials https://example.com/x";
         assert_eq!(
             source_reference(brief),
             SourceRef {

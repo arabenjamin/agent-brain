@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn a_us_state_is_a_state_not_a_country() {
-        // Michigan: P31 U.S. state (Q35657), which is under "state" (Q7275),
+        // A state: P31 U.S. state (Q35657), which is under "state" (Q7275),
         // a far-off country ancestor. List order once made it a country.
         let t = table();
         let g = graph(&[("Q35657", &["Q7275", "Q107390"]), ("Q7275", &["Q6256"])]);

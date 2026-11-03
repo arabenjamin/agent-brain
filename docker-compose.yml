@@ -35,11 +35,11 @@ services:
       - .env           # Load .env directly — avoids host shell env overriding API keys
     environment:
       # Wall-clock zone for everything the brain says about time. Without this
-      # the container runs UTC, and in America/Detroit that means the brain
+      # the container runs UTC, and in a zone behind UTC that means the brain
       # rolls over to tomorrow at 20:00 local — dating notes, news searches, and
       # chat answers to the wrong day for the last four hours of every day.
       # Storage stays UTC regardless; this affects display only (services/clock.rs).
-      - TZ=${TZ:-America/Detroit}
+      - TZ=${TZ:-UTC}
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
@@ -218,7 +218,7 @@ services:
       # MCP servers, schemas, topics, entity seeds, relation types. `core` always loads;
       # PLUGINS_ENABLED names the others (comma-separated). GET /api/plugins shows each one.
       - PLUGINS_DIR=/home/agent/agent-brain/plugins
-      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,personal,research,websocket,github,maps,harness,ml-lab}
+      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,research,websocket,github,maps,harness}
       # More bundle dirs (colon-separated), searched after plugins/: the private
       # repo of the owner's own seeds (`personal`), mounted below.
       - PLUGINS_EXTRA_DIRS=/home/agent/plugins-private
@@ -226,7 +226,7 @@ services:
       - PLUGINS_RUNTIME_DIR=/home/agent/agent-brain/plugins-runtime
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
       - YT_DLP_PROXY=http://yt-proxy:8888                        # YouTube past the VPN exit (yt-proxy below)
-      - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
+      - MEDIA_WATCH_ENABLED=${MEDIA_WATCH_ENABLED:-false}                                 # autonomous channel polling (12h schedule)
       # 1, paired with the 6h interval in workflows/media-watch.yaml — see the
       # note there. Halves the burst (30 videos at once -> 15) while keeping the
       # daily cap at 60. Lowered from 2 on 2026-09-01.
@@ -444,7 +444,7 @@ services:
       context: ./plugins/ml-lab/runner
       dockerfile: Dockerfile
     environment:
-      - TZ=${TZ:-America/Detroit}
+      - TZ=${TZ:-UTC}
       - KAGGLE_API_TOKEN=${KAGGLE_API_TOKEN:-}
       # The legacy key (kaggle.json's username + key), if the token is refused.
       - KAGGLE_USERNAME=${KAGGLE_USERNAME:-}

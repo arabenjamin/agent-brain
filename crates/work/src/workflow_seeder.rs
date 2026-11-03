@@ -411,14 +411,14 @@ mod tests {
 
     #[test]
     fn labels_are_checked_against_the_declared_topics_and_kinds() {
-        let names = vec!["ai-ml".to_string(), "michigan".to_string()];
+        let names = vec!["ai-ml".to_string(), "local-news".to_string()];
         assert_eq!(
             check_labels(Some("ai-ml"), Some("monitor"), &names),
             Ok((Some("ai-ml".into()), Some("monitor".into())))
         );
         assert_eq!(check_labels(Some(" "), None, &names), Ok((None, None)));
         let err = check_labels(Some("ai"), Some("watch"), &names).unwrap_err();
-        assert!(err.contains("ai-ml, michigan"), "{err}");
+        assert!(err.contains("ai-ml, local-news"), "{err}");
     }
 
     #[test]

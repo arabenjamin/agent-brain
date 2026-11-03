@@ -1580,7 +1580,7 @@ mod tests {
         assert!(e.contains("only an integer slot"), "{e}");
     }
 
-    /// 2026-10-13 12:00 UTC; local midnight is 04:00 UTC (America/Detroit, EDT).
+    /// 2026-10-13 12:00 UTC; local midnight is 04:00 UTC (America/New_York, EDT).
     fn clock() -> Clock {
         Clock {
             now: DateTime::parse_from_rfc3339("2026-10-13T12:00:00Z")
@@ -1588,7 +1588,7 @@ mod tests {
                 .with_timezone(&Utc),
             today: NaiveDate::from_ymd_opt(2026, 10, 13).unwrap(),
             midnight: Box::new(|d| d.and_hms_opt(4, 0, 0).unwrap().and_utc()),
-            tz: "America/Detroit".into(),
+            tz: "America/New_York".into(),
         }
     }
 

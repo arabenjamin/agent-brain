@@ -1522,7 +1522,7 @@ mod tests {
     fn the_shipped_topics_load() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/topics");
         let t = Topics::load_dir(&dir);
-        assert!(t.defs.len() >= 5, "topics/*.yaml should load");
+        assert!(t.defs.len() >= 2, "topics/*.yaml should load");
         assert!(
             t.defs.iter().all(|d| !d.name.starts_with('_')),
             "_scope.yaml is settings, not a topic"

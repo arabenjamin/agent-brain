@@ -11,7 +11,7 @@
 //!
 //! Until 2026-08-12 the brain did only (1) and used it for (2) as well: every
 //! `{{date}}` and every "Today's date is …" came from `Utc::now()`, in a
-//! container with no `TZ` set. In America/Detroit that means the brain rolls
+//! container with no `TZ` set. In America/New_York that means the brain rolls
 //! over to tomorrow at 20:00 local. Measured that evening: host `Wed Aug 12
 //! 21:22 EDT`, container `Thu Aug 13 01:22 UTC`. So for the last four hours of
 //! every day the brain dated its notes to tomorrow, searched for tomorrow's
@@ -61,7 +61,7 @@ fn resolved() -> &'static (String, bool) {
     })
 }
 
-/// IANA zone name for display, e.g. `America/Detroit`.
+/// IANA zone name for display, e.g. `America/New_York`.
 pub fn timezone_name() -> &'static str {
     &resolved().0
 }
@@ -119,7 +119,7 @@ pub fn weekday() -> String {
 }
 
 /// A fully qualified instant with no ambiguity left in it, e.g.
-/// `Wednesday 2026-08-12 21:22 America/Detroit (UTC-04:00)`.
+/// `Wednesday 2026-08-12 21:22 America/New_York (UTC-04:00)`.
 ///
 /// The zone name *and* the numeric offset are both present deliberately: the
 /// name alone requires the reader to know the current DST state, and the offset

@@ -18,7 +18,7 @@ agent-brain-repository = { path = "../repository" }
 agent-brain-protocol = { path = "../protocol" }
 agent-brain-plugin-api = { path = "../plugin-api" }
 agent-brain-llm = { path = "../llm" }
-agent-brain-host = { path = "../host" }
+agent-brain-host = { path = "../host", default-features = false }
 agent-brain-api = { path = "../api", optional = true }
 agent-brain-skills = { path = "../skills" }
 agent-brain-retrieve = { path = "../retrieve" }
@@ -68,10 +68,12 @@ async-trait = "0.1"
 futures-util = "0.3"
 
 [features]
+# The compiled plugins. Off, core still builds: CI checks it (OUTSIDE_REVIEW_PLAN Phase 1).
+plugins        = ["agent-brain-host/plugins"]
 http-transport = ["dep:agent-brain-api", "dep:axum", "dep:tower-http", "dep:tower",
                   "dep:tokio-stream", "dep:async-stream"]
 telemetry      = ["agent-brain-repository/telemetry"]
-default        = ["http-transport", "telemetry"]
+default        = ["http-transport", "telemetry", "plugins"]
 
 [dev-dependencies]
 serde_yaml = { workspace = true }
