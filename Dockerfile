@@ -204,7 +204,14 @@ LABEL org.opencontainers.image.title="agent-brain" \
 # target/release/ (.dockerignore keeps only it). BuildKit skips the builder.
 FROM runtime-base AS ci
 COPY target/release/agent-brain /usr/local/bin/
+ARG GIT_COMMIT="" GIT_DIRTY="" BUILD_TIME=""
+ENV BRAIN_GIT_COMMIT=$GIT_COMMIT BRAIN_GIT_DIRTY=$GIT_DIRTY BRAIN_BUILD_TIME=$BUILD_TIME
+LABEL org.opencontainers.image.revision=$GIT_COMMIT org.opencontainers.image.created=$BUILD_TIME
 
 # Local and compose builds (the default target: last).
 FROM runtime-base AS runtime
 COPY --from=builder /app/target/release/agent-brain /usr/local/bin/
+# What /health reports. Last, so a new commit rebuilds only this layer.
+ARG GIT_COMMIT="" GIT_DIRTY="" BUILD_TIME=""
+ENV BRAIN_GIT_COMMIT=$GIT_COMMIT BRAIN_GIT_DIRTY=$GIT_DIRTY BRAIN_BUILD_TIME=$BUILD_TIME
+LABEL org.opencontainers.image.revision=$GIT_COMMIT org.opencontainers.image.created=$BUILD_TIME

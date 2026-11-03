@@ -136,6 +136,8 @@ jobs:
           file: Dockerfile
           # The runtime image around the binary built and tested above.
           target: ci
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev

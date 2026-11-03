@@ -361,6 +361,7 @@ pub async fn handle_health(Extension(state): Extension<Arc<RestState>>) -> impl 
     let budget = agent_brain_llm::budget::snapshot_json();
     let issues = issues(&probed, &scheduler, &queue, &lease, &budget);
 
+    let build = agent_brain_graph::build::identity();
     let version = match &state.neo4j {
         Some(n) => n
             .execute(neo4rs::query(
@@ -403,6 +404,7 @@ pub async fn handle_health(Extension(state): Extension<Arc<RestState>>) -> impl 
         "local_engine": agent_brain_llm::engine::current().report(),
         "budget": budget,
         "version": version,
+        "build": build,
     }))
     .into_response()
 }

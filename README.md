@@ -14,7 +14,9 @@ I have a NVidia3060, and the goal was to get this to work locally on a small GPU
 
 
 
-## What It Does
+## What core does
+
+Core is what any specialization stands on: store what was learned, find it again, reason over it, run work on a schedule, and enforce privacy and spend underneath all of it. It runs on one local model with no cloud key.
 
 - **Remembers** — notes with hybrid BM25+vector search, spaced repetition, entity extraction. A string the question names as written (a dollar amount, a date, a code such as GBU-12, a version, a model name, a URL, quoted text) is found as a phrase and ranks first; the spans come from tested patterns in `exact-patterns/`, not a model. The same patterns check what the brain writes: a link in a `reason` or chat answer that is in none of the sources it was given is marked `[link not in its sources]`, and a note id written as a URL becomes `note <id>`
 - **Reasons** — LLM inference over stored knowledge with derivation tracking
@@ -24,7 +26,30 @@ I have a NVidia3060, and the goal was to get this to work locally on a small GPU
 - **Extends** — runtime tool definition via stored procedure pipelines
 - **Integrates** — OpenAPI spec ingestion, credential injection, HTTP execution
 - **Routes** — before a front-door chat turn runs, the local model picks where it goes first (a behavior, an agent, a front-door tool, or a direct answer) under graded rules: what we have stored before the web, and our own names (topic aliases) read with `lookup`. A **behavior** (the routing block's `behaviors:`, such as "what did we learn today") is run by code: the local model fills its slots, `lookup` runs, and the front door phrases the rows with no agent loop. Every turn is logged (`turn:` in DuckDB) and HBI chat answers take a 👍/👎; the weekly `behavior-candidates` workflow mines both for turns an agent answered the same way each time, which are behaviors to write. `CHAT_ROUTER`, `project-docs/env.md`
-- **Specialises** — plugin bundles under `plugins/` (`core` always; others via `PLUGINS_ENABLED`) carry workflows, agent profiles, source lists and MCP servers; `GET /api/plugins` shows what loaded and why not
+- **Specialises** — see the next section
+- **Keeps its own history** — every change the brain or you make to a workflow, agent or program is a revision with an author and a reason; see [What's running](#whats-running)
+
+## How a plugin specializes it
+
+A plugin is a folder of declarative files, with Rust only if it needs its own tools. No doctor or lawyer plugin ships here: the ones in `plugins/` are one analyst's setup and double as examples.
+
+```
+plugins/<name>/
+  plugin.yaml      # name, version, description, requires (env keys it needs)
+  topics/          # what this domain tracks
+  sources/         # who to read
+  workflows/       # the work, on a schedule or run by name
+  contexts/        # its agents: prompt, tools, model
+  programs/        # how the work is organized
+  views/  tools/   # named read-only queries over the graph
+  crate/           # optional: Rust, for a tool the files above can't express
+```
+
+To add one, make the folder, add its name to `PLUGINS_ENABLED` in `.env`, and restart. A plugin of files needs no rebuild; a `crate/` is an optional feature of `crates/host`. `GET /api/plugins` shows what loaded and why not. `core` always loads, and the core crates build and test without any plugin (CI enforces it).
+
+## Running it without the private bundle
+
+The owner's own interests live in a separate private repo, mounted through `PLUGINS_EXTRA_DIRS`. You don't need it. A clone without it seeds only the generic workflows, topics and programs, and `./install.sh` sets that up. To keep your own private bundle the same way, point `PLUGINS_PRIVATE_HOST_DIR` at a folder holding it, and name it in `PLUGINS_ENABLED`.
 
 ## Prerequisites
 
@@ -51,11 +76,11 @@ git clone <repo-url>
 cd agent-brain
 cargo build --release
 
-# Start dependencies
-docker compose up -d
-
-# Configure
+# Configure: set MCP_API_KEY and NEO4J_PASSWORD in .env, or compose refuses to start
 cp .env.example .env
+
+# Start dependencies
+docker compose up -d neo4j
 
 # Initialize database
 cargo run --release -- init-db
@@ -162,7 +187,7 @@ cargo run --release -- serve --transport http --bind 0.0.0.0:8080 --api-key your
 - `POST /mcp` — JSON-RPC requests
 - `GET /mcp` — SSE stream
 - `POST /chat` — Interactive chat with SSE
-- `GET /health` — Health check
+- `GET /health` — What is running: the commit, build time and container, and the local engine
 
 ### Claude Desktop Config
 
@@ -174,7 +199,7 @@ cargo run --release -- serve --transport http --bind 0.0.0.0:8080 --api-key your
       "args": ["serve"],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
-        "NEO4J_PASSWORD": "password"
+        "NEO4J_PASSWORD": "your-password"
       }
     }
   }
@@ -206,6 +231,13 @@ docker compose up -d --build agent-brain   # then commit Cargo.lock
 ```
 
 
+## What's running
+
+- **The code:** `GET /health` reports the commit the image was built from, whether the tree had other changes, when it was built, and the container. If that commit isn't `git rev-parse HEAD`, the newest rebuild failed or hasn't finished. Each commit redeploys through `.githooks/post-commit` (`git config core.hooksPath .githooks`), so each one restarts the brain. A build by hand needs `eval "$(scripts/build_identity.sh)"` first, or it reports a null commit.
+- **What differs from the repo:** the `running_changes` view (`lookup`) lists each workflow, agent or program whose live definition isn't its file, with the diff, who changed it and why.
+- **Going back:** `manage_workflow` and `manage_program` have `history` and `revert`, and the HBI has a History panel on all three. A revert is a new revision.
+- **Keeping a runtime edit:** `scripts/adopt_revision.sh <kind> <name>` writes it to its file and shows the diff. The brain never writes or commits a repo file; you review and commit, and the next start hands it back to the file.
+
 ## CLI Commands
 
 ```
@@ -233,6 +265,13 @@ todo             Manage todos over HTTP
 
 ## Development
 
+```bash
+cargo fmt && cargo clippy
+cargo test --lib          # unit tests, all crates
+cargo test --test '*'     # integration tests (need Neo4j)
+```
+
+`CLAUDE.md` holds what applies to most changes; detail on a subsystem is in the dev notes (`scripts/dev_docs.sh search "<question>"`).
 
 ## License
 

@@ -1,6 +1,6 @@
 # Environment Variables
 
-Copy `.env.example` to `.env` and configure. **The brain container has no `env_file`** — every key it needs must also be passed through in `docker-compose.yml`, or it never reaches the process.
+Copy `.env.example` to `.env` and configure. The brain container has an `env_file`, so `.env` is its live environment; compose's `environment:` overrides it, and sets the values that matter. Why a value is what it is: dev notes, subsystem `deploy`.
 
 This is the full reference (moved verbatim from `CLAUDE.md` on 2026-10-06). The previous version of this file listed vLLM variables that no longer exist in the code; they were dropped.
 
@@ -140,3 +140,13 @@ Passed to the runner only; the brain never sees the Kaggle token.
 | `ML_RESTART_MAX_N` | `120` | `anneal` only: largest n searched by random restarts; above it only squeezes |
 | `ML_SUBMIT` | `on` | `off` stops submitting (building and scoring go on) |
 | `ML_SUBMIT_PER_DAY` | `1` | Submissions a day (Kaggle allows 10); one is sent only when it beats the best sent |
+
+Set by the build and compose, not by hand:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BRAIN_GIT_COMMIT` / `BRAIN_GIT_DIRTY` / `BRAIN_BUILD_TIME` | empty | What `/health` reports as `build`. Baked into the image (`scripts/build_identity.sh`, called by the post-commit hook and `install.sh`); empty means a build by hand that skipped it |
+| `GIT_USER_NAME` / `GIT_USER_EMAIL` | `agent-brain` / `agent-brain@noreply.local` | Git identity for commits made by the brain |
+| `MODEL_CATALOG_PATH` | compose: `/home/agent/agent-brain/models.yaml` | The model catalog |
+| `NGINX_ENVSUBST_FILTER` | `^BRAIN_` (HBI container) | Keeps nginx's template step to `BRAIN_API_KEY`, away from nginx's own `$variables` |
+| `WHISPER__MODEL` / `WHISPER__INFERENCE_DEVICE` / `WHISPER__COMPUTE_TYPE` / `WHISPER__TTL` | `Systran/faster-whisper-base` / `cuda` / `float16` / `300` (whisper container) | The transcription sidecar; the TTL unloads the model after 5 idle minutes |

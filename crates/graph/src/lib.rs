@@ -6,6 +6,7 @@
 //! its old `services::` path.
 
 pub mod architecture;
+pub mod build;
 pub mod bundles;
 pub mod clock;
 pub mod entity_resolution;

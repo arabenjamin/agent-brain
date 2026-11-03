@@ -147,8 +147,9 @@ if [ "$FETCH" = 1 ]; then
     echo "fetching the models, $need GB at most; run again to resume"
     docker compose --profile install run --rm models-fetch
 fi
-[ "$START" = 1 ] || { echo "not started: docker compose up -d --build"; exit 0; }
+[ "$START" = 1 ] || { echo 'not started: eval "$(scripts/build_identity.sh)" && docker compose up -d --build'; exit 0; }
 
+eval "$(scripts/build_identity.sh)"
 docker compose up -d --build
 echo "waiting for the brain..."
 port=$(docker compose port agent-brain 3000 2>/dev/null | sed 's/.*://')

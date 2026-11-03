@@ -72,8 +72,13 @@ async fn git(dir: &Path, args: &[&str]) -> Option<String> {
 
 /// Read the running code version from the codebase working copy.
 pub async fn read_code_version(codebase_dir: &Path) -> Option<CodeVersion> {
-    let sha = git(codebase_dir, &["rev-parse", "--short", "HEAD"]).await?;
-    let subject = git(codebase_dir, &["log", "-1", "--pretty=%s"])
+    // The repo is mounted, so its HEAD can be ahead of the image: a commit whose
+    // rebuild failed, or a restart without one. What the image was built from is
+    // what is loaded; HEAD is only the answer for a build that wasn't told.
+    let baked = agent_brain_graph::build::commit();
+    let rev = baked.as_deref().unwrap_or("HEAD");
+    let sha = git(codebase_dir, &["rev-parse", "--short", rev]).await?;
+    let subject = git(codebase_dir, &["log", "-1", "--pretty=%s", rev])
         .await
         .unwrap_or_default();
     let branch = git(codebase_dir, &["rev-parse", "--abbrev-ref", "HEAD"])
@@ -81,7 +86,7 @@ pub async fn read_code_version(codebase_dir: &Path) -> Option<CodeVersion> {
         .unwrap_or_else(|| "unknown".to_string());
     // `--quiet` exits 1 when there are unstaged changes; an error here is the
     // signal, not a failure, so this deliberately does not use `git()`.
-    let dirty = Command::new("git")
+    let live_dirty = Command::new("git")
         .arg("-C")
         .arg(codebase_dir)
         .args(["status", "--porcelain"])
@@ -89,6 +94,7 @@ pub async fn read_code_version(codebase_dir: &Path) -> Option<CodeVersion> {
         .await
         .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
         .unwrap_or(false);
+    let dirty = agent_brain_graph::build::dirty().unwrap_or(live_dirty);
     Some(CodeVersion {
         sha,
         subject,

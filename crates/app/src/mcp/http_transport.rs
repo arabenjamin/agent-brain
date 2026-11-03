@@ -918,6 +918,7 @@ async fn auth_middleware(
 async fn handle_health() -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "healthy",
+        "build": agent_brain_graph::build::identity(),
         "local_engine": agent_brain_llm::engine::current().report(),
     }))
 }

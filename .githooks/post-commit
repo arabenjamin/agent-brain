@@ -28,6 +28,8 @@ if [ -d "$debug_dir" ]; then
     fi
 fi
 
+# The commit /health reports (OUTSIDE_REVIEW_PLAN Phase 3).
+eval "$("$(git rev-parse --show-toplevel)/scripts/build_identity.sh")"
 docker compose up -d --build
 
 # Each rebuild leaves the previous image behind untagged; 642 of them once held

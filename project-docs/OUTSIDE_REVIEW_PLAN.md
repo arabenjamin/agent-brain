@@ -253,6 +253,22 @@ What the build settled that this section left open:
 3. **README refresh** around the §5 center: what it is, what core does, how
    a plugin specializes it, how to run it without the private bundle.
 
+**Built 2026-11-02.** `/health` reports `build` {commit, dirty, built_at,
+container}, baked into the image by `scripts/build_identity.sh`; the image's
+`org.opencontainers.image.revision` label holds the commit too. Compose went from
+572 lines (257 of them comments) to 341 (22 comments) with `docker compose config
+--no-interpolate` identical before and after; 11 `deploy` dev notes hold what
+the comments said, and comments already covered by a note point there.
+
+Three things differ from the text above. An image can't contain its own id, and
+passing it at `up` would make any plain `docker compose up -d` recreate the brain,
+so `/health` reports the container, which `docker inspect` maps to the image.
+`dirty` was added: the image is built from the working tree, so a commit alone
+can understate what is in it. And `:BrainVersion` now reads the baked commit, since
+reading the mounted repo's HEAD named a commit the process did not contain after a
+failed rebuild. The cost: every commit now gives a new image, so every commit
+restarts the brain, docs-only ones included.
+
 ## 8. Phase 4: size, measured
 
 1. **Measure in tokens, not lines.** A script reports the token count of

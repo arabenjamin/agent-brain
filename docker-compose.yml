@@ -1,15 +1,14 @@
+# Every variable: project-docs/env.md. Why things are this way: dev notes, subsystem
+# `deploy` (scripts/dev_docs.sh search "<question>" deploy).
 services:
+  # Ports, and who holds the key: deploy/ports-what-listens-where-and-who-holds-the-key
   neo4j:
     image: neo4j:5
     environment:
-      # The password applies only when the data volume is first created; an
-      # existing database changes it with scripts/rotate_neo4j_password.sh.
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
     ports:
-      # Loopback only (OUTSIDE_REVIEW_PLAN Phase 0); the brain reaches it on
-      # brain-internal. 7689/7476 avoid agent-api's 7688/7475.
-      - "127.0.0.1:7689:7687"    # Bolt
-      - "127.0.0.1:7476:7474"    # Browser UI
+      - "127.0.0.1:7689:7687"
+      - "127.0.0.1:7476:7474"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -22,34 +21,29 @@ services:
       - brain-internal
     restart: unless-stopped
 
-  # MCP Server with HTTP transport
+  # The brain. What it is running: deploy/how-to-see-what-is-running
   agent-brain:
     build:
       context: .
       dockerfile: Dockerfile
+      # What /health reports; scripts/build_identity.sh sets them.
+      args:
+        GIT_COMMIT: ${BRAIN_GIT_COMMIT:-}
+        GIT_DIRTY: ${BRAIN_GIT_DIRTY:-}
+        BUILD_TIME: ${BRAIN_BUILD_TIME:-}
     ports:
-      # Loopback only: host scripts and MCP clients. Other machines use the
-      # HBI on 3002, whose nginx holds the key. 3001 avoids agent-api's 3000.
       - "127.0.0.1:3001:3000"
     env_file:
-      - .env           # Load .env directly — avoids host shell env overriding API keys
+      - .env
     environment:
-      # Wall-clock zone for everything the brain says about time. Without this
-      # the container runs UTC, and in a zone behind UTC that means the brain
-      # rolls over to tomorrow at 20:00 local — dating notes, news searches, and
-      # chat answers to the wrong day for the last four hours of every day.
-      # Storage stays UTC regardless; this affects display only (services/clock.rs).
+      # Display only; storage stays UTC. subsystem-rules/architecture-subsystem-rules-the-brain-s-sense-of-time
       - TZ=${TZ:-UTC}
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
-      # Mistral since 2026-11-01; Ollama Cloud is off (LOCAL_ENGINE_PLAN §2).
+      # deploy/default-models-how-each-slot-got-where-it-is
       - LLM_PROVIDER=mistral
       - OLLAMA_URL=https://ollama.com
-      # The local engine, picked at install: an entry of `engines:` in models.yaml
-      # (LOCAL_ENGINE_PLAN.md §4). The one deployment value that is a variable, because
-      # it is the install's choice; /health reports what is actually in use. An empty
-      # role model takes the entry's default; `off` turns decisions or grounding off.
       - LOCAL_ENGINE=${LOCAL_ENGINE:-llamacpp}
       - LOCAL_ENGINE_URL=${LOCAL_ENGINE_URL:-http://llamacpp:8080}
       - LOCAL_ENGINE_CAPABILITIES=${LOCAL_ENGINE_CAPABILITIES:-}
@@ -57,156 +51,49 @@ services:
       - LOCAL_EMBED_MODEL=${LOCAL_EMBED_MODEL:-}
       - LOCAL_DECISION_MODEL=${LOCAL_DECISION_MODEL:-}
       - LOCAL_GROUNDING_MODEL=${LOCAL_GROUNDING_MODEL:-}
-      # Request budget for the LOCAL background model, separate from the 120s
-      # default every cloud call keeps. A cloud model that has not answered in
-      # 120s is not going to; a local one on a shared 8 GB GPU routinely is —
-      # gemma4:latest is a 9.86 GB model that gets ~3.2 GB of VRAM and runs 32%
-      # on GPU at ~7 tok/s. At the old shared ceiling the twice-daily media-watch
-      # burst was pure data loss: one hour on 2026-08-31 logged 31 local calls,
-      # 31 failures, average exactly 120.0s. See CLAUDE.md, "The local model has
-      # its own timeout".
+      # deploy/local-timeout-secs-why-the-local-model-has-its-own-budget
       - LOCAL_TIMEOUT_SECS=${LOCAL_TIMEOUT_SECS:-600}
-      # The brain's default model — what a call with no provider_hint and no
-      # required_capabilities lands on. Moved off gemma4:31b-cloud 2026-08-31.
-      #
-      # gemma4:31b-cloud is the one Ollama Cloud model measured to return EMPTY
-      # completions — tokens counted, nothing in the stream — at ~25% on a
-      # tool-calling prompt (see CLAUDE.md, "An empty completion is retried").
-      # The chat loops retry that; a background job does not, so an empty
-      # completion there is persisted as the step's output. It held this slot
-      # for its `vision` capability, but nothing in workflows/
-      # declares `required_capabilities: ["vision"]` — grep before changing
-      # this back. It stays in models.yaml as the free tier's only vision
-      # model, so a future vision step still resolves to it; it is just no
-      # longer what unhinted calls fall through to.
-      # The active provider's model (config::default_model_for).
       - LLM_MODEL=ministral-14b-latest
-      # Billing classes the routing policy may use: CLOUD_TIER 2 = local, free
-      # and paid (ROUTING_BILLING, a comma list, overrides it when set). It no
-      # longer decides alone — services/routing.rs also requires the work's
-      # data_class to fit each provider's data_policy (private work only reaches
-      # no_log providers), and a paid provider needs ROUTING_PAID_FOR plus a spend
-      # cap. So the public monitors' reasoning steps still win on gemini-2.5-flash
-      # (rank 5) while private ones (learn) go to gpt-oss:120b-cloud. On a 429
-      # a step falls back to the active config, then local, each rung judged
-      # by the same policy — see build_fallback_chain in services/shared_llm.rs.
       - CLOUD_TIER=2
       - ROUTING_BILLING=${ROUTING_BILLING:-}
-      # Purposes allowed to spend money: any of chat,subagent,background. Empty
-      # = none, so paid providers stay unroutable until this names one.
       - ROUTING_PAID_FOR=${ROUTING_PAID_FOR:-}
-      # Human-facing /chat runs on gpt-oss:120b-cloud (Ollama Cloud, UNMETERED —
-      # no RPM limit). Gemini was tried here and pulled back 2026-09-06: chat is
-      # agentic (one model call per tool round), so a single tool-using turn
-      # fired 8 Gemini calls in 17s and tripped the free tier's 5 requests/minute
-      # cap mid-turn (the daily 1500 was never the issue — we sent 11 all day).
-      # Gemini's per-minute limit fits background reasoning (1 call/step), not
-      # interactive chat. So chat stays on gpt-oss; reasoning stays on Gemini via
-      # CLOUD_TIER=2 capability routing. No CHAT_LLM_PROVIDER => inherit the
-      # ollama-cloud provider + its key; no CHAT_API_KEY needed.
       - CHAT_LLM_MODEL=ministral-14b-latest
-      # Worker/voice split: gpt-oss:120b-cloud gathers via tools (it is fast and
-      # a willing, reliable tool caller but fills gaps with fluent invention);
-      # gemma4:31b-cloud composes the final reply from what it gathered (nicer to
-      # read, and says "we did not find that" instead of inventing). Unset both
-      # to put gpt-oss back to speaking for itself.
-      # Worker/voice split — OFF by default since 2026-09-11. It existed to
-      # replace NO_ANSWER_AFTER_TOOLS when gpt-oss ran the loop; the local E4B
-      # front door speaks for itself, faster (21.9s vs ~28s) and with BETTER
-      # provenance — measured, the voice pass rewrote "based on what the
-      # knowledge-worker found" into the brain's own voice, stripping the
-      # attribution that TOOL-RESULT RULE exists to preserve. Turning it on
-      # re-adds one cloud call per turn. Set a provider to re-enable:
-      #   CHAT_SYNTHESIS_PROVIDER=ollama-cloud CHAT_SYNTHESIS_MODEL=gemma4:31b-cloud
       - CHAT_SYNTHESIS_PROVIDER=${CHAT_SYNTHESIS_PROVIDER-}
       - CHAT_SYNTHESIS_MODEL=${CHAT_SYNTHESIS_MODEL-}
-      # In-chat sub-agent delegation (Phase 0 spike — OFF by default). When
-      # "true", the orchestrator gains a `delegate(agent, task)` pseudo-tool that
-      # runs a bounded, read-only worker sub-agent (researcher/code-analyst/
-      # knowledge-worker) whose findings fold back into the turn. Flip to measure
-      # latency + calls/turn. See project-docs/SUBAGENT_ORCHESTRATION_PLAN.md.
       - SUBAGENT_ENABLED=${SUBAGENT_ENABLED:-true}
-      # Every tool call's arguments checked against the tool's schema (off |
-      # shadow | enforce). shadow records misfits in DuckDB arg_checks and runs the call.
       - TOOL_ARG_CHECK=${TOOL_ARG_CHECK:-shadow}
-      # Internal hosts a model's URL may reach (http_request, read_page, media,
-      # mcp_call): comma-separated host or host:port. Everything else internal
-      # (loopback, private, link-local, tailnet, Docker services) is refused.
-      # Set the value in .env, not here: it names hosts on the owner's network.
       - HTTP_ALLOW_INTERNAL=${HTTP_ALLOW_INTERNAL:-}
-      # Secrets index (VAULT_PLAN Phase 0): which host each graph-named secret
-      # may go to. Outside the repo (mounted read-write below), read-only here.
       - SECRETS_INDEX=/home/agent/vault/index.yaml
-      # The front door's router (GRAPH_CONTEXT_PLAN Phase 3): the profile's
-      # `routing:` block picks each turn's first stop on the local E4B. "off"
-      # turns it off. The check by the decision model is off by default; it adds 2-4
-      # seconds to a turn.
       - CHAT_ROUTER=${CHAT_ROUTER:-on}
       - CHAT_ROUTER_CHECKER=${CHAT_ROUTER_CHECKER:-off}
-      # Wikimedia asks automated clients for a contact in the user agent; entity
-      # linking (plugins/reference/crate/src/wiki.rs) refuses to look anything up without one. Set in .env.
       - WIKIMEDIA_CONTACT=${WIKIMEDIA_CONTACT-}
-      # The conversational front door. Deliberately tool-poor: it holds no
-      # retrieval tools and reaches everything through `delegate` (chat) or
-      # `run_agent` (MCP). Both vars point at the same profile on purpose — a
-      # connecting MCP client then sees ~7 tools instead of the full registry,
-      # which keeps its context small. Revert either to `general` to go back.
+      # deploy/the-front-door-s-profile-is-set-twice-on-purpose
       - CHAT_DEFAULT_PROFILE=${CHAT_DEFAULT_PROFILE:-GeneralDefault-Orchrestator}
       - MCP_TOOL_PROFILE=${MCP_TOOL_PROFILE:-GeneralDefault-Orchrestator}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Free-tier OpenAI-compatible providers (models.yaml `providers:`). Both are
-      # declared data_policy may_train and opened to private work by
-      # `private_ok_for` (2026-10-10): the cloud overflow after Ollama Cloud.
       - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - MCP_TRANSPORT=http
       - MCP_HTTP_BIND=0.0.0.0:3000
-      # Required: without it every request is anonymous and none is the
-      # owner's, so a paid model never runs (OUTSIDE_REVIEW_PLAN Phase 0).
       - MCP_API_KEY=${MCP_API_KEY:?set MCP_API_KEY in .env}
       - SERPAPI_KEY=${SERPAPI_KEY:-}
-      # Keyed search_web engines. An engine with no key is dropped from the
-      # ladder, so leaving one blank costs nothing. Tavily and Exa refill monthly
-      # with no card; Serper is 2,500 once; Brave needs a card (no spend cap).
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - EXA_API_KEY=${EXA_API_KEY:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
-      # TinyFish Search: 12,000 free a day (00:00 UTC), 30/min, 500/hour.
       - TINYFISH_API_KEY=${TINYFISH_API_KEY:-}
-      # News engines (search_web) — explicit `engine:` only, not in the ladder
-      # (fringe/off-topic results on the brain's queries, 2026-10-06).
-      # Currents 250/day (7-day windows); Webz is prepaid credit
-      # (~$0.01/result, balance logged per call; 5 results per search).
       - CURRENTS_API_KEY=${CURRENTS_API_KEY:-}
       - WEBZIO_API_KEY=${WEBZIO_API_KEY:-}
-      # Anakin.io: headless-browser fallback when ingest_article cannot read a
-      # page itself (blocked or script-rendered). ~1 of 300 credits/month each.
       - ANAKINIO_API_KEY=${ANAKINIO_API_KEY:-}
-      # ACLED conflict-event API (acled_events). OAuth password grant — ACLED has
-      # no API keys, so the account's email + password. Unset => tool not registered.
       - ACLED_EMAIL=${ACLED_EMAIL:-}
       - ACLED_PASSWORD=${ACLED_PASSWORD:-}
-      # Parallel Task API (deep_research, the `research` plugin). Paid per run;
-      # capped monthly in plugins/research/parallel.yaml. Unset => plugin skipped.
       - PARALLEL_API_KEY=${PARALLEL_API_KEY:-}
-      # search_web failover ladder. Brave stays last: card on file, no spend
-      # cap. Reorder here to change preference without a rebuild. This is the
-      # fallback order: the first engine of each call is picked by rotation
-      # across the engines with a `budget` (search_rotation.rs), each paced
-      # through its free allowance. SEARCH_ROTATION=off restores the plain ladder.
       - SEARCH_ENGINE_ORDER=exa,tavily,tinyfish,serper,serpapi,google,brave
-      # Sandboxed code execution. Unset => execute_code is not registered at
-      # all, so a deployment without the sandbox service degrades cleanly.
       - SANDBOX_URL=http://sandbox:8000
-      # Offline Rust compile/test sandbox. Unset => execute_code offers no
-      # `language: "rust"`. See plugins/sandbox/rust/ and RUST_FINETUNE_EXPERIMENT.md.
       - RUST_SANDBOX_URL=http://rust-sandbox:8000
       - TELEMETRY_DB_PATH=/home/agent/telemetry/telemetry.duckdb
-      # The maps plugin's ship/aircraft tracks (MAP_PLAN Phase 4); keys in .env:
-      # AISSTREAM_API_KEY, OPENSKY_CLIENT_ID, OPENSKY_CLIENT_SECRET.
       - TRACKS_DB_PATH=/home/agent/telemetry/tracks.duckdb
       - MODEL_CATALOG_PATH=/home/agent/agent-brain/models.yaml
       - WORKSPACE_DIR=/home/agent/workspace
@@ -214,44 +101,27 @@ services:
       - LOG_FORMAT=json
       - KNOWLEDGE_SNAPSHOT_DIR=/home/agent/snapshots
       - CODEBASE_DIR=/home/agent/agent-brain
-      # Seed bundles (services/plugins.rs): workflows, profiles, sources, media sources,
-      # MCP servers, schemas, topics, entity seeds, relation types. `core` always loads;
-      # PLUGINS_ENABLED names the others (comma-separated). GET /api/plugins shows each one.
       - PLUGINS_DIR=/home/agent/agent-brain/plugins
       - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,research,websocket,github,maps,harness}
-      # More bundle dirs (colon-separated), searched after plugins/: the private
-      # repo of the owner's own seeds (`personal`), mounted below.
       - PLUGINS_EXTRA_DIRS=/home/agent/plugins-private
-      # Bundles the brain drafts (manage_plugin). Inert until PLUGINS_ENABLED names one.
       - PLUGINS_RUNTIME_DIR=/home/agent/agent-brain/plugins-runtime
-      - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
-      - YT_DLP_PROXY=http://yt-proxy:8888                        # YouTube past the VPN exit (yt-proxy below)
-      - MEDIA_WATCH_ENABLED=${MEDIA_WATCH_ENABLED:-false}                                 # autonomous channel polling (12h schedule)
-      # 1, paired with the 6h interval in workflows/media-watch.yaml — see the
-      # note there. Halves the burst (30 videos at once -> 15) while keeping the
-      # daily cap at 60. Lowered from 2 on 2026-09-01.
-      - MEDIA_WATCH_MAX_PER_SOURCE=1                             # first-poll stampede guard: max new videos/source/poll
-      - MEDIA_DISCOVERY_ENABLED=true                             # weekly autonomous watchlist curation (stages INACTIVE sources for review)
-      - GAP_TASKS_DAILY_MAX=${GAP_TASKS_DAILY_MAX:-20}            # curiosity engine: max 'fill knowledge gap' tasks per local day
-      - MEDIA_DISCOVERY_MAX=3                                    # max new sources staged per discovery run
-      - WHISPER_PROVIDER=http                                    # caption-less fallback via self-hosted Whisper sidecar
-      - WHISPER_BASE_URL=http://whisper:8000/v1                  # OpenAI-compatible endpoint (faster-whisper-server)
+      - YT_DLP_PATH=/usr/local/bin/yt-dlp
+      - YT_DLP_PROXY=http://yt-proxy:8888
+      # deploy/media-watch-settings-why-the-caps
+      - MEDIA_WATCH_ENABLED=${MEDIA_WATCH_ENABLED:-false}
+      - MEDIA_WATCH_MAX_PER_SOURCE=1
+      - MEDIA_DISCOVERY_ENABLED=true
+      - GAP_TASKS_DAILY_MAX=${GAP_TASKS_DAILY_MAX:-20}
+      - MEDIA_DISCOVERY_MAX=3
+      - WHISPER_PROVIDER=http
+      - WHISPER_BASE_URL=http://whisper:8000/v1
       - WHISPER_MODEL=Systran/faster-whisper-base
-      # GitHub access is via the seeded `github` ApiContext + `http_request` tool.
-      # GITHUB_TOKEN is auto-injected by http_request when context_name="github".
-      # It is also used by entrypoint.sh to configure HTTPS push credentials.
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      # Git identity for commits made by the brain.
       - GIT_USER_NAME=${GIT_USER_NAME:-agent-brain}
       - GIT_USER_EMAIL=${GIT_USER_EMAIL:-agent-brain@noreply.local}
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Tailscale MagicDNS first, so tailnet names (*.ts.net) resolve inside the
-    # container; Docker service names still resolve through Docker's own DNS.
-    # Without it Docker forwards to the host's first resolver (8.8.8.8), which
-    # does not know the tailnet, and home_assistant failed to resolve
-    # (found 2026-10-16). Reaching a tailnet host is still the network
-    # policy's call: only HTTP_ALLOW_INTERNAL entries get through.
+    # deploy/container-dns-why-tailnet-names-need-brain-dns
     dns:
       - ${BRAIN_DNS:-8.8.8.8}
       - 8.8.8.8
@@ -259,12 +129,10 @@ services:
       - ${EXTRA_CODE_HOST_DIR:-./workspace/no-extra-code}:/home/agent/gadgetlabs:ro
       - .:/home/agent/agent-brain:rw
       - brain_snapshots:/home/agent/snapshots
-      - brain_ssh:/home/agent/.ssh          # persists signing key across rebuilds
+      - brain_ssh:/home/agent/.ssh
       - ./telemetry:/home/agent/telemetry
       - ./workspace:/home/agent/workspace
-      # Private plugin bundles (agent-brain-personal). Absent dir → no bundles.
       - ${PLUGINS_PRIVATE_HOST_DIR:-../agent-brain-personal}:/home/agent/plugins-private:ro
-      # The secrets index: owner-edited on the host, never writable by the brain.
       - ${VAULT_HOST_DIR:-${HOME}/.config/agent-brain/vault}:/home/agent/vault:ro
     depends_on:
       neo4j:
@@ -284,18 +152,7 @@ services:
       - ai-network
     restart: unless-stopped
 
-  # Local, self-hosted Whisper transcription (OpenAI-compatible API) for the
-  # Media Learning skill's caption-less fallback. No external services, no API
-  # cost. Captions cover the majority of videos, so Whisper runs only
-  # occasionally; the model unloads after idle TTL to free VRAM.
-  #
-  # GPU (cuda): host driver 535.261.03 (CUDA 12.2) satisfies the -cuda image's
-  # CUDA 12.2 runtime. Shares the 8 GB RTX 3060 Ti with host Ollama — the base
-  # model in float16 is ~1 GB and unloads on TTL, so contention is minimal.
-  # If the -cuda image ever bumps past CUDA 12.2, either bump the host driver
-  # or fall back to :latest-cpu + WHISPER__INFERENCE_DEVICE=cpu.
-  # Downloads llamacpp/models.manifest into the volume: `docker compose run --rm
-  # models-fetch`. It only runs when asked (install.sh does).
+  # Downloads llamacpp/models.manifest: docker compose run --rm models-fetch (install.sh does).
   models-fetch:
     profiles: [install]
     image: curlimages/curl:8.21.0
@@ -306,13 +163,14 @@ services:
       - ./llamacpp/models.manifest:/manifest:ro
       - ./llamacpp/fetch_models.sh:/fetch_models.sh:ro
 
+  # deploy/whisper-sidecar-gpu-and-driver
   whisper:
     image: fedirz/faster-whisper-server:latest-cuda
     environment:
       - WHISPER__MODEL=Systran/faster-whisper-base
       - WHISPER__INFERENCE_DEVICE=cuda
       - WHISPER__COMPUTE_TYPE=float16
-      - WHISPER__TTL=300   # unload the model after 5 min idle to free VRAM
+      - WHISPER__TTL=300
     volumes:
       - whisper_cache:/root/.cache/huggingface
     deploy:
@@ -326,14 +184,9 @@ services:
       - brain-internal
     restart: unless-stopped
 
-  # The llama.cpp engine: every local model, one port (llamacpp/presets/).
-  #
-  # GPU (cuda): host driver 535.261.03 (CUDA 12.2). Built from source for it. Shares
-  # the 8 GB RTX 3060 Ti with the whisper sidecar (~1 GB, on-demand).
+  # Every local model on one port. Flags are in llamacpp/presets/; how they were found:
+  # deploy/local-engine-flags-how-the-llama-cpp-settings-were-found
   llamacpp:
-    # Built from source against CUDA 12.2 to match the host's 535 driver — the
-    # upstream prebuilt image's CUDA 12.8 kernels won't load on it. See
-    # llamacpp/Dockerfile.
     build:
       context: ./llamacpp
       dockerfile: Dockerfile
@@ -343,42 +196,6 @@ services:
         RUN_IMAGE: ${LLAMA_RUN_IMAGE:-nvidia/cuda:12.2.2-runtime-ubuntu22.04}
         GGML_CUDA: ${LLAMA_GGML_CUDA:-ON}
         CUDA_ARCH: ${LLAMA_CUDA_ARCH:-86}
-    # Model: Gemma-4-E4B (unsloth GGUF). Benchmarked 2026-09-10 on the RTX 3060 Ti
-    # against Qwen3-8B and Ollama: E4B Q4_K_M is fully GPU-resident at ~3.3 GB /
-    # ~80 tok/s — HALF the VRAM of Qwen3-8B (6.0 GB) and ~14% faster, on llama.cpp
-    # ~13% faster than the same model on Ollama. The ~2.7 GB it frees takes
-    # headroom to ~3.5 GB (kills the whisper-burst OOM risk). Tuning notes:
-    # `-np 2` matches the queue's 2 concurrent local slots. q8_0 KV is the
-    # compact option.
-    #
-    # ★ `-c` IS DIVIDED BY `-np`, so it is NOT the per-request context limit.
-    # This server runs with `kv_unified = 'false'` (check the startup line
-    # `srv load_model: initializing, n_slots = N, n_ctx_slot = M`), which
-    # statically partitions the KV cache: `-c 16384 -np 2` gave each request
-    # 8192 and nothing announced it. On 2026-09-11 a `reason` job sent 8956
-    # tokens and took a hard `400 … exceeds the available context size (8192)`,
-    # burning all 3 attempts and dead-lettering the job; the sub-agent loop was
-    # already peaking at 6916 tokens_in, ~1.3k short of a ceiling nobody set.
-    # So size `-c` as (per-request context × -np): 32768/2 = the 16384 per
-    # request the distiller and the sub-agent loop actually need. Read
-    # n_ctx_slot at startup after changing either flag — it is the only number
-    # that matters, and `-c` alone does not tell you what it will be.
-    #
-    # `--no-mmproj` pays for the extra KV: `-hf` auto-downloads Gemma-4's BF16
-    # multimodal projector and loads it into VRAM, and nothing on the background
-    # path ever sends an image (vision routes to the ollama-cloud vision model —
-    # see models.yaml). Skipping it frees that VRAM for context.
-    #
-    # ★ Gemma 4 is a THINKING model and IGNORES `--reasoning-budget 0` (Qwen's
-    # flag) — it leaks its reasoning into the answer and emits no JSON. It needs
-    # `--reasoning off`. A 12B does NOT fit resident here (Gemma-3-12B Q3_K_M
-    # spills to CPU ~21 tok/s); E4B is the resident/fast choice.
-    #
-    # Since 2026-11-02 this is a router: one port, and a request's `model` picks a
-    # section of llamacpp/presets/, where the flags above now live. E4B and bge-m3
-    # load at startup, both on the GPU (LOCAL_ENGINE_PLAN.md Phase 1). LLAMA_CACHE is
-    # not set on purpose: with it, the router also lists every old download in the
-    # volume as a model.
     command: >
       --models-preset /preset.ini
       --models-max 4
@@ -398,21 +215,7 @@ services:
       - brain-internal
     restart: unless-stopped
 
-  # Sandboxed Python execution for the `execute_code` tool — the substrate for
-  # tool-integrated reasoning (a step computes its numbers instead of narrating
-  # them). Everything about this service is about containing LLM-written code:
-  #
-  #   - `sandbox-net` is `internal: true`, so it has NO route off the host.
-  #     This is the only real egress boundary; per-process limits inside the
-  #     container are runaway guards, not a security boundary.
-  #   - No env_file and no secrets: the brain's NEO4J_PASSWORD, OLLAMA_API_KEY
-  #     and GITHUB_TOKEN must never be reachable from submitted code.
-  #   - No bind mounts. The repo and workspace are deliberately absent; a run
-  #     gets a fresh scratch dir on tmpfs and nothing else.
-  #   - read_only root + dropped capabilities + no-new-privileges.
-  #
-  # Do NOT put this service on brain-internal or add a `ports:` mapping — either
-  # one restores the egress this design exists to remove.
+  # Do NOT add brain-internal or a ports: mapping: deploy/sandboxes-what-contains-llm-written-code
   sandbox:
     build:
       context: ./plugins/sandbox/python
@@ -430,15 +233,8 @@ services:
       - sandbox-net
     restart: unless-stopped
 
-  # The ML Lab runner (plugins/ml-lab/runner, ML_LAB_PLAN.md Track B): the
-  # Squares in Squares store, an overnight search on ML_RUNNER_WORKERS of the
-  # host's CPUs inside ML_RUNNER_HOURS (local), the build scored with Kaggle's
-  # own metric, and the submit. It runs only its own code, never code from a
-  # request, so unlike the sandboxes it may reach Kaggle. The brain reads
-  # GET http://ml-runner:8000/status. Data lives in workspace/ml-lab/squares.
+  # Opt in with COMPOSE_PROFILES=ml-lab: 12 cores overnight, and it submits to Kaggle (ML_LAB_PLAN.md).
   ml-runner:
-    # Opt in: it takes 12 cores overnight and submits to Kaggle.
-    # COMPOSE_PROFILES=ml-lab in .env runs it.
     profiles: [ml-lab]
     build:
       context: ./plugins/ml-lab/runner
@@ -446,7 +242,6 @@ services:
     environment:
       - TZ=${TZ:-UTC}
       - KAGGLE_API_TOKEN=${KAGGLE_API_TOKEN:-}
-      # The legacy key (kaggle.json's username + key), if the token is refused.
       - KAGGLE_USERNAME=${KAGGLE_USERNAME:-}
       - KAGGLE_KEY=${KAGGLE_KEY:-}
       - ML_RUNNER_HOURS=${ML_RUNNER_HOURS:-23-7}
@@ -467,17 +262,7 @@ services:
       - brain-internal
     restart: unless-stopped
 
-  # Offline Rust compile/test sandbox for `execute_code(language: "rust")`.
-  # Same contract as `sandbox` above — sandbox-net only, no env_file, no bind
-  # mounts, read-only root, no capabilities — with two measured differences:
-  #
-  #   - /work is tmpfs WITHOUT noexec: Rust compiles test binaries and build
-  #     scripts and must run them. The network is still the boundary.
-  #   - Crates are pre-fetched into the image at build time
-  #     (plugins/sandbox/rust/crates/Cargo.toml) and cargo runs --offline against that
-  #     read-only cache. tmpfs pages count against mem_limit, hence 4g.
-  #
-  # Do NOT put this service on brain-internal or add a `ports:` mapping.
+  # Do NOT add brain-internal or a ports: mapping: deploy/sandboxes-what-contains-llm-written-code
   rust-sandbox:
     build:
       context: ./plugins/sandbox/rust
@@ -496,13 +281,7 @@ services:
       - sandbox-net
     restart: unless-stopped
 
-  # yt-dlp's way out to YouTube, past the host's Tailscale exit node (Mullvad):
-  # YouTube's bot check blocked those exits (2026-10-17, one call each time,
-  # not a burst). A host policy rule (plugins/media/yt-proxy/host/) routes
-  # yt-egress (172.30.250.0/24) out of the LAN, so only this container skips
-  # the VPN. Its filter lets only YouTube's own domains through. The brain
-  # reaches it over yt-link, which is internal (no gateway), so the brain's own
-  # default route, and so its traffic, still leaves through the VPN.
+  # deploy/yt-proxy-networks-and-subnets
   yt-proxy:
     build:
       context: ./plugins/media/yt-proxy
@@ -523,16 +302,11 @@ services:
       context: ./hbi-frontend
       dockerfile: Dockerfile
     ports:
-      # Whoever reaches this port is the owner: nginx adds the key. Set
-      # HBI_BIND in .env to the tailnet IP to reach it from other machines.
       - "${HBI_BIND:-127.0.0.1}:3002:80"
     environment:
-      # nginx's template step fills ${BRAIN_API_KEY} into the proxy headers;
-      # the filter keeps it from touching nginx's own $variables.
       - BRAIN_API_KEY=${MCP_API_KEY:?set MCP_API_KEY in .env}
       - NGINX_ENVSUBST_FILTER=^BRAIN_
     volumes:
-      # Self-hosted map tiles (scripts/fetch_map_tiles.sh, MAP_PLAN).
       - ./maps:/usr/share/nginx/maps:ro
     depends_on:
       - agent-brain
@@ -542,21 +316,16 @@ services:
 
 networks:
   brain-internal:
-  # Carries only agent-brain <-> sandbox. `internal: true` removes the default
-  # gateway, which is what actually denies the sandbox any egress. agent-brain
-  # keeps its own internet access via brain-internal/ai-network.
+  # internal: true is what denies the sandbox egress. Do not change it.
   sandbox-net:
     internal: true
   ai-network:
     external: true
-  # yt-proxy's only gateway; the host routes this subnet past the VPN. The
-  # subnet is fixed because the host rule names it.
+  # Both subnets are fixed: deploy/yt-proxy-networks-and-subnets
   yt-egress:
     ipam:
       config:
         - subnet: 172.30.250.0/24
-  # brain <-> yt-proxy. Internal: no gateway, so it never becomes the brain's
-  # default route. tinyproxy.conf allows only this subnet.
   yt-link:
     internal: true
     ipam:
