@@ -125,7 +125,7 @@ services:
       # runs a bounded, read-only worker sub-agent (researcher/code-analyst/
       # knowledge-worker) whose findings fold back into the turn. Flip to measure
       # latency + calls/turn. See project-docs/SUBAGENT_ORCHESTRATION_PLAN.md.
-      - SUBAGENT_ENABLED=${SUBAGENT_ENABLED:-false}
+      - SUBAGENT_ENABLED=${SUBAGENT_ENABLED:-true}
       # Every tool call's arguments checked against the tool's schema (off |
       # shadow | enforce). shadow records misfits in DuckDB arg_checks and runs the call.
       - TOOL_ARG_CHECK=${TOOL_ARG_CHECK:-shadow}
@@ -253,11 +253,11 @@ services:
     # (found 2026-10-16). Reaching a tailnet host is still the network
     # policy's call: only HTTP_ALLOW_INTERNAL entries get through.
     dns:
-      - 100.100.100.100
+      - ${BRAIN_DNS:-8.8.8.8}
       - 8.8.8.8
     volumes:
-      - /home/ara/gadgetlabs:/home/agent/gadgetlabs:ro
-      - /home/ara/agent-brain:/home/agent/agent-brain:rw
+      - ${EXTRA_CODE_HOST_DIR:-./workspace/no-extra-code}:/home/agent/gadgetlabs:ro
+      - .:/home/agent/agent-brain:rw
       - brain_snapshots:/home/agent/snapshots
       - brain_ssh:/home/agent/.ssh          # persists signing key across rebuilds
       - ./telemetry:/home/agent/telemetry
@@ -294,6 +294,18 @@ services:
   # model in float16 is ~1 GB and unloads on TTL, so contention is minimal.
   # If the -cuda image ever bumps past CUDA 12.2, either bump the host driver
   # or fall back to :latest-cpu + WHISPER__INFERENCE_DEVICE=cpu.
+  # Downloads llamacpp/models.manifest into the volume: `docker compose run --rm
+  # models-fetch`. It only runs when asked (install.sh does).
+  models-fetch:
+    profiles: [install]
+    image: curlimages/curl:8.21.0
+    user: root
+    entrypoint: ["/fetch_models.sh", "/manifest"]
+    volumes:
+      - llamacpp_cache:/models
+      - ./llamacpp/models.manifest:/manifest:ro
+      - ./llamacpp/fetch_models.sh:/fetch_models.sh:ro
+
   whisper:
     image: fedirz/faster-whisper-server:latest-cuda
     environment:
@@ -314,7 +326,7 @@ services:
       - brain-internal
     restart: unless-stopped
 
-  # The llama.cpp engine: every local model, one port (llamacpp/preset.ini).
+  # The llama.cpp engine: every local model, one port (llamacpp/presets/).
   #
   # GPU (cuda): host driver 535.261.03 (CUDA 12.2). Built from source for it. Shares
   # the 8 GB RTX 3060 Ti with the whisper sidecar (~1 GB, on-demand).
@@ -325,6 +337,12 @@ services:
     build:
       context: ./llamacpp
       dockerfile: Dockerfile
+      # From install.sh; the defaults are the 3060 Ti this was measured on.
+      args:
+        BUILD_IMAGE: ${LLAMA_BUILD_IMAGE:-nvidia/cuda:12.2.2-devel-ubuntu22.04}
+        RUN_IMAGE: ${LLAMA_RUN_IMAGE:-nvidia/cuda:12.2.2-runtime-ubuntu22.04}
+        GGML_CUDA: ${LLAMA_GGML_CUDA:-ON}
+        CUDA_ARCH: ${LLAMA_CUDA_ARCH:-86}
     # Model: Gemma-4-E4B (unsloth GGUF). Benchmarked 2026-09-10 on the RTX 3060 Ti
     # against Qwen3-8B and Ollama: E4B Q4_K_M is fully GPU-resident at ~3.3 GB /
     # ~80 tok/s — HALF the VRAM of Qwen3-8B (6.0 GB) and ~14% faster, on llama.cpp
@@ -357,7 +375,7 @@ services:
     # spills to CPU ~21 tok/s); E4B is the resident/fast choice.
     #
     # Since 2026-11-02 this is a router: one port, and a request's `model` picks a
-    # section of llamacpp/preset.ini, where the flags above now live. E4B and bge-m3
+    # section of llamacpp/presets/, where the flags above now live. E4B and bge-m3
     # load at startup, both on the GPU (LOCAL_ENGINE_PLAN.md Phase 1). LLAMA_CACHE is
     # not set on purpose: with it, the router also lists every old download in the
     # volume as a model.
@@ -368,7 +386,7 @@ services:
       --no-webui
     volumes:
       - llamacpp_cache:/models
-      - ./llamacpp/preset.ini:/preset.ini:ro
+      - ./llamacpp/presets/${LOCAL_ENGINE_PRESET:-gpu-8gb}.ini:/preset.ini:ro
     deploy:
       resources:
         reservations:
@@ -419,6 +437,9 @@ services:
   # request, so unlike the sandboxes it may reach Kaggle. The brain reads
   # GET http://ml-runner:8000/status. Data lives in workspace/ml-lab/squares.
   ml-runner:
+    # Opt in: it takes 12 cores overnight and submits to Kaggle.
+    # COMPOSE_PROFILES=ml-lab in .env runs it.
+    profiles: [ml-lab]
     build:
       context: ./plugins/ml-lab/runner
       dockerfile: Dockerfile

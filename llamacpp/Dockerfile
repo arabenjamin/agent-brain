@@ -8,19 +8,26 @@
 # won't load ("CUDA error: device kernel image is invalid") because the 535
 # driver's runtime is 12.2. Compiling our own kernels with CUDA 12.2 removes both.
 #
-# Targets sm_86 only (RTX 3060 Ti) for a smaller, faster build. If the GPU or
-# host driver changes, bump CUDA_IMAGE / CMAKE_CUDA_ARCHITECTURES accordingly.
+# install.sh sets the build args below from the card it finds (compose passes them):
+# the images from the driver's CUDA version, CUDA_ARCH from nvidia-smi's compute_cap
+# (86 is the RTX 3060 Ti). Only 12.2.2 / 86 has been run. `--gpu cpu` builds with
+# GGML_CUDA=OFF on plain Ubuntu.
 #
 # The `-hf` model auto-download needs HTTPS: b10900's downloader uses a native
 # TLS client (not just libcurl), so it requires LLAMA_OPENSSL=ON + libssl-dev at
 # build and libssl3 at runtime — without it the server errors "HTTPS is not
 # supported" and can only load an already-cached GGUF.
 
-ARG CUDA_IMAGE=12.2.2
+ARG BUILD_IMAGE=nvidia/cuda:12.2.2-devel-ubuntu22.04
+ARG RUN_IMAGE=nvidia/cuda:12.2.2-runtime-ubuntu22.04
+ARG GGML_CUDA=ON
+ARG CUDA_ARCH=86
 ARG LLAMA_TAG=b10900
 
-FROM nvidia/cuda:${CUDA_IMAGE}-devel-ubuntu22.04 AS build
+FROM ${BUILD_IMAGE} AS build
 ARG LLAMA_TAG
+ARG GGML_CUDA
+ARG CUDA_ARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential cmake git ca-certificates libcurl4-openssl-dev libssl-dev \
  && rm -rf /var/lib/apt/lists/*
@@ -29,8 +36,8 @@ RUN git clone --depth 1 --branch ${LLAMA_TAG} \
       https://github.com/ggml-org/llama.cpp.git .
 RUN cmake -B build \
       -DCMAKE_BUILD_TYPE=Release \
-      -DGGML_CUDA=ON \
-      -DCMAKE_CUDA_ARCHITECTURES=86 \
+      -DGGML_CUDA=${GGML_CUDA} \
+      -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH} \
       -DLLAMA_CURL=ON \
       -DLLAMA_OPENSSL=ON \
       -DLLAMA_BUILD_SERVER=ON \
@@ -42,7 +49,7 @@ RUN cmake -B build \
 # symbols at exe-link time is how upstream's .devops/cuda.Dockerfile does it;
 # they resolve at runtime when cudart loads the injected real libcuda.so.1.
 
-FROM nvidia/cuda:${CUDA_IMAGE}-runtime-ubuntu22.04 AS runtime
+FROM ${RUN_IMAGE} AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libcurl4 libgomp1 libssl3 ca-certificates \
  && rm -rf /var/lib/apt/lists/*

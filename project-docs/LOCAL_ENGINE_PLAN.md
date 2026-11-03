@@ -315,6 +315,48 @@ bge-m3 and the merged Nimble GGUF are not yet confirmed (both Apache-2.0). Updat
 scripts and the fine-tuning harness, which call Ollama directly. After a clean
 week, the owner stops the host service; deleting its models is a separate step.
 
+*Phase 5 result, 2026-11-02.* `install.sh` writes `.env` (generated secrets, kept on a rerun, with a backup), picks the build and preset from `nvidia-smi`, downloads and verifies `llamacpp/models.manifest`, and starts the stack. Presets are files in `llamacpp/presets/`. `docker-compose.cpu.yml` and `docker-compose.byo.yml` are added through `COMPOSE_FILE`.
+
+Every file has a public source, by sha256, so nothing needs re-measuring:
+
+| File | Source | License |
+|---|---|---|
+| E4B | `unsloth/gemma-4-E4B-it-GGUF` | Apache-2.0 |
+| bge-m3 | `gpustack/bge-m3-GGUF` | MIT |
+| Guardian | `ibm-granite/granite-guardian-4.1-8b-GGUF`, IBM's own | Apache-2.0 |
+| Nimble | Ollama's public registry, by digest; no Ollama software | Apache-2.0 |
+
+No other public host has this Nimble build. The GGUF on Hugging Face, `ggml-org/Bespoke-Nimble-9B-v3-GGUF`, is v3: another model, CC BY-NC 4.0, unmeasured. If Ollama's registry drops the blob the fetch fails on it; the way out is merging `bespokelabs/Bespoke-Nimble-9B` (Apache-2.0) onto Qwen3.5-9B, not done here.
+
+The test: a fresh clone beside no private bundle, its own compose project, empty graph, all four models really downloaded and verified, no route to host Ollama, no cloud key:
+
+| Check | GPU (`gpu-8gb`) | CPU (`--gpu cpu`) |
+|---|---|---|
+| Install to healthy, all features on | yes | yes, no VRAM used |
+| Store and search a note | 0.4 s, 0.7 s | 0.3 s, 0.4 s |
+| Unhinted `reason` | 0.5 s | 12.7 s |
+| Agent with a tool call | 3.0 s | 65.9 s |
+| Chat turn delegating to an agent that read the graph | yes, every call local | not run |
+| Decision live test | same 0.988, different 0.9997 | same 0.989, different 0.9997 |
+| Grounding live test | pass | pass, 23 s for the test |
+| HBI 200, REST without the key 401 | yes | not rerun |
+
+`--engine openai` was checked to write its settings and drop the llama.cpp service; the brain itself ran that way in Phase 4. `serve_gguf.sh` served a GGUF and answered. A bad engine or preset stops the installer and names it.
+
+What getting a clone to run turned up, hidden until now by this box's own `.env` and folders (the first four from reading compose for the clone, the last by running it): `/home/ara` paths in compose (now relative, or `EXTRA_CODE_HOST_DIR`); tailnet DNS first (`BRAIN_DNS`); `ai-network` external and missing (the installer creates it); the ML runner starting by default, with 12 cores and Kaggle submission (`COMPOSE_PROFILES=ml-lab`); and `SUBAGENT_ENABLED` defaulting off, which left the front door without `delegate` and nine workflows unable to run (compose now defaults it on). This box's `.env` got the lines that keep its behaviour.
+
+Not measured: `gpu-24gb`, and CUDA images or architectures other than 12.2.2 / 86, which the installer says when it picks one. The brain's container runs as uid 1000; the installer warns anyone else.
+
+Left open, none blocking:
+- **A fresh clone does not meet OUTSIDE_REVIEW Phase 1's "seeds only generic workflows".** It seeds 45, including 6 of ML Lab's and the NIA watches in `core`. The missing `personal` bundle is skipped cleanly. That split is that plan's work.
+- `/api/system/health` reads `degraded` for good on a local-only install, because each provider with no key is a warning.
+- The schema guard refuses a label created since startup: it called `:AgentJob` unknown with jobs in the graph. A fresh graph hits this; a query on a new label after any long-running start could too.
+- A chat turn's first `thinking` line names `ministral-14b-latest` before the routing policy refuses it, since compose sets that literally. The ledger shows no call to it.
+
+Scripts: `measure_api_tags_nimble.py` now calls the engine (kind 12 of 12, topics 126 right, 2 wrong, 16 can't tell). In `workspace/finetune`, which git ignores: `serve_gguf.sh`, `run_baselines.sh` and `nf4_check.sh` no longer use Ollama; `experiment1.sh`, `import_ollama.sh` and `check_template.py` are marked historical, since they need it.
+
+Done when the owner has had a clean week and stops the host service (`sudo systemctl disable --now ollama`). Deleting its models is a separate step. The `ollama-cloud` provider stays, disabled; the fine-tuning harness keeps its `ollama` client only to reproduce old runs.
+
 ## 6. Found on the way: E4B's `json_schema`
 
 Checked 2026-11-01: **not a live problem.** A `json_schema` request whose prompt does

@@ -1,0 +1,11 @@
+# The files the llama.cpp engine runs, fetched into the llamacpp_cache volume by
+# llamacpp/fetch_models.sh (install.sh does this). One model per line:
+#   file  sha256  bytes  license  url
+# Each sha256 is the file the brain was measured on (LOCAL_ENGINE_PLAN.md Phases 1-3).
+# Nimble comes from Ollama's public registry because no other public host has this
+# build; no Ollama software is involved. `ggml-org/Bespoke-Nimble-9B-v3-GGUF` is a
+# different model under CC BY-NC 4.0 (non-commercial), so it is not used here.
+gemma4-e4b.gguf 85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87 4977171584 Apache-2.0 https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/bfc15c382204943c3a8fff0c750b94ae2364d7a3/gemma-4-E4B-it-Q4_K_M.gguf
+bge-m3.gguf daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c 1157671200 MIT https://huggingface.co/gpustack/bge-m3-GGUF/resolve/2d48f1737679ad900d5c26c5aad5410e9c70fdca/bge-m3-FP16.gguf
+nimble.gguf bbf1d6fc03bb0ed24d88f4c214ed7b5d1768aeb43d5cf433fb69eff0c8578013 9527501312 Apache-2.0 https://registry.ollama.ai/v2/library/nimble/blobs/sha256:bbf1d6fc03bb0ed24d88f4c214ed7b5d1768aeb43d5cf433fb69eff0c8578013
+guardian.gguf 0061355a4ef83a8f2bd1c39012b6c013c7679ab658b3845a64f39b5c52ada488 6879294528 Apache-2.0 https://huggingface.co/ibm-granite/granite-guardian-4.1-8b-GGUF/resolve/bc78f0995361543a70438fe44a60bb7613fed2f0/granite-guardian-4.1-8b-Q6_K.gguf

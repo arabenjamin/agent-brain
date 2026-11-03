@@ -16,6 +16,8 @@ hbi-frontend/dist
 .env
 .env.local
 .env.*.local
+.env.bak.*
+.env.??????
 
 # IDE
 .idea/

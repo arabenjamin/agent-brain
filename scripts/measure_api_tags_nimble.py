@@ -13,12 +13,15 @@ Bodies are written with insertion-ordered dicts: criteria order is part of
 the prompt (the alias judge's lesson, HBI §11.10).
 
 Usage: python3 scripts/measure_api_tags_nimble.py [--out results.json]
-Needs the brain on BRAIN_URL (default http://localhost:3001) and host Ollama
-with `nimble` on OLLAMA_URL (default http://localhost:11434).
+Needs the brain on BRAIN_URL (default http://localhost:3001) and the engine on
+LOCAL_ENGINE_URL with the decision model (default http://localhost:8080; compose keeps
+the sidecar off the host, so pass its container IP). The prompt is the one
+crates/decision builds; the request and the scoring are its logic in Python.
 """
 import argparse
 import json
 import os
+import math
 import pathlib
 import subprocess
 import sys
@@ -27,8 +30,9 @@ import urllib.request
 import yaml
 
 BRAIN = os.environ.get("BRAIN_URL", "http://localhost:3001")
-OLLAMA = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-MODEL = os.environ.get("NIMBLE_MODEL", "nimble")
+ENGINE = os.environ.get("LOCAL_ENGINE_URL", "http://localhost:8080").rstrip("/")
+MODEL = os.environ.get("LOCAL_DECISION_MODEL", "nimble")
+SYSTEM = (pathlib.Path(__file__).resolve().parent.parent / "crates/decision/src/nimble_system.txt").read_text()
 SURE = 0.7
 NO = 0.3
 MAX_ENDPOINTS = 15
@@ -49,7 +53,7 @@ KEY = subprocess.run([pathlib.Path(__file__).with_name("brain_key.sh")],
 
 def post(url, body, headers=None):
     auth = {"Authorization": f"Bearer {KEY}"} if KEY and url.startswith(BRAIN) else {}
-    req = urllib.request.Request(url, data=body.encode(), headers={"Content-Type": "application/json", **auth, **(headers or {})})
+    req = urllib.request.Request(url, data=body.encode("utf-8"), headers={"Content-Type": "application/json", **auth, **(headers or {})})
     with urllib.request.urlopen(req, timeout=300) as r:
         return r.read().decode(), dict(r.headers)
 
@@ -71,9 +75,40 @@ def cypher(q):
 
 
 def ask(state, question):
-    body = json.dumps({"model": MODEL, "keep_alive": "5m", "state": state, "questions": {"q": question}})
-    text, _ = post(f"{OLLAMA}/v1/systemone", body)
-    return json.loads(text)["answers"]["q"]
+    """The answer in Ollama's /v1/systemone shape, from first-token probabilities."""
+    if question["type"] == "noul":
+        choices = [{"code": "A", "value": False, "description": "No"},
+                   {"code": "B", "value": True, "description": "Yes"}]
+    else:
+        choices = []
+        for i, (value, description) in enumerate(question["criteria"].items()):
+            c = {"code": chr(65 + i), "value": value}
+            if description:
+                c["description"] = description
+            choices.append(c)
+    field = {"name": "q", "description": question["instructions"], "choices": choices}
+    context = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+    schema = json.dumps({"context": context, "schema": [field]}, ensure_ascii=False)
+    user = schema.replace("<", "\\u003c").replace(">", "\\u003e") + '\n\nRequested field: "q"'
+    body = json.dumps({"model": MODEL, "temperature": 0, "max_tokens": 1, "logprobs": True,
+                       "top_logprobs": 100, "cache_prompt": False,
+                       "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]},
+                      ensure_ascii=False)
+    text, _ = post(f"{ENGINE}/v1/chat/completions", body)
+    top = json.loads(text)["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
+    found = {}
+    for t in top:
+        found.setdefault(t["token"], t["logprob"])
+    missing = [c["code"] for c in choices if c["code"] not in found]
+    if missing:
+        raise RuntimeError(f"options {missing} are not among the top {len(top)} first tokens")
+    peak = max(found[c["code"]] for c in choices)
+    weights = {c["code"]: math.exp(found[c["code"]] - peak) for c in choices}
+    total = sum(weights.values())
+    if question["type"] == "noul":
+        return {"noul": weights["B"] / total}
+    probabilities = {c["value"]: weights[c["code"]] / total for c in choices}
+    return {"choice": max(choices, key=lambda c: weights[c["code"]])["value"], "probabilities": probabilities}
 
 
 def api_text(name, desc, endpoints):

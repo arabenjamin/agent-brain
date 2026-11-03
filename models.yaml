@@ -54,7 +54,7 @@ engines:
     base_url_default: "http://llamacpp:8080"
     unload: router
     capabilities: [chat, tools, json_schema, embeddings, logprobs, completions]
-    # Sections of llamacpp/preset.ini.
+    # Sections of llamacpp/presets/.
     models: { generation: gemma4-e4b, embeddings: bge-m3, decision: nimble, grounding: guardian }
   # Bring your own: any server on the OpenAI wire. Set LOCAL_ENGINE_URL and the role
   # models, and declare what it does beyond this.

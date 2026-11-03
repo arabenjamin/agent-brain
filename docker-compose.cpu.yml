@@ -1,0 +1,11 @@
+# No GPU: the CPU build of llama.cpp and CPU Whisper. install.sh --gpu cpu adds this
+# file through COMPOSE_FILE in .env.
+services:
+  llamacpp:
+    deploy: !reset {}
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    environment:
+      - WHISPER__INFERENCE_DEVICE=cpu
+      - WHISPER__COMPUTE_TYPE=int8
+    deploy: !reset {}

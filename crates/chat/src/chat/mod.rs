@@ -144,7 +144,7 @@ pub enum ChatEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         model_saw_chars: Option<usize>,
     },
-    /// Streaming token chunk. No loop emits it since the native Ollama loop went.
+    /// Streaming token chunk from the LLM.
     Token { content: String },
     /// Final assistant message (no more tool calls).
     Message { content: String },

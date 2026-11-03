@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Probe: can Gemma-4-E4B (llama.cpp sidecar) actually drive the sub-agent tool loop?
+"""Probe: can Gemma-4-E4B (the local engine) actually drive the sub-agent tool loop?
 
 Runs `run_agent(agent="knowledge-local", task=...)` over the MCP HTTP endpoint.
-knowledge-local is pinned to the `gemma4-e4b` catalog entry (provider `llamacpp`),
-so the sub-agent loop resolves to LlmProviderType::LlamaCpp @ LLAMACPP_URL and the
+knowledge-local is pinned to the `gemma4-e4b` catalog entry (provider `local`),
+so the sub-agent loop resolves to LlmProviderType::Local @ LOCAL_ENGINE_URL and the
 unmetered clamp keeps it. The task is a STRUCTURAL question that can only be
 answered by CALLING TOOLS (recent_tasks + list_apis) — so the tool_trace tells us
 whether E4B emits usable tool-calls over the OpenAI-compat wire across rounds.

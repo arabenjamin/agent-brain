@@ -56,14 +56,12 @@ plausible scores, not errors.
 - **Training and serving can't share the GPU.** To "rest the brain":
   1. `scheduler_control stop`
   2. `docker compose stop llamacpp whisper`
-  3. unload Ollama models (`keep_alive: 0`)
-  4. keep the brain container up (tests run through its `execute_code`)
+  3. keep the brain container up (tests run through its `execute_code`)
 
   Restore in reverse. Write the rested state into memory, so a later session
   knows why the scheduler is off.
-- **Cloud models don't need the GPU.** Mistral via API, and Ollama Cloud via
-  the local Ollama proxy (`gemma4:31b-cloud`, `gpt-oss:120b-cloud`), can run
-  while the GPU is busy. They share the sandbox's build slots, which affects
+- **Cloud models don't need the GPU.** Mistral and OpenRouter can run while the
+  GPU is busy. They share the sandbox's build slots, which affects
   wall time, not scores.
 
 ## 3. Build the benchmark before any model touches it
@@ -245,12 +243,14 @@ is saved with its full reply, extracted files, test output and exact feedback.
 - **Verify serving parity by token count on real prompts.** After importing,
   compare `tokens_in` for the same benchmark prompts against the published
   model (507 = 507, 392 = 392 here). A mismatch means the renderer differs.
-- **Serve with identical prompt handling.** Ollama's gemma4/qwen3.5 use
-  built-in `RENDERER`/`PARSER` plus sampling `PARAMETER`s the harness doesn't
-  override. `import_ollama.sh` copies them from the base.
-- **Training prompts must equal serving prompts.** `check-template` compares
-  Ollama's rendering against the HF template **by logprobs** (Gemma 4:
-  identical, zero difference over 80 tokens).
+- **Serve with identical prompt handling.** `scripts/serve_gguf.sh` runs tuned and
+  base GGUFs on the same llama-server build, each with its own template through
+  `--jinja`. Experiment 1 served through Ollama (built-in `RENDERER`/`PARSER`), so
+  compare token counts before comparing against those results. It is the old
+  `import_ollama.sh` and `experiment1.sh`, kept to read, which need host Ollama.
+- **Training prompts must equal serving prompts.** Compare the server's
+  `/apply-template` text with the HF template. On Ollama, `check-template` compared
+  them **by logprobs** (Gemma 4: identical, zero difference over 80 tokens).
 - **Same quantization for both** (Q4_K_M), same benchmarks, same settings.
 - **[pending]** The tuned-vs-base result on polyglot (improvement) and
   HumanEval-rs (regression).

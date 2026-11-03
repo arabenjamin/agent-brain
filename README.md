@@ -28,14 +28,18 @@ I have a NVidia3060, and the goal was to get this to work locally on a small GPU
 
 - Rust via rustup: the version is pinned in `rust-toolchain.toml` and installed automatically
 - Docker & Docker Compose
-- A GPU for the llama.cpp engine compose builds (`LOCAL_ENGINE`; `project-docs/env.md`)
+- 25 GB of disk for the models. An NVIDIA GPU with at least 6 GB and `nvidia-container-toolkit` is much faster; with none, every feature still works, slowly
 
 ## Getting Started
 
 ### Quickest path to victory
 ```bash
-docker compose up -d --build
+./install.sh
 ```
+
+It generates the secrets in `.env`, picks the build and preset from your card, downloads and verifies the models in `llamacpp/models.manifest`, and starts the stack on loopback. `./install.sh --gpu cpu` runs with no GPU. `./install.sh --engine openai --url ... --model ... --embed-model ...` uses your own OpenAI-wire server instead of llama.cpp. It is safe to run again. `GET /health` shows the engine and which features are on. After that, `docker compose up -d --build` is all you need.
+
+With no cloud key the brain runs on the local model alone. Keys go in `.env` (`project-docs/env.md`).
 
 ### Longer path
 

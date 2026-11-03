@@ -1,0 +1,8 @@
+# LOCAL_ENGINE=openai: your own server takes the engine's place, so the llama.cpp
+# service does not run. install.sh --engine openai adds this file through COMPOSE_FILE.
+services:
+  llamacpp:
+    profiles: [llamacpp-off]
+  agent-brain:
+    depends_on:
+      llamacpp: !reset null

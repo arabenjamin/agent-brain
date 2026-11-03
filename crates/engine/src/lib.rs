@@ -426,6 +426,18 @@ pub fn require() -> Result<Arc<Engine>, String> {
     }
     let engine = current();
     engine.check()?;
+    // install.sh records its choice; `.env` drifting away from it should be seen.
+    if let Some(recorded) = process_env("LOCAL_ENGINE_INSTALLED")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty() && *v != engine.name)
+    {
+        tracing::warn!(
+            engine = %engine.name,
+            installed = %recorded,
+            "LOCAL_ENGINE differs from what install.sh set up; the models and compose \
+             files it chose may not match"
+        );
+    }
     for f in engine.features().iter().filter(|f| !f.on) {
         tracing::warn!(
             feature = %f.feature,

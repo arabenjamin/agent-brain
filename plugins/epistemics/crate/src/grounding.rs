@@ -8,7 +8,7 @@
 //! claim pointing at "this maritime junction", "Hurricane Isa" by articles
 //! about Hurricane Isaias.
 //!
-//! - **Model:** IBM's `granite4.1-guardian`, a section of `llamacpp/preset.ini`,
+//! - **Model:** IBM's `granite4.1-guardian`, a section of `llamacpp/presets/`,
 //!   criterion `groundedness`: the cited results are the document, the claim is
 //!   the answer, and it says `yes` (risk: not grounded) or `no`.
 //! - **The prompt is ours to render** (`groundedness_prompt.txt`): the GGUF has no
