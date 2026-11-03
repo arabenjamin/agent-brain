@@ -38,6 +38,7 @@ fn row_to_workflow(row: &neo4rs::Row) -> Result<Workflow, RepositoryError> {
         paused_reason: node.get("paused_reason").ok(),
         topic: node.get("topic").ok(),
         kind: node.get("kind").ok(),
+        version: node.get("revision").unwrap_or(0),
         plugin: node.get("plugin").ok(),
         unavailable: node.get("unavailable").ok(),
     })
@@ -198,6 +199,27 @@ impl Neo4jClient {
         enabled: bool,
         managed_by: &str,
     ) -> Result<Workflow, RepositoryError> {
+        let (id, q) = Self::create_workflow_query(def, enabled, managed_by);
+        let rows = self.execute(q).await?;
+        let wf = rows
+            .first()
+            .map(row_to_workflow)
+            .transpose()?
+            .ok_or_else(|| RepositoryError::InvalidData("No row returned from CREATE".into()))?;
+        if def.is_default {
+            self.clear_other_defaults(&wf.id).await?;
+        }
+        info!(id = %id, name = %def.name, "Created Workflow");
+        Ok(wf)
+    }
+
+    /// The write behind [`Self::create_workflow`], with the new id, for a save
+    /// that commits it together with its revision.
+    pub fn create_workflow_query(
+        def: &WorkflowDef,
+        enabled: bool,
+        managed_by: &str,
+    ) -> (String, neo4rs::Query) {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let q = query(
@@ -226,17 +248,7 @@ impl Neo4jClient {
         .param("topic", opt_str(def.topic.as_deref()))
         .param("kind", opt_str(def.kind.as_deref()))
         .param("plugin", opt_str(def.plugin.as_deref()));
-        let rows = self.execute(q).await?;
-        let wf = rows
-            .first()
-            .map(row_to_workflow)
-            .transpose()?
-            .ok_or_else(|| RepositoryError::InvalidData("No row returned from CREATE".into()))?;
-        if def.is_default {
-            self.clear_other_defaults(&wf.id).await?;
-        }
-        info!(id = %id, name = %def.name, "Created Workflow");
-        Ok(wf)
+        (id, q)
     }
 
     /// Rewrite the old `provider_hint` for the local engine in stored steps. A
@@ -327,7 +339,8 @@ impl Neo4jClient {
         Ok(rows.first().and_then(|r| r.get::<String>("before").ok()))
     }
 
-    async fn clear_other_defaults(&self, id: &str) -> Result<(), RepositoryError> {
+    /// A workflow just made the default: it is the only one.
+    pub async fn clear_other_defaults(&self, id: &str) -> Result<(), RepositoryError> {
         self.run(
             query(
                 "MATCH (w:Workflow {is_default: true}) WHERE w.id <> $id SET w.is_default = false",
@@ -343,6 +356,17 @@ impl Neo4jClient {
         id: &str,
         patch: &WorkflowPatch,
     ) -> Result<Option<Workflow>, RepositoryError> {
+        let rows = self.execute(Self::update_workflow_query(id, patch)).await?;
+        let wf = rows.first().map(row_to_workflow).transpose()?;
+        if patch.is_default == Some(true) && wf.is_some() {
+            self.clear_other_defaults(id).await?;
+        }
+        Ok(wf)
+    }
+
+    /// The write behind [`Self::update_workflow`], for a save that commits it
+    /// together with its revision.
+    pub fn update_workflow_query(id: &str, patch: &WorkflowPatch) -> neo4rs::Query {
         let mut sets: Vec<String> = vec!["w.updated_at = datetime($now)".into()];
         let mut params: Vec<(&str, BoltType)> = vec![];
         let mut set = |prop: &'static str, v: BoltType, datetime: bool| {
@@ -405,12 +429,7 @@ impl Neo4jClient {
         for (k, v) in params {
             q = q.param(k, v);
         }
-        let rows = self.execute(q).await?;
-        let wf = rows.first().map(row_to_workflow).transpose()?;
-        if patch.is_default == Some(true) && wf.is_some() {
-            self.clear_other_defaults(id).await?;
-        }
-        Ok(wf)
+        q
     }
 
     /// Stamp a scheduled run: `last_run_at = now`, `next_run_at = next`.

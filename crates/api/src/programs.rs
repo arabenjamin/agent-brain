@@ -36,6 +36,7 @@ fn saved_response(r: Result<programs::Saved, SaveError>) -> Response {
         Err(SaveError::Invalid(e)) => bad_request(format!("Program not saved: {e}")),
         Err(SaveError::NotFound(e)) => bad_request(e),
         Err(SaveError::Storage(e)) => internal(e),
+        Err(SaveError::Refused(r)) => super::rest::refused(&r),
     }
 }
 
@@ -121,6 +122,7 @@ pub async fn handle_check(
         Ok(warnings) => Json(json!({"ok": true, "warnings": warnings})).into_response(),
         Err(SaveError::Invalid(e)) | Err(SaveError::NotFound(e)) => bad_request(e),
         Err(SaveError::Storage(e)) => internal(e),
+        Err(SaveError::Refused(r)) => super::rest::refused(&r),
     }
 }
 
@@ -178,11 +180,12 @@ pub async fn handle_delete(
     Path(name): Path<String>,
 ) -> Response {
     let neo4j = graph!(state);
-    match programs::delete(neo4j, &name).await {
+    match programs::delete(neo4j, &name, None).await {
         Ok(changes) => Json(json!({"deleted": name, "changes": changes})).into_response(),
         Err(SaveError::NotFound(_)) => not_found(),
         Err(SaveError::Invalid(e)) => bad_request(format!("Program not deleted: {e}")),
         Err(SaveError::Storage(e)) => internal(e),
+        Err(SaveError::Refused(r)) => super::rest::refused(&r),
     }
 }
 

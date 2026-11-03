@@ -439,6 +439,24 @@ An agent profile: its tool allowlist, prompt, model preference, data class. The 
 | `plugin` / `source` | String | The bundle and file it is seeded from |
 | `description`, `model_preference`, `provider_hint`, `spawnable`, `specialty`, `allows_all`, `synced_at` | various | Mirrored by the self-model sync for queries; `(:ContextProfile)-[:ALLOWS]->(:ToolDef)` mirrors the allowlist |
 
+#### `Revision`
+
+One definition of a workflow, agent profile or program: the history of what the brain edits about itself (OUTSIDE_REVIEW_PLAN Phase 2, `crates/repository/src/revision.rs`, rules in `crates/work/src/revisions.rs`). Append-only: one function creates them and nothing sets or deletes them (a test scans the workspace; `neo4j_query` refuses a write that names one). Hangs off its object by `(:Workflow|:ContextProfile|:Program)-[:REVISION]->`, but is found by `kind` + `name`, so the history outlives a delete.
+
+| Property | Type | Notes |
+|---|---|---|
+| `uid` | String | `<kind>/<name>/<version>`, unique |
+| `kind` / `name` / `version` | String / String / Integer | `workflow`, `profile` or `program`; versions count from 1 with no gaps |
+| `definition` | String | Canonical JSON, keys sorted; empty on `delete`. A definition, not state: not `enabled`, not a program's `status` |
+| `content_hash` / `prev_hash` | String / String? | sha-256 of `definition`; the revision before's hash. Every start walks the chain |
+| `author` | String | `owner`, `agent:<name>`, `chat`, `workflow-run:<task>`, `seed:<file>`, `baseline`, `outside-save-path` |
+| `reason` | String? | Required on `save` and `revert` |
+| `based_on` | Integer? | The version the writer read |
+| `op` | String | `save`, `revert`, `seed`, `baseline`, `delete`, `outside` (found on start: live matched no revision) |
+| `at` | Datetime | |
+
+The object carries `revision` (its version; the API calls it `version`), `live_hash`, `seed_definition` / `seed_hash` / `seed_source` (its file as of the last start), `drift` (how live differs from the file; null = it does not) and `revision_problem` (a broken chain). The `running_changes` view reads these.
+
 #### `Todo` (an item)
 
 The one record for work that wants doing, the user's or an agent's (HBI plan §9.2). REST `/todos`, the `manage_todo` tool, `notify_user` with `needs: "action"` and the proposal writer all write it through `services/items.rs`.

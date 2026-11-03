@@ -587,7 +587,7 @@ pub async fn handle_list_workflows(
 /// The same hard checks `manage_workflow` applies: each step's tool exists
 /// and its arguments fit the tool's own `input_schema`, pinned models are in
 /// the catalog, references resolve, and topic and kind are valid.
-async fn save_workflow(
+pub(crate) async fn save_workflow(
     state: &RestState,
     neo4j: &agent_brain_repository::Neo4jClient,
     id: Option<&str>,
@@ -634,13 +634,29 @@ async fn check_inputs(
     (live, schemas, catalog)
 }
 
-fn save_error(e: agent_brain_work::workflows::SaveError) -> axum::response::Response {
+pub(crate) fn save_error(e: agent_brain_work::workflows::SaveError) -> axum::response::Response {
     use agent_brain_work::workflows::SaveError;
     match e {
         SaveError::Invalid(_) => bad_request(e.to_string()),
         SaveError::NotFound(_) => not_found(),
         SaveError::Storage(m) => internal(m),
+        SaveError::Refused(r) => refused(&r),
     }
+}
+
+/// A save the revision rules refused: 409 when the object moved since it was
+/// read, 400 when the request lacks a reason or the version it read.
+pub(crate) fn refused(r: &agent_brain_work::revisions::Refused) -> Response {
+    let status = if r.is_conflict() {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    (
+        status,
+        Json(serde_json::json!({"error": r.to_string(), "current_version": r.current()})),
+    )
+        .into_response()
 }
 
 /// POST /workflows — create; a name that exists is refused (PUT edits).
@@ -761,10 +777,15 @@ pub async fn handle_delete_workflow(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let neo4j = graph!(state, "Workflow storage not available");
-    match neo4j.delete_workflow(&id).await {
+    let wf = match neo4j.get_workflow(&id).await {
+        Ok(Some(wf)) => wf,
+        Ok(None) => return not_found(),
+        Err(e) => return internal(e),
+    };
+    match agent_brain_work::workflows::delete(neo4j, &wf, None).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => not_found(),
-        Err(e) => internal(e),
+        Err(e) => save_error(e),
     }
 }
 
@@ -1174,6 +1195,14 @@ pub async fn handle_get_context_profile(
                 obj.extend(info);
             }
             v["rendered_prompt"] = json!(cb.rendered_prompt(&name).await);
+            // What a save names as `based_on`. Fresh, not the builder's cache.
+            if let Some(neo4j) = state.neo4j.as_ref() {
+                let version = neo4j
+                    .live_version(agent_brain_repository::RevisionKind::Profile, &name)
+                    .await
+                    .unwrap_or(0);
+                v["version"] = json!(version);
+            }
             Json(v).into_response()
         }
         None => not_found(),
@@ -1202,7 +1231,10 @@ pub async fn handle_upsert_context_profile(
             "warnings": warnings,
         }))
         .into_response(),
-        Err(e) => bad_request(format!("Profile not saved: {e}")),
+        Err(e) => match e.downcast_ref::<agent_brain_work::revisions::Refused>() {
+            Some(r) => refused(r),
+            None => bad_request(format!("Profile not saved: {e}")),
+        },
     }
 }
 

@@ -52,8 +52,11 @@ const PROBE_READ_TOOLS: &[&str] = &[
 
 /// Tools with an `action` whose reading actions a probe may run.
 const PROBE_READ_ACTIONS: &[(&str, &[&str])] = &[
-    ("manage_workflow", &["list", "get"]),
-    ("manage_program", &["list", "get", "review_context"]),
+    ("manage_workflow", &["list", "get", "history"]),
+    (
+        "manage_program",
+        &["list", "get", "history", "review_context"],
+    ),
     ("manage_todo", &["list", "get"]),
     ("manage_plugin", &["list", "get"]),
     ("manage_media_source", &["list"]),

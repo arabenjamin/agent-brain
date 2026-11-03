@@ -51,6 +51,10 @@ pub struct Workflow {
     /// One of [`WORKFLOW_KINDS`].
     #[serde(default)]
     pub kind: Option<String>,
+    /// The revision it is at (`crates/repository/src/revision.rs`): what a
+    /// save names as `based_on`. 0 = none yet.
+    #[serde(default)]
+    pub version: i64,
     /// The plugin bundle a yaml-owned workflow was seeded from.
     #[serde(default)]
     pub plugin: Option<String>,

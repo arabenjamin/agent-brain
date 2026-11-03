@@ -28,6 +28,8 @@ export const TEXT_MAX = 1500;
 
 /** A program as a save body carries it. */
 export interface ProgramDef {
+  /** The revision it is at, once stored: what an edit sends back as `based_on`. */
+  version?: number;
   name: string;
   label?: string;
   kind: ProgramKind | string;
@@ -71,6 +73,8 @@ export interface ProgramTree {
 
 /** One program in full (`GET /api/programs/{name}`). */
 export interface ProgramDetail extends ProgramDef {
+  /** The revision it is at: what an edit sends back as `based_on`. */
+  version: number;
   label: string;
   status: ProgramStatus;
   managed_by: "yaml" | "runtime";
@@ -155,9 +159,15 @@ async function refresh<T>(p: Promise<T>): Promise<T> {
 
 const path = (name: string) => `/api/programs/${encodeURIComponent(name)}`;
 
-export const createProgram = (def: ProgramDef) => refresh(apiSend<ProgramSaved>("POST", "/api/programs", def));
+/** What a save says about itself; a change of definition needs both. */
+export interface SaveNote {
+  reason?: string;
+  based_on?: number;
+}
+
+export const createProgram = (def: ProgramDef & SaveNote) => refresh(apiSend<ProgramSaved>("POST", "/api/programs", def));
 /** Keys left out keep their values; a key set to null goes back to its default. */
-export const updateProgram = (name: string, patch: Partial<ProgramDef>) =>
+export const updateProgram = (name: string, patch: Partial<ProgramDef> & SaveNote) =>
   refresh(apiSend<ProgramSaved>("PUT", path(name), patch));
 export const resetProgram = (name: string) => refresh(apiSend<ProgramSaved>("POST", `${path(name)}/reset`));
 export const deleteProgram = (name: string) =>
@@ -176,12 +186,14 @@ export async function moveWorkflow(workflow: string, from: string | null, to: st
       const s = await apiSend<ProgramSaved>("PUT", path(from), {
         workflows: (p.workflows ?? []).filter((w) => w !== workflow),
         keep_running: (p.keep_running ?? []).filter((w) => w !== workflow),
+        based_on: p.version,
+        reason: to ? `Moved ${workflow} to ${to}.` : `Released ${workflow}.`,
       });
       said.push(`${p.label || from}: ${savedNote(s)}`);
     }
     if (to) {
       const p = await apiJson<ProgramDetail>(path(to));
-      const s = await apiSend<ProgramSaved>("PUT", path(to), { workflows: [...(p.workflows ?? []).filter((w) => w !== workflow), workflow] });
+      const s = await apiSend<ProgramSaved>("PUT", path(to), { based_on: p.version, reason: from ? `Moved ${workflow} from ${from}.` : `Took on ${workflow}.`, workflows: [...(p.workflows ?? []).filter((w) => w !== workflow), workflow] });
       said.push(`${p.label || to}: ${savedNote(s)}`);
     }
   } catch (e) {

@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use agent_brain_protocol::{Skill, ToolCallResult, ToolDefinition};
 use agent_brain_repository::Neo4jClient;
 use agent_brain_work::programs::{self, PROGRAM_KINDS, PROGRAM_STATUSES};
+use agent_brain_work::revisions;
 
 pub struct ProgramSkill {
     neo4j: Neo4jClient,
@@ -34,7 +35,11 @@ impl ProgramSkill {
                 (except `keep_running`) and active again resumes exactly those. Closing an \
                 investigation or case needs a `finding`; a closed program is a cold case the \
                 owner reopens. Editing a seeded program makes it runtime-owned. \
+                A change to anything but `status` and `finding` needs `reason` (one line on why) \
+                and, on an existing program, `based_on`: the `version` you got from get. \
                 action=delete: remove `name` (refused while programs sit under it). \
+                action=history: its revisions, newest first, or one in full with `version`. \
+                action=revert: put `version` back as a new revision, with `reason` and `based_on`. \
                 action=reset: put a seeded program's file back. action=audit: only what is \
                 wrong (issues, unassigned workflows). The program-review workflow's steps: \
                 action=review_context (`name`): what a review is given; action=record_review \
@@ -45,9 +50,12 @@ impl ProgramSkill {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "get", "upsert", "delete", "reset", "audit", "review_context", "record_review", "start_due_reviews"] },
+                    "action": { "type": "string", "enum": ["list", "get", "upsert", "delete", "history", "revert", "reset", "audit", "review_context", "record_review", "start_due_reviews"] },
                     "answer": { "type": "string", "description": "record_review: the program-manager's answer, a JSON object {verdict, summary, findings, proposals}." },
                     "name": { "type": "string", "description": "The program's slug." },
+                    "reason": { "type": "string", "description": "upsert/revert/delete: one line on why. Required when a save changes the definition." },
+                    "based_on": { "type": "integer", "description": "upsert/revert: the `version` get returned. Required when a save changes an existing program; refused if it has moved since." },
+                    "version": { "type": "integer", "description": "history: the revision to read in full. revert: the revision to put back." },
                     "label": { "type": "string" },
                     "kind": { "type": "string", "enum": PROGRAM_KINDS },
                     "parent": { "type": ["string", "null"], "description": "The program above it; null = top level." },
@@ -126,10 +134,57 @@ impl ProgramSkill {
             }
             "delete" => {
                 let Some(name) = name else { return need_name() };
-                match programs::delete(&self.neo4j, name).await {
+                match programs::delete(&self.neo4j, name, args["reason"].as_str()).await {
                     Ok(changes) => {
                         ToolCallResult::success_json(json!({"deleted": name, "changes": changes}))
                     }
+                    Err(e) => ToolCallResult::error(e.to_string()),
+                }
+            }
+            "history" => {
+                let Some(name) = name else { return need_name() };
+                let kind = agent_brain_repository::RevisionKind::Program;
+                let found = match args["version"].as_i64() {
+                    Some(v) => revisions::revision_detail(&self.neo4j, kind, name, v)
+                        .await
+                        .map(|r| {
+                            r.unwrap_or_else(
+                                || json!({"error": format!("'{name}' has no version {v}")}),
+                            )
+                        }),
+                    None => revisions::history(&self.neo4j, kind, name, Some(30)).await,
+                };
+                match found {
+                    Ok(v) => ToolCallResult::success_json(v),
+                    Err(e) => ToolCallResult::error(format!("Failed to read history: {e}")),
+                }
+            }
+            "revert" => {
+                let Some(name) = name else { return need_name() };
+                let Some(version) = args["version"].as_i64() else {
+                    return ToolCallResult::error(
+                        "`version` is required for action=revert".to_string(),
+                    );
+                };
+                let live = match programs::load_all(&self.neo4j).await {
+                    Ok(all) => all
+                        .iter()
+                        .find(|s| s.def.name == name)
+                        .map(|s| programs::definition_of(&s.def)),
+                    Err(e) => return ToolCallResult::error(e.to_string()),
+                };
+                let body = revisions::revert_body(
+                    &self.neo4j,
+                    agent_brain_repository::RevisionKind::Program,
+                    name,
+                    version,
+                    args["reason"].as_str(),
+                    args["based_on"].as_i64(),
+                    live.as_ref(),
+                )
+                .await;
+                match body {
+                    Ok(b) => saved(programs::save(&self.neo4j, &b, false).await),
                     Err(e) => ToolCallResult::error(e.to_string()),
                 }
             }

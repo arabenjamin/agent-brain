@@ -14,6 +14,7 @@ import { useWorkSchedules } from "../../api/work";
 import { relTime } from "../../lib/time";
 import { Drawer, EmptyState, Pill, Stat } from "../ui";
 import { closeEntity, openEntity } from "./entities";
+import { RevisionHistory } from "./RevisionHistory";
 import ProgramForm from "./ProgramForm";
 import { EntityLink, LoadState, Section } from "./parts";
 import TodosFor from "./TodosFor";
@@ -230,6 +231,8 @@ function OneProgram({ name }: { name: string }) {
           {(p.apis ?? []).length > 0 && <div className="dw-dim">APIs: {(p.apis ?? []).join(", ")}</div>}
         </Section>
       )}
+
+      <RevisionHistory kind="program" name={p.name} onReverted={() => void q.refetch()} />
 
       <Section title="Open todos" aside={p.open_todos.length ? `${p.open_todos.length}` : undefined}>
         {p.open_todos.length === 0 ? (

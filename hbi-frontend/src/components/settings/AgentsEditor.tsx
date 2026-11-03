@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { apiRequest } from "../../api/client";
 import { useDefaultProfile } from "../../api/queries";
 import { extractJson } from "../../lib/assist";
+import { RevisionHistory } from "../drawer/RevisionHistory";
 import AgentAssist from "../ui/AgentAssist";
 import ModelPicker from "../ui/ModelPicker";
 
@@ -28,6 +29,8 @@ interface AgentDetail {
 
 /** Ownership, origin and audit findings `GET /api/contexts/:name` adds. */
 interface ProfileInfo {
+  /** The revision it is at: what an edit sends back as `based_on`. */
+  version?: number;
   managed_by?: string | null;
   plugin?: string | null;
   source?: string | null;
@@ -132,6 +135,7 @@ export default function ContextProfileModal({
   const [fetchingEdit, setFetchingEdit] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<ProfileInfo | null>(null);
+  const [reason, setReason] = useState("");
   // The front door (CHAT_DEFAULT_PROFILE): the server refuses to delete it.
   const defaultProfile = useDefaultProfile().data ?? null;
 
@@ -174,6 +178,7 @@ export default function ContextProfileModal({
   const startCreate = useCallback(() => {
     setForm(EMPTY_FORM);
     setInfo(null);
+    setReason("");
     setError(null);
     setMode("create");
   }, []);
@@ -185,6 +190,7 @@ export default function ContextProfileModal({
       const res = await apiRequest(`/api/contexts/${name}`);
       const data = (await res.json()) as AgentDetail & ProfileInfo;
       setInfo(data);
+      setReason("");
       setForm({
         name: data.name ?? name,
         description: data.description ?? "",
@@ -218,6 +224,8 @@ export default function ContextProfileModal({
         pre_load_query: form.pre_load_query?.trim() || null,
         model_preference: form.model_preference?.trim() || null,
         provider_hint: form.provider_hint?.trim() || null,
+        reason: reason.trim(),
+        based_on: mode === "edit" ? info?.version : undefined,
       };
       const res = await apiRequest(`/api/contexts`, { method: "POST", body: JSON.stringify(payload) });
       const body = (await res.json().catch(() => ({}))) as { error?: string; warnings?: string[] };
@@ -236,7 +244,7 @@ export default function ContextProfileModal({
     } finally {
       setSaving(false);
     }
-  }, [form, onProfilesChanged, startEdit]);
+  }, [form, info, mode, onProfilesChanged, reason, startEdit]);
 
   const handleDelete = useCallback(
     async (name: string) => {
@@ -311,6 +319,12 @@ export default function ContextProfileModal({
             saving={saving}
             error={error}
             onFormChange={setForm}
+            reason={reason}
+            onReasonChange={setReason}
+            onReverted={() => {
+              onProfilesChanged();
+              void startEdit(form.name);
+            }}
             onToggleTool={toggleTool}
             onToggleAll={toggleAllTools}
             onSave={handleSave}
@@ -564,7 +578,13 @@ function EditPane({
   onBack,
   info,
   onReset,
+  reason,
+  onReasonChange,
+  onReverted,
 }: {
+  reason: string;
+  onReasonChange: (r: string) => void;
+  onReverted: () => void;
   mode: "edit" | "create";
   form: AgentDetail;
   skillGroups: SkillGroup[];
@@ -666,6 +686,11 @@ function EditPane({
         )}
 
         {info && <ProfileNotice info={info} onReset={onReset} />}
+        <label>
+          <span className="wk-dim">Why this change? (kept in its history)</span>
+          <input className="ui-input" value={reason} onChange={(e) => onReasonChange(e.target.value)} />
+        </label>
+        {mode === "edit" && <RevisionHistory kind="profile" name={form.name} onReverted={onReverted} />}
 
         <AgentAssist
           title="Ask an agent to draft this profile"

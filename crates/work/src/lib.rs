@@ -12,6 +12,7 @@ pub mod mcp_client;
 pub mod profiles;
 pub mod programs;
 pub mod queue;
+pub mod revisions;
 pub mod store_impls;
 pub mod tools;
 pub mod validation;

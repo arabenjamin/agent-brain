@@ -11,6 +11,7 @@ pub mod programs;
 pub mod refs;
 pub mod related;
 pub mod rest;
+pub mod revisions;
 pub mod search;
 pub mod system;
 pub mod topics;

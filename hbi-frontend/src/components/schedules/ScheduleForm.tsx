@@ -37,6 +37,9 @@ export default function ScheduledTaskForm({
   const toolGroups = useMergedToolGroups();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  // The version this form was opened at: if it moves, the save is refused.
+  const [basedOn] = useState(existing?.version);
   const [showRaw, setShowRaw] = useState(false);
   const [rawJson, setRawJson] = useState("");
   const [rawJsonError, setRawJsonError] = useState<string | null>(null);
@@ -238,6 +241,8 @@ export default function ScheduledTaskForm({
       steps: stepsJson,
       topic: topic || null,
       kind: kind || null,
+      reason: reason.trim(),
+      based_on: basedOn,
     };
 
     try {
@@ -295,6 +300,7 @@ export default function ScheduledTaskForm({
               style={inputStyle}
               value={name}
               onChange={(e) => setName(e.target.value)}
+              disabled={!!existing}
               placeholder="e.g. daily-news"
               pattern="[a-z0-9][a-z0-9\-]*"
               title="Lowercase letters, digits and dashes: the name it is run by"
@@ -447,6 +453,11 @@ export default function ScheduledTaskForm({
               </button>
             </div>
           )}
+
+          <label style={labelStyle}>
+            Why this change? (kept in its history; a pause or a resume needs none)
+            <input style={inputStyle} value={reason} onChange={(e) => setReason(e.target.value)} />
+          </label>
 
           {error && <p style={{ color: "#f87171", margin: 0, fontSize: "0.83rem" }}>{error}</p>}
 

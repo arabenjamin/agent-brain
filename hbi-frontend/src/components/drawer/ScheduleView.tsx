@@ -21,6 +21,7 @@ import { formatLocal, parseTime, relTime } from "../../lib/time";
 import { useNow } from "../../lib/useNow";
 import type { ScheduledTask } from "../schedules/model";
 import ScheduledTaskForm from "../schedules/ScheduleForm";
+import { RevisionHistory } from "./RevisionHistory";
 import { Drawer, EmptyState, Pill } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import { EntityLink, LoadState, Section, StatusPill } from "./parts";
@@ -41,6 +42,7 @@ function forEditor(s: WorkSchedule): ScheduledTask {
     updated_at: s.updated_at,
     topic: s.topic ?? null,
     kind: s.kind ?? null,
+    version: s.version,
   };
 }
 
@@ -211,6 +213,8 @@ export default function ScheduleView({ id }: { id: string }) {
               ))}
             </ol>
           </Section>
+
+          <RevisionHistory kind="workflow" name={s.name} onReverted={() => void invalidateWork()} />
 
           <Section title="Danger">
             <button type="button" className="btn danger" disabled={!!busy}

@@ -50,6 +50,12 @@ const WRITE_HINT: &str = "To change the graph, use the tool for it (store_note, 
      manage_todo, manage_workflow, ...). A raw Cypher write runs only from a workflow step or \
      an operator's direct call.";
 
+/// Whether a query reaches a `:Revision`, as a label or by its edge.
+fn mentions_revision(cypher: &str) -> bool {
+    let upper = cypher.to_ascii_uppercase();
+    upper.contains(":REVISION")
+}
+
 const WRITE_REFUSED: &str = "readonly=false refused: chat turns and agents read the graph and \
      never write it with raw Cypher. To change the graph, use the tool for it (store_note, \
      update_task, manage_todo, manage_workflow, ...).";
@@ -839,6 +845,14 @@ impl QuerySkill {
         // refusal said how.
         if !input.readonly && !writes_allowed_here() {
             return ToolCallResult::error(WRITE_REFUSED.to_string());
+        }
+        // Revisions are append-only, and a write here is the way around that:
+        // a chain check would catch it, but only after the fact.
+        if !input.readonly && mentions_revision(&input.cypher) {
+            return ToolCallResult::error(
+                "A write that touches a :Revision is refused: revisions are append-only."
+                    .to_string(),
+            );
         }
         // A fast, readable refusal for the plain cases. Not the guard: a
         // keyword scan misses `(n)SET`; read access mode below is the guard.

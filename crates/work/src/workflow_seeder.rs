@@ -9,9 +9,11 @@
 use std::path::Path;
 
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
-use agent_brain_repository::{Neo4jClient, WorkflowDef, WorkflowInput, YamlSyncOutcome};
+use agent_brain_repository::{
+    Neo4jClient, RevisionKind, WorkflowDef, WorkflowInput, YamlSyncOutcome,
+};
 
 /// The checks a workflow may opt into.
 pub const CHECKS: &[&str] = &["evaluator", "critic"];
@@ -256,6 +258,7 @@ pub async fn seed_workflows(
         }
         seen.insert(def.name.clone(), plugin.clone());
         def.plugin = Some(plugin);
+        let source = crate::profiles::source_of(&path);
         // A wrong `needs` is dropped with a warning, like a wrong topic: it only
         // labels the step, so the workflow still runs.
         if let Ok(mut steps) = serde_json::from_str::<Vec<serde_json::Value>>(&def.steps) {
@@ -279,14 +282,26 @@ pub async fn seed_workflows(
         match neo4j.sync_yaml_workflow(&def, enabled).await {
             Ok(YamlSyncOutcome::Created) => info!(name = %def.name, "Seeded Workflow (yaml-owned)"),
             Ok(YamlSyncOutcome::Updated) => {}
-            Ok(YamlSyncOutcome::RuntimeOwned) => warn!(
+            // The `running_changes` view shows the difference.
+            Ok(YamlSyncOutcome::RuntimeOwned) => debug!(
                 name = %def.name,
-                "Workflow is runtime-owned — file skipped (manage_workflow upsert managed_by='yaml' hands it back)"
+                "Workflow is runtime-owned — file not applied (manage_workflow upsert managed_by='yaml' hands it back)"
             ),
             Err(e) => {
                 warn!(name = %def.name, error = %e, "seed_workflows: upsert failed");
                 continue;
             }
+        }
+        if let Err(e) = crate::revisions::record_seed(
+            neo4j,
+            RevisionKind::Workflow,
+            &def.name,
+            &crate::workflows::definition_of(&def),
+            &source,
+        )
+        .await
+        {
+            warn!(name = %def.name, error = %e, "seed_workflows: seed revision not recorded");
         }
         seeded += 1;
     }
@@ -295,6 +310,13 @@ pub async fn seed_workflows(
         Ok(n) => info!(workflows = n, "Stored provider_hint moved to `local`"),
         Err(e) => warn!(error = %e, "Stored provider_hint not migrated; the old name still works"),
     }
+    let live: Vec<(String, serde_json::Value)> = neo4j
+        .list_workflows(false)
+        .await?
+        .iter()
+        .map(|w| (w.name.clone(), crate::workflows::live_definition(w)))
+        .collect();
+    crate::revisions::reconcile(neo4j, RevisionKind::Workflow, &live).await?;
     Ok(seeded)
 }
 

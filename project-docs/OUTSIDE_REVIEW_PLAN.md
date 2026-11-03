@@ -204,14 +204,42 @@ is where this goes, not the prompt.
 6. **"What's running" is a query.** A `lookup` view lists workflows and
    profiles whose live revision is not their seed, with the diff. The seeder,
    which today skips a runtime-owned workflow with a log line, records the
-   divergence there instead. Runtime edits are never written back to repo
-   files by the brain (§9.4).
+   divergence there instead. Runtime edits reach repo files only through the
+   owner (§9.4): the HBI and `scripts/adopt_revision.sh` render the file, the
+   owner reviews and commits it, and a start that finds file and live identical
+   makes the file the owner again.
 7. **Backfill:** one `seed` or `baseline` revision for everything stored
    today.
 
 Done when: two concurrent saves of one workflow leave one revision and one
 refusal; a save without a reason is refused; reverting a bad edit is one
 call; the view lists the 3 runtime-owned workflows.
+
+**Built 2026-11-02.** All of it checked on the live brain. Four writers racing
+on one workflow, 12 rounds: one 200 and three 409 every round, one revision per
+round, chain intact. A save without a reason, or an edit without `based_on`, is
+refused for all three kinds. A revert is one call, and it brought back a deleted
+workflow, paused. The backfill wrote 52 + 13 + 18 `seed` and 3 + 3 `baseline`
+revisions with no false drift and left the live state identical to a snapshot
+taken first. `running_changes` lists the 3 runtime workflows and 3 runtime
+programs. A scratch workflow, program and agent adopted with
+`scripts/adopt_revision.sh` went back to `yaml` on the next start.
+
+What the build settled that this section left open:
+
+- A revision records a definition, not state. Pausing a workflow or closing a
+  program writes none and needs no reason or version.
+- A workflow's name can't change on save any more (programs already refused
+  this), since the name is the key of its history.
+- A definition and its revision commit in one transaction. The owner node is
+  locked before its version is read; `revision_uid` is the backstop.
+- A delete leaves a `delete` revision and the history stays, so a new object of
+  that name continues it. Files the seeder removes leave no `delete` revision:
+  git holds that.
+- A start finding a live definition no revision describes records an `outside`
+  revision and warns, since nothing can stop a direct write.
+- `neo4j_query` with `readonly: false` refuses Cypher naming `:Revision`. Direct
+  database access can still reach them; the chain check is what reports that.
 
 ## 7. Phase 3: what's running, and operating it
 
@@ -239,18 +267,22 @@ call; the view lists the 3 runtime-owned workflows.
 
 ## 9. Decisions for the owner
 
-1. **Trust boundary.** Is every device on the tailnet the owner (laptops,
-   Gizmatron)? Recommended: yes for the HBI on 3002, with a Tailscale ACL
-   limiting 3002 to the owner's own machines; 3001 and Neo4j loopback only.
+1. **Trust boundary.** Parked (owner, 2026-11-02). The owner is the only one
+   on the tailnet, so a Tailscale ACL is low priority. Customers, organizations
+   and user logins are a later question, and core does not need to care about
+   them.
 2. **The center sentence.** Used §5.1's for now (2026-11-02). §5.1's wording, or the review's "an agent runtime
    for small GPUs that handles privacy and spend for you." Recommended: ours,
    since the graph is what the code is built around; theirs describes how it
    is delivered.
 3. **Size budget.** Recommended: measure first (Phase 4.1), then set the
    core budget at today's number so it can only shrink.
-4. **Runtime edits back to YAML?** Recommended: never automatic. The HBI shows
-   the diff and offers "copy to YAML" for the owner to commit, the way
-   Harness² adoptions work today.
+4. **Runtime edits back to YAML?** Decided (owner, 2026-11-02): yes, through a
+   human. The brain never writes or commits a repo file. It shows the diff and
+   renders the file; the owner writes it (HBI copy, or
+   `scripts/adopt_revision.sh`), reviews it and commits, so git holds the
+   history and a file can be rolled back. Once the file matches what is live,
+   the next start hands the workflow back to the file.
 5. **The borderline workflows in §5.2.** Kept in core for now (2026-11-02; reasons in §5).
 
 ## 10. Order

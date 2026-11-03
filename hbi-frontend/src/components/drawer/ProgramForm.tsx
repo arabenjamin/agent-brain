@@ -175,6 +175,9 @@ export default function ProgramForm({ existing, onSaved, onCancel }: {
     return check.warnings.length ? `The draft is in the form and will save. Worth knowing: ${check.warnings.join(" ")}` : null;
   };
 
+  const [reason, setReason] = useState("");
+  // The version this form was opened at: if it moves, the save is refused.
+  const [basedOn] = useState(existing?.version);
   const nameOk = PROGRAM_NAME.test(name);
   const budgetOk = budget.trim() === "" || (Number.isFinite(Number(budget)) && Number(budget) >= 0);
   const tooLong = [label, charter, success].some((t) => t.length > TEXT_MAX);
@@ -185,7 +188,8 @@ export default function ProgramForm({ existing, onSaved, onCancel }: {
     setError(null);
     const body = formBody();
     try {
-      const r = existing ? await updateProgram(existing.name, body) : await createProgram({ ...body, name, kind } as ProgramDef);
+      const note = { reason: reason.trim(), based_on: basedOn };
+      const r = existing ? await updateProgram(existing.name, { ...body, ...note }) : await createProgram({ ...body, ...note, name, kind } as ProgramDef);
       onSaved(r.program.name, r);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -286,6 +290,10 @@ export default function ProgramForm({ existing, onSaved, onCancel }: {
           {!budgetOk && <span className="tone-text-red" style={{ fontSize: 11 }}>a number of dollars, 0 or more</span>}
         </label>
       </div>
+      <label>
+        <span className="wk-dim">Why this change? (kept in its history)</span>
+        <input className="ui-input" value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
       {error && <div className="tone-text-red" style={{ fontSize: 12, whiteSpace: "pre-wrap" }}>{error}</div>}
       <div className="item-actions">
         <button type="submit" className="btn" disabled={busy || !budgetOk || tooLong || (!existing && !nameOk)}>

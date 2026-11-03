@@ -144,6 +144,8 @@ export interface WorkflowInput {
 
 /** A workflow (`clients/work.rs`): scheduled when `interval_seconds` is set, else run by name. */
 export interface WorkSchedule {
+  /** The revision it is at: what an edit sends back as `based_on`. */
+  version?: number;
   id: string;
   name: string;
   description?: string | null;

@@ -578,6 +578,8 @@ impl ContextBuilderService {
         &self,
         body: &serde_json::Value,
     ) -> anyhow::Result<(ContextProfile, Vec<String>)> {
+        let req = crate::revisions::SaveRequest::from_body(body);
+        let body = &crate::revisions::without_save_keys(body);
         let name = body
             .get("name")
             .and_then(serde_json::Value::as_str)
@@ -626,14 +628,39 @@ impl ContextBuilderService {
                     .get(&name)
                     .cloned()
                     .unwrap_or_default();
-                crate::profiles::write(
-                    neo4j,
+                let definition = crate::profiles::definition_of(&profile);
+                let changed = stored.as_ref().is_none_or(|s| {
+                    agent_brain_repository::canonical(&crate::profiles::definition_of(s))
+                        != agent_brain_repository::canonical(&definition)
+                });
+                let q = crate::profiles::write_query(
                     &profile,
                     "runtime",
                     meta.plugin.as_deref(),
                     meta.source.as_deref(),
-                )
-                .await?;
+                )?;
+                if changed {
+                    let write = if stored.is_some() {
+                        crate::revisions::OwnerWrite::Update(q)
+                    } else {
+                        crate::revisions::OwnerWrite::Create(q)
+                    };
+                    crate::revisions::commit(
+                        neo4j,
+                        agent_brain_repository::RevisionKind::Profile,
+                        &name,
+                        &definition,
+                        &req,
+                        write,
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        crate::revisions::CommitError::Refused(r) => anyhow::Error::new(r),
+                        crate::revisions::CommitError::Storage(m) => anyhow::anyhow!(m),
+                    })?;
+                } else {
+                    neo4j.run(q).await?;
+                }
                 self.meta.write().await.insert(
                     name.clone(),
                     ProfileMeta {
@@ -669,6 +696,7 @@ impl ContextBuilderService {
         };
         let src = crate::profiles::source_of(&path);
         crate::profiles::write(neo4j, &profile, "yaml", Some(&plugin), Some(&src)).await?;
+        // `load_profiles` seeds: the file's revision and the drift come from there.
         self.load_profiles().await?;
         Ok(profile)
     }
@@ -697,7 +725,20 @@ impl ContextBuilderService {
             );
         }
         match &self.neo4j {
-            Some(neo4j) => crate::profiles::delete(neo4j, name).await?,
+            Some(neo4j) => {
+                crate::revisions::record_delete(
+                    neo4j,
+                    agent_brain_repository::RevisionKind::Profile,
+                    name,
+                    None,
+                )
+                .await
+                .map_err(|e| match e {
+                    crate::revisions::CommitError::Refused(r) => anyhow::Error::new(r),
+                    crate::revisions::CommitError::Storage(m) => anyhow::anyhow!(m),
+                })?;
+                crate::profiles::delete(neo4j, name).await?
+            }
             None => {
                 let path = self.contexts_dir.join(format!("{name}.yaml"));
                 if path.exists() {

@@ -1,6 +1,7 @@
 mod agent_job;
 mod client;
 mod error;
+mod revision;
 mod task;
 mod temporal;
 mod todo;
@@ -12,6 +13,9 @@ pub mod telemetry;
 pub use agent_brain_models::{WORKFLOW_KINDS, Workflow, WorkflowInput};
 pub use client::Neo4jClient;
 pub use error::{RepositoryError, Result};
+pub use revision::{
+    Appended, NewRevision, Revision, RevisionKind, canonical, chain_problems, content_hash,
+};
 pub use temporal::node_ts;
 pub use todo::{TODO_ORIGINS, TODO_STATUSES, Todo, TodoItemPatch};
 pub use workflow::{WorkflowDef, WorkflowPatch, YamlSyncOutcome};

@@ -1,0 +1,21 @@
+# What's running that the repo does not say (OUTSIDE_REVIEW_PLAN Phase 2): each
+# workflow, agent profile or program whose live definition is not its file, with
+# the difference. `drift` and `live_hash` are kept on the node by each save and
+# each start (crates/work/src/revisions.rs). To bring one back into the repo the
+# owner reviews and commits it (scripts/adopt_revision.sh).
+name: running_changes
+kind: cypher
+description: Workflows, agents and programs running something other than their repo file, with the diff, who changed it and why.
+words: [what is running, running changes, runtime edits, drift, diverged, changed at runtime, differs from yaml, not in the repo, self edits, revisions]
+input_schema: { type: object, properties: {} }
+cypher: |-
+  MATCH (o)
+  WHERE (o:Workflow OR o:ContextProfile OR o:Program)
+    AND ((o.live_hash IS NOT NULL AND o.live_hash <> coalesce(o.seed_hash, ''))
+         OR o.revision_problem IS NOT NULL)
+  OPTIONAL MATCH (o)-[:REVISION]->(r:Revision {version: o.revision})
+  RETURN CASE WHEN o:Workflow THEN 'workflow' WHEN o:Program THEN 'program' ELSE 'profile' END AS kind,
+         o.name AS name, o.managed_by AS managed_by, o.revision AS version,
+         o.seed_source AS file, r.author AS changed_by, r.reason AS why, toString(r.at) AS at,
+         o.drift AS diff, o.revision_problem AS history_problem
+  ORDER BY kind, name

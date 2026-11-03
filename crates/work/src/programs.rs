@@ -27,7 +27,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use agent_brain_repository::Neo4jClient;
 
@@ -510,6 +510,31 @@ async fn write(
     source: Option<&str>,
     status_owned: bool,
 ) -> anyhow::Result<()> {
+    neo4j
+        .run(write_query(def, managed_by, plugin, source, status_owned)?)
+        .await?;
+    Ok(())
+}
+
+/// What a program's revisions record: its definition, without `status` and
+/// `finding`, which are state the graph owns.
+pub fn definition_of(def: &ProgramDef) -> Value {
+    let mut v = serde_json::to_value(def).unwrap_or_default();
+    if let Some(m) = v.as_object_mut() {
+        m.remove("status");
+        m.remove("finding");
+    }
+    v
+}
+
+/// The write behind [`write`], for a save that commits it with its revision.
+fn write_query(
+    def: &ProgramDef,
+    managed_by: &str,
+    plugin: Option<&str>,
+    source: Option<&str>,
+    status_owned: bool,
+) -> anyhow::Result<neo4rs::Query> {
     let status_set = if status_owned {
         "SET p.status_changed_at = CASE WHEN coalesce(p.status, '') <> $status \
              THEN datetime() ELSE p.status_changed_at END, \
@@ -532,33 +557,28 @@ async fn write(
         v.map(|s| neo4rs::BoltType::from(s.to_string()))
             .unwrap_or_else(null)
     };
-    neo4j
-        .run(
-            neo4rs::query(&cypher)
-                .param("name", def.name.clone())
-                .param("status", def.status.clone())
-                .param("finding", opt(def.finding.as_deref()))
-                .param("definition", serde_json::to_string(def)?)
-                .param("label", def.label().to_string())
-                .param("kind", def.kind.clone())
-                .param("parent", opt(def.parent.as_deref()))
-                .param("workflows", def.workflows.clone())
-                .param("topics", def.topics.clone())
-                .param("agents", def.agents.clone())
-                .param("apis", def.apis.clone())
-                .param(
-                    "budget",
-                    def.budget
-                        .as_ref()
-                        .map(|b| neo4rs::BoltType::from(b.monthly_usd))
-                        .unwrap_or_else(null),
-                )
-                .param("managed_by", managed_by.to_string())
-                .param("plugin", opt(plugin))
-                .param("source", opt(source)),
+    Ok(neo4rs::query(&cypher)
+        .param("name", def.name.clone())
+        .param("status", def.status.clone())
+        .param("finding", opt(def.finding.as_deref()))
+        .param("definition", serde_json::to_string(def)?)
+        .param("label", def.label().to_string())
+        .param("kind", def.kind.clone())
+        .param("parent", opt(def.parent.as_deref()))
+        .param("workflows", def.workflows.clone())
+        .param("topics", def.topics.clone())
+        .param("agents", def.agents.clone())
+        .param("apis", def.apis.clone())
+        .param(
+            "budget",
+            def.budget
+                .as_ref()
+                .map(|b| neo4rs::BoltType::from(b.monthly_usd))
+                .unwrap_or_else(null),
         )
-        .await?;
-    Ok(())
+        .param("managed_by", managed_by.to_string())
+        .param("plugin", opt(plugin))
+        .param("source", opt(source)))
 }
 
 /// Rebuild the `UNDER` and `OWNS` edges from the programs' properties.
@@ -758,9 +778,12 @@ pub async fn seed_programs(
     let mut inv = inventory(neo4j).await?;
 
     let mut files: Vec<(String, String, ProgramDef)> = Vec::new();
+    let mut seeds: Vec<(String, String, Value)> = Vec::new();
     for (plugin, source, mut def) in file_defs(plugins) {
         if runtime.contains_key(&def.name) {
-            warn!(name = %def.name, "Program is runtime-owned — file skipped (manage_program reset puts the file back)");
+            // The `running_changes` view shows the difference.
+            debug!(name = %def.name, "Program is runtime-owned — file not applied (manage_program reset puts the file back)");
+            seeds.push((def.name.clone(), source, definition_of(&def)));
             continue;
         }
         if gone.contains(&def.name) {
@@ -814,6 +837,17 @@ pub async fn seed_programs(
 
     for (plugin, source, def) in &files {
         write(neo4j, def, "yaml", Some(plugin), Some(source), false).await?;
+        seeds.push((def.name.clone(), source.clone(), definition_of(def)));
+    }
+    for (name, source, definition) in &seeds {
+        crate::revisions::record_seed(
+            neo4j,
+            agent_brain_repository::RevisionKind::Program,
+            name,
+            definition,
+            source,
+        )
+        .await?;
     }
     // A yaml-owned program whose file is gone goes too, unless its plugin
     // is only off (it comes back with the plugin).
@@ -833,6 +867,13 @@ pub async fn seed_programs(
         .await?;
     relink(neo4j).await?;
     reconcile(neo4j).await?;
+    let live: Vec<(String, Value)> = load_all(neo4j)
+        .await?
+        .iter()
+        .map(|s| (s.def.name.clone(), definition_of(&s.def)))
+        .collect();
+    crate::revisions::reconcile(neo4j, agent_brain_repository::RevisionKind::Program, &live)
+        .await?;
     Ok(files.len())
 }
 
@@ -843,6 +884,17 @@ pub enum SaveError {
     Invalid(String),
     NotFound(String),
     Storage(String),
+    /// No reason, no version read, or the program moved (`revisions`).
+    Refused(crate::revisions::Refused),
+}
+
+impl From<crate::revisions::CommitError> for SaveError {
+    fn from(e: crate::revisions::CommitError) -> Self {
+        match e {
+            crate::revisions::CommitError::Refused(r) => SaveError::Refused(r),
+            crate::revisions::CommitError::Storage(m) => SaveError::Storage(m),
+        }
+    }
 }
 
 impl std::fmt::Display for SaveError {
@@ -850,6 +902,7 @@ impl std::fmt::Display for SaveError {
         match self {
             SaveError::Invalid(e) => write!(f, "Program rejected — nothing was saved: {e}"),
             SaveError::NotFound(e) | SaveError::Storage(e) => write!(f, "{e}"),
+            SaveError::Refused(r) => write!(f, "{r}"),
         }
     }
 }
@@ -959,16 +1012,34 @@ pub async fn save(
         managed_by,
         warnings,
     } = prepare(neo4j, body, create_only).await?;
-    write(
-        neo4j,
-        &def,
-        &managed_by,
-        current.as_ref().and_then(|c| c.plugin.as_deref()),
-        current.as_ref().and_then(|c| c.source.as_deref()),
-        true,
-    )
-    .await
-    .map_err(storage)?;
+    let plugin = current.as_ref().and_then(|c| c.plugin.as_deref());
+    let source = current.as_ref().and_then(|c| c.source.as_deref());
+    let definition = definition_of(&def);
+    let changed = current.as_ref().is_none_or(|c| {
+        agent_brain_repository::canonical(&definition_of(&c.def))
+            != agent_brain_repository::canonical(&definition)
+    });
+    if changed {
+        let q = write_query(&def, &managed_by, plugin, source, true).map_err(storage)?;
+        let write = if current.is_some() {
+            crate::revisions::OwnerWrite::Update(q)
+        } else {
+            crate::revisions::OwnerWrite::Create(q)
+        };
+        crate::revisions::commit(
+            neo4j,
+            agent_brain_repository::RevisionKind::Program,
+            &def.name,
+            &definition,
+            &crate::revisions::SaveRequest::from_body(body),
+            write,
+        )
+        .await?;
+    } else {
+        write(neo4j, &def, &managed_by, plugin, source, true)
+            .await
+            .map_err(storage)?;
+    }
     relink(neo4j).await.map_err(storage)?;
     let changes = reconcile(neo4j).await.map_err(storage)?;
     Ok(Saved {
@@ -1008,7 +1079,10 @@ async fn prepare(
         .unwrap_or_else(|| json!({}));
     if let Some(obj) = body.as_object() {
         for (k, v) in obj {
-            if matches!(k.as_str(), "action" | "managed_by") {
+            if matches!(
+                k.as_str(),
+                "action" | "managed_by" | "reason" | "based_on" | "reverts" | "version"
+            ) {
                 continue;
             }
             if v.is_null() {
@@ -1067,7 +1141,11 @@ async fn prepare(
 /// Delete a program. Refused while programs sit under it. A seeded one
 /// leaves a `(:RetiredProgram)` so the next start does not bring it back.
 /// Its workflows are released, and those its pause held come back.
-pub async fn delete(neo4j: &Neo4jClient, name: &str) -> Result<Vec<String>, SaveError> {
+pub async fn delete(
+    neo4j: &Neo4jClient,
+    name: &str,
+    reason: Option<&str>,
+) -> Result<Vec<String>, SaveError> {
     let stored = load_all(neo4j).await.map_err(storage)?;
     let Some(cur) = stored.iter().find(|s| s.def.name == name) else {
         return Err(SaveError::NotFound(format!(
@@ -1090,6 +1168,13 @@ pub async fn delete(neo4j: &Neo4jClient, name: &str) -> Result<Vec<String>, Save
             children.join(", ")
         )));
     }
+    crate::revisions::record_delete(
+        neo4j,
+        agent_brain_repository::RevisionKind::Program,
+        name,
+        reason,
+    )
+    .await?;
     if cur.source.is_some() {
         neo4j
             .run(
@@ -1149,6 +1234,13 @@ pub async fn reset(
         .await
         .map_err(storage)?;
     write(neo4j, &def, "yaml", Some(&plugin), Some(&source), false)
+        .await
+        .map_err(storage)?;
+    let kind = agent_brain_repository::RevisionKind::Program;
+    crate::revisions::record_seed(neo4j, kind, name, &definition_of(&def), &source)
+        .await
+        .map_err(storage)?;
+    crate::revisions::reconcile(neo4j, kind, &[(name.to_string(), definition_of(&def))])
         .await
         .map_err(storage)?;
     relink(neo4j).await.map_err(storage)?;
@@ -1240,6 +1332,9 @@ pub async fn tree(neo4j: &Neo4jClient) -> anyhow::Result<Value> {
 /// One program in full: its definition, owner, the programs under it, its
 /// workflows' state, and its open todos.
 pub async fn detail(neo4j: &Neo4jClient, name: &str) -> anyhow::Result<Option<Value>> {
+    let version = neo4j
+        .live_version(agent_brain_repository::RevisionKind::Program, name)
+        .await?;
     let stored = load_all(neo4j).await?;
     let Some(s) = stored.iter().find(|s| s.def.name == name) else {
         return Ok(None);
@@ -1285,6 +1380,7 @@ pub async fn detail(neo4j: &Neo4jClient, name: &str) -> anyhow::Result<Option<Va
     };
     let mut out = serde_json::to_value(s)?;
     out["label"] = json!(s.def.label());
+    out["version"] = json!(version);
     out["children"] = json!(children);
     out["workflow_state"] = json!(workflows);
     out["open_todos"] = json!(todos);

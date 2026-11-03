@@ -44,6 +44,8 @@ impl Neo4jClient {
             "CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE",
             // Programs (PROGRAMS_PLAN): one node per name; MERGE relies on it.
             "CREATE CONSTRAINT program_name IF NOT EXISTS FOR (p:Program) REQUIRE p.name IS UNIQUE",
+            // Revisions (OUTSIDE_REVIEW_PLAN Phase 2): one per object and version.
+            "CREATE CONSTRAINT revision_uid IF NOT EXISTS FOR (r:Revision) REQUIRE r.uid IS UNIQUE",
             // Architecture snapshots: the developer plugin's `start`.
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
             "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",
@@ -70,6 +72,7 @@ impl Neo4jClient {
             "CREATE INDEX entity_key_idx IF NOT EXISTS FOR (e:Entity) ON (e.key)",
             "CREATE INDEX entity_id_idx IF NOT EXISTS FOR (e:Entity) ON (e.id)",
             "CREATE INDEX entity_alias_key_idx IF NOT EXISTS FOR (a:EntityAlias) ON (a.key)",
+            "CREATE INDEX revision_kind_name IF NOT EXISTS FOR (r:Revision) ON (r.kind, r.name)",
             // Agent job indexes
             "CREATE INDEX agent_job_status IF NOT EXISTS FOR (j:AgentJob) ON (j.status)",
             "CREATE INDEX agent_job_priority IF NOT EXISTS FOR (j:AgentJob) ON (j.priority)",

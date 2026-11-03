@@ -11,7 +11,7 @@
 
 #[cfg(feature = "http-transport")]
 pub use agent_brain_api::{
-    entities, feed, items, programs, refs, related, rest, search, system, topics, work,
+    entities, feed, items, programs, refs, related, rest, revisions, search, system, topics, work,
 };
 pub use agent_brain_chat::chat;
 

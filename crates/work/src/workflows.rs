@@ -232,6 +232,17 @@ pub enum SaveError {
     Invalid(String),
     NotFound(String),
     Storage(String),
+    /// No reason, no version read, or the workflow moved (`revisions`).
+    Refused(crate::revisions::Refused),
+}
+
+impl From<crate::revisions::CommitError> for SaveError {
+    fn from(e: crate::revisions::CommitError) -> Self {
+        match e {
+            crate::revisions::CommitError::Refused(r) => SaveError::Refused(r),
+            crate::revisions::CommitError::Storage(m) => SaveError::Storage(m),
+        }
+    }
 }
 
 impl std::fmt::Display for SaveError {
@@ -239,6 +250,7 @@ impl std::fmt::Display for SaveError {
         match self {
             SaveError::Invalid(e) => write!(f, "Workflow rejected — nothing was saved: {e}"),
             SaveError::NotFound(e) | SaveError::Storage(e) => write!(f, "{e}"),
+            SaveError::Refused(r) => write!(f, "{r}"),
         }
     }
 }
@@ -286,6 +298,62 @@ pub fn to_body(wf: &Workflow) -> Value {
     b
 }
 
+/// What a workflow's revisions record: its definition, in save-body shape so an
+/// old one can be saved again. Not its state (`enabled`, the schedule's next
+/// run), and every key is present, so a revert clears what the old one lacks.
+pub fn definition_of(def: &agent_brain_repository::WorkflowDef) -> Value {
+    let text = |s: &Option<String>| {
+        s.as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+    };
+    serde_json::json!({
+        "name": def.name,
+        "description": text(&def.description),
+        "every": def.interval_seconds.map(crate::workflow_seeder::format_every),
+        "steps": serde_json::from_str::<Value>(&def.steps).unwrap_or(Value::Array(vec![])),
+        "inputs": def.inputs,
+        "checks": def.checks,
+        "evaluation_rubric": text(&def.evaluation_rubric),
+        "default": def.is_default,
+        "topic": text(&def.topic),
+        "kind": text(&def.kind),
+    })
+}
+
+/// [`definition_of`] a stored workflow.
+pub fn live_definition(wf: &Workflow) -> Value {
+    definition_of(&agent_brain_repository::WorkflowDef {
+        name: wf.name.clone(),
+        description: wf.description.clone(),
+        interval_seconds: wf.interval_seconds,
+        steps: wf.steps.clone(),
+        inputs: wf.inputs.clone(),
+        checks: wf.checks.clone(),
+        evaluation_rubric: wf.evaluation_rubric.clone(),
+        is_default: wf.is_default,
+        topic: wf.topic.clone(),
+        kind: wf.kind.clone(),
+        plugin: wf.plugin.clone(),
+    })
+}
+
+/// Delete a workflow, noting it in its history first. Its past runs keep their
+/// `workflow` name, and `revert` can bring it back.
+pub async fn delete(
+    neo4j: &Neo4jClient,
+    wf: &Workflow,
+    reason: Option<&str>,
+) -> Result<bool, SaveError> {
+    use agent_brain_repository::RevisionKind;
+    crate::revisions::record_delete(neo4j, RevisionKind::Workflow, &wf.name, reason).await?;
+    neo4j
+        .delete_workflow(&wf.id)
+        .await
+        .map_err(|e| SaveError::Storage(e.to_string()))
+}
+
 /// A save body checked and resolved, not yet written: what `save` writes and
 /// `check` reports on.
 struct Prepared {
@@ -321,7 +389,9 @@ pub async fn check(
 /// `create_only`, when an existing name is refused instead of edited. Keys the
 /// body leaves out keep their stored values; the merged whole is checked
 /// (envelope, every step against its tool's schema, pinned models, step and
-/// input references, topic and kind) and REJECTED on any hard error.
+/// input references, topic and kind) and REJECTED on any hard error. A change
+/// of definition also needs a `reason` and, on an edit, `based_on` (the version
+/// read), and commits with its revision; a pause or resume writes none.
 pub async fn save(
     neo4j: &Neo4jClient,
     id: Option<&str>,
@@ -340,11 +410,35 @@ pub async fn save(
         step_warnings,
     } = prepare(neo4j, id, create_only, body, checks).await?;
 
+    use agent_brain_repository::{Neo4jClient as Client, RevisionKind, canonical};
+    let req = crate::revisions::SaveRequest::from_body(body);
+    let definition = definition_of(&def);
+
     let Some(cur) = current else {
+        let (_, create) = Client::create_workflow_query(
+            &def,
+            enabled,
+            managed_by.as_deref().unwrap_or("runtime"),
+        );
+        crate::revisions::commit(
+            neo4j,
+            RevisionKind::Workflow,
+            &def.name,
+            &definition,
+            &req,
+            crate::revisions::OwnerWrite::Create(create),
+        )
+        .await?;
         let wf = neo4j
-            .create_workflow(&def, enabled, managed_by.as_deref().unwrap_or("runtime"))
+            .get_workflow_by_name(&def.name)
             .await
-            .map_err(storage)?;
+            .map_err(storage)?
+            .ok_or_else(|| {
+                SaveError::NotFound(format!("Workflow '{}' vanished during the save", def.name))
+            })?;
+        if def.is_default {
+            neo4j.clear_other_defaults(&wf.id).await.map_err(storage)?;
+        }
         return Ok(Saved {
             workflow: wf,
             created: true,
@@ -363,6 +457,14 @@ pub async fn save(
         (None, Some(_)) if cur.next_run_at.is_none() => Some(Some(chrono::Utc::now().to_rfc3339())),
         (None, Some(_)) => None,
     };
+    if def.name != cur.name {
+        return Err(SaveError::Invalid(format!(
+            "A workflow's name can't change: runs and programs call it by '{}'. Create the new one, then delete this.",
+            cur.name
+        )));
+    }
+    let changed = canonical(&live_definition(&cur)) != canonical(&definition);
+    let is_default = def.is_default;
     let name = def.name.clone();
     let patch = agent_brain_repository::WorkflowPatch {
         name: Some(def.name),
@@ -380,13 +482,27 @@ pub async fn save(
         topic: Some(def.topic),
         kind: Some(def.kind),
     };
-    let wf = neo4j
-        .update_workflow(&cur.id, &patch)
-        .await
-        .map_err(storage)?
-        .ok_or_else(|| {
-            SaveError::NotFound(format!("Workflow '{name}' vanished during the save"))
-        })?;
+    let wf = if changed {
+        crate::revisions::commit(
+            neo4j,
+            RevisionKind::Workflow,
+            &name,
+            &definition,
+            &req,
+            crate::revisions::OwnerWrite::Update(Client::update_workflow_query(&cur.id, &patch)),
+        )
+        .await?;
+        if is_default {
+            neo4j.clear_other_defaults(&cur.id).await.map_err(storage)?;
+        }
+        neo4j.get_workflow(&cur.id).await.map_err(storage)?
+    } else {
+        neo4j
+            .update_workflow(&cur.id, &patch)
+            .await
+            .map_err(storage)?
+    }
+    .ok_or_else(|| SaveError::NotFound(format!("Workflow '{name}' vanished during the save")))?;
     Ok(Saved {
         workflow: wf,
         created: false,
@@ -452,7 +568,15 @@ async fn prepare(
         for (k, v) in obj {
             if !matches!(
                 k.as_str(),
-                "action" | "id" | "from_item" | "data_class" | "paid"
+                "action"
+                    | "id"
+                    | "from_item"
+                    | "data_class"
+                    | "paid"
+                    | "reason"
+                    | "based_on"
+                    | "reverts"
+                    | "version"
             ) {
                 cand[k] = v.clone();
             }

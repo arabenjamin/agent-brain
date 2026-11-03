@@ -13,9 +13,10 @@ use tokio::sync::RwLock;
 
 use agent_brain_protocol::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
-use agent_brain_repository::{Neo4jClient, Workflow};
+use agent_brain_repository::{Neo4jClient, RevisionKind, Workflow};
 use agent_brain_scheduler::scheduler::SchedulerService;
 use agent_brain_work::queue::ChainStep;
+use agent_brain_work::revisions;
 use agent_brain_work::validation;
 use agent_brain_work::validation::lint_chain_steps;
 use agent_brain_work::workflows;
@@ -310,7 +311,9 @@ impl SchedulerSkill {
                 action=run: start a run of `name` with `inputs` (dispatched on the next scheduler \
                 tick); the run is a Task. \
                 action=upsert: create, or update the workflow named `name`; keys you leave out keep \
-                their values. Steps are ChainStep objects (tool_name, arguments, provider_hint, id, \
+                their values. A change to what it does needs `reason` (one line on why) and, on an \
+                existing workflow, `based_on`: the `version` you got from get; pausing or resuming \
+                needs neither. Steps are ChainStep objects (tool_name, arguments, provider_hint, id, \
                 optional, …). Template vars: {{task_id}}, {{goal}}, {{date}}, {{now}}, {{weekday}}, \
                 {{inputs.<name>}}, {{_prev}} (the step before), {{steps.<id>}} / {{steps.<id>.<path>}} \
                 (an earlier named step). A trailing update_task is added at run time. Ownership: \
@@ -321,6 +324,8 @@ impl SchedulerSkill {
                 step needs `context` naming an earlier output, and a step that saves the result \
                 must reference it. \
                 action=delete: remove by `id` or `name` (upsert enabled=false to pause instead). \
+                action=history: its revisions, newest first, or one in full with `version`. \
+                action=revert: put `version` back as a new revision, with `reason` and `based_on`. \
                 action=audit: check every stored workflow against the live tools; optionally \
                 disable those whose every step names a dead tool (and re-enable the ones an audit \
                 paused once their tools are live again)."
@@ -328,7 +333,7 @@ impl SchedulerSkill {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "get", "run", "upsert", "delete", "audit"] },
+                    "action": { "type": "string", "enum": ["list", "get", "run", "upsert", "delete", "history", "revert", "audit"] },
                     "name": { "type": "string", "description": "The workflow's slug (get/run/upsert/delete)." },
                     "id": { "type": "string", "description": "get/delete by id instead of name." },
                     "inputs": {
@@ -342,6 +347,9 @@ impl SchedulerSkill {
                     "filter": { "type": "string", "description": "list: case-insensitive substring of name or description." },
                     "verbose": { "type": "boolean", "description": "list: add id, description, ownership, steps, checks. Keep false unless narrowed by `filter`." },
                     "description": { "type": "string" },
+                    "reason": { "type": "string", "description": "upsert/revert/delete: one line on why. Required when a save changes what the workflow does." },
+                    "based_on": { "type": "integer", "description": "upsert/revert: the `version` get returned. Required when a save changes an existing workflow; refused if it has moved since." },
+                    "version": { "type": "integer", "description": "history: the revision to read in full. revert: the revision to put back." },
                     "every": { "type": ["string", "null"], "description": "upsert: schedule period (30m, 6h, 1d, 1w); null removes the schedule." },
                     "steps": { "type": "array", "description": "upsert: the job chain." },
                     "checks": { "type": "array", "items": { "type": "string", "enum": ["evaluator", "critic"] }, "description": "upsert: opt-in checks around a run." },
@@ -378,6 +386,7 @@ impl SchedulerSkill {
                 Ok(wf) => {
                     let mut body = workflows::to_body(&wf);
                     body["id"] = json!(wf.id);
+                    body["version"] = json!(wf.version);
                     body["last_run_at"] = json!(wf.last_run_at);
                     body["next_run_at"] = json!(wf.next_run_at);
                     ToolCallResult::success_json(body)
@@ -414,16 +423,64 @@ impl SchedulerSkill {
                     Ok(wf) => wf,
                     Err(e) => return ToolCallResult::error(e),
                 };
-                match neo4j.delete_workflow(&wf.id).await {
+                match workflows::delete(neo4j, &wf, s("reason")).await {
                     Ok(_) => ToolCallResult::success_json(
                         json!({ "deleted": true, "name": wf.name, "id": wf.id }),
                     ),
                     Err(e) => ToolCallResult::error(format!("Failed to delete workflow: {e}")),
                 }
             }
+            "history" => {
+                let Some(name) = s("name") else {
+                    return ToolCallResult::error(
+                        "`name` is required for action=history".to_string(),
+                    );
+                };
+                let found = match args["version"].as_i64() {
+                    Some(v) => revisions::revision_detail(neo4j, RevisionKind::Workflow, name, v)
+                        .await
+                        .map(|r| {
+                            r.unwrap_or_else(
+                                || json!({"error": format!("'{name}' has no version {v}")}),
+                            )
+                        }),
+                    None => revisions::history(neo4j, RevisionKind::Workflow, name, Some(30)).await,
+                };
+                match found {
+                    Ok(v) => ToolCallResult::success_json(v),
+                    Err(e) => ToolCallResult::error(format!("Failed to read history: {e}")),
+                }
+            }
+            "revert" => {
+                let (Some(name), Some(version)) = (s("name"), args["version"].as_i64()) else {
+                    return ToolCallResult::error(
+                        "`name` and `version` are required for action=revert".to_string(),
+                    );
+                };
+                let live = match neo4j.get_workflow_by_name(name).await {
+                    Ok(w) => w.map(|w| workflows::live_definition(&w)),
+                    Err(e) => {
+                        return ToolCallResult::error(format!("Failed to read '{name}': {e}"));
+                    }
+                };
+                let body = revisions::revert_body(
+                    neo4j,
+                    RevisionKind::Workflow,
+                    name,
+                    version,
+                    s("reason"),
+                    args["based_on"].as_i64(),
+                    live.as_ref(),
+                )
+                .await;
+                match body {
+                    Ok(b) => self.upsert_workflow(neo4j, &b).await,
+                    Err(e) => ToolCallResult::error(e.to_string()),
+                }
+            }
             "audit" => self.audit_workflows(neo4j, &args).await,
             other => ToolCallResult::error(format!(
-                "Unknown action '{other}': use list, get, run, upsert, delete or audit."
+                "Unknown action '{other}': use list, get, run, upsert, delete, history, revert or audit."
             )),
         }
     }

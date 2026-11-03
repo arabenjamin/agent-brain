@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::context_builder::ContextProfile;
 use agent_brain_repository::Neo4jClient;
@@ -210,6 +210,8 @@ pub async fn seed(neo4j: &Neo4jClient, bundles: &BundleProfiles) -> anyhow::Resu
     let mut names: Vec<String> = Vec::new();
     for (plugin, path, profile) in &bundles.profiles {
         names.push(profile.name.clone());
+        let definition = definition_of(profile);
+        let source = source_of(path);
         let rows = neo4j
             .execute(
                 neo4rs::query(
@@ -224,14 +226,17 @@ pub async fn seed(neo4j: &Neo4jClient, bundles: &BundleProfiles) -> anyhow::Resu
                 && r.get::<bool>("defined").unwrap_or(false)
         });
         if runtime {
-            warn!(
+            // The `running_changes` view shows the difference.
+            debug!(
                 name = %profile.name,
                 file = %path.display(),
-                "Profile is runtime-owned — file skipped (POST /api/contexts/{{name}}/reset hands it back)"
+                "Profile is runtime-owned — file not applied (POST /api/contexts/{{name}}/reset hands it back)"
             );
+            crate::revisions::record_seed(neo4j, KIND, &profile.name, &definition, &source).await?;
             continue;
         }
-        write(neo4j, profile, "yaml", Some(plugin), Some(&source_of(path))).await?;
+        write(neo4j, profile, "yaml", Some(plugin), Some(&source)).await?;
+        crate::revisions::record_seed(neo4j, KIND, &profile.name, &definition, &source).await?;
         written += 1;
     }
     // A yaml-owned profile no loaded bundle declares any more is gone: its
@@ -254,7 +259,20 @@ pub async fn seed(neo4j: &Neo4jClient, bundles: &BundleProfiles) -> anyhow::Resu
             "Profile removed: no loaded bundle declares it any more"
         );
     }
+    let live: Vec<(String, Value)> = load(neo4j)
+        .await?
+        .iter()
+        .map(|(p, _)| (p.name.clone(), definition_of(p)))
+        .collect();
+    crate::revisions::reconcile(neo4j, KIND, &live).await?;
     Ok(written)
+}
+
+const KIND: agent_brain_repository::RevisionKind = agent_brain_repository::RevisionKind::Profile;
+
+/// What a profile's revisions record: the whole profile.
+pub fn definition_of(profile: &ContextProfile) -> Value {
+    serde_json::to_value(profile).unwrap_or_default()
 }
 
 /// Store a profile's definition and ownership.
@@ -265,24 +283,32 @@ pub async fn write(
     plugin: Option<&str>,
     source: Option<&str>,
 ) -> anyhow::Result<()> {
-    let definition = serde_json::to_string(profile)?;
     neo4j
-        .run(
-            neo4rs::query(
-                "MERGE (c:ContextProfile {name: $name}) \
+        .run(write_query(profile, managed_by, plugin, source)?)
+        .await?;
+    Ok(())
+}
+
+/// The write behind [`write`], for a save that commits it with its revision.
+pub fn write_query(
+    profile: &ContextProfile,
+    managed_by: &str,
+    plugin: Option<&str>,
+    source: Option<&str>,
+) -> anyhow::Result<neo4rs::Query> {
+    let definition = serde_json::to_string(profile)?;
+    Ok(neo4rs::query(
+        "MERGE (c:ContextProfile {name: $name}) \
                  SET c.definition = $definition, c.managed_by = $managed_by, \
                      c.plugin = $plugin, c.source = $source, c.description = $description, \
                      c.updated_at = datetime()",
-            )
-            .param("name", profile.name.as_str())
-            .param("definition", definition)
-            .param("managed_by", managed_by)
-            .param("plugin", plugin.unwrap_or_default())
-            .param("source", source.unwrap_or_default())
-            .param("description", profile.description.as_str()),
-        )
-        .await?;
-    Ok(())
+    )
+    .param("name", profile.name.as_str())
+    .param("definition", definition)
+    .param("managed_by", managed_by)
+    .param("plugin", plugin.unwrap_or_default())
+    .param("source", source.unwrap_or_default())
+    .param("description", profile.description.as_str()))
 }
 
 /// Every stored profile with its ownership. A definition that no longer

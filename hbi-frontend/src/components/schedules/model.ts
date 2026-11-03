@@ -19,6 +19,8 @@ export interface ScheduledTask {
   updated_at: string;
   topic?: string | null;
   kind?: string | null;
+  /** The revision it is at: what an edit sends back as `based_on`. */
+  version?: number;
 }
 
 // ─── API helpers ─────────────────────────────────────────────────────────────

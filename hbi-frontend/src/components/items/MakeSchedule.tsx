@@ -60,6 +60,7 @@ export default function MakeSchedule({ item }: { item: Todo }) {
         every: typeof d.every === "string" && /^\d+[mhdw]$/.test(d.every.trim()) ? d.every.trim() : "1d",
         steps: d.steps,
         from_item: item.id,
+        reason: `Drafted from the item “${item.title}”.`,
       }),
     });
     const saved = (await res.json().catch(() => ({}))) as { id?: string; error?: string };
