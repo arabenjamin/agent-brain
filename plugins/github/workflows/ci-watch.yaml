@@ -14,7 +14,7 @@ steps:
       cypher: "MATCH (j:AgentJob) WHERE j.tool_name = 'execute_code' AND j.status = 'completed' AND j.result_json CONTAINS 'CI_WATCH_STATE v1' RETURN j.result_json AS result ORDER BY j.completed_at DESC LIMIT 1"
     priority: 2
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "The previous check's state"
 
   # One fetch per repo. Another repo with Actions: copy a fetch step (new id)
@@ -31,7 +31,7 @@ steps:
       pick: ["workflow_runs[].id", "workflow_runs[].name", "workflow_runs[].head_branch", "workflow_runs[].status", "workflow_runs[].conclusion", "workflow_runs[].display_title", "workflow_runs[].head_sha", "workflow_runs[].html_url", "workflow_runs[].updated_at"]
     priority: 2
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Latest runs: arabenjamin/agent-brain"
 
   # The Gizmatron project (owner, 2026-10-21): the robot and its server.
@@ -45,7 +45,7 @@ steps:
       pick: ["workflow_runs[].id", "workflow_runs[].name", "workflow_runs[].head_branch", "workflow_runs[].status", "workflow_runs[].conclusion", "workflow_runs[].display_title", "workflow_runs[].head_sha", "workflow_runs[].html_url", "workflow_runs[].updated_at"]
     priority: 2
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Latest runs: arabenjamin/gizmatron"
 
   - id: gizmo_server
@@ -58,7 +58,7 @@ steps:
       pick: ["workflow_runs[].id", "workflow_runs[].name", "workflow_runs[].head_branch", "workflow_runs[].status", "workflow_runs[].conclusion", "workflow_runs[].display_title", "workflow_runs[].head_sha", "workflow_runs[].html_url", "workflow_runs[].updated_at"]
     priority: 2
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Latest runs: arabenjamin/gizmo-server"
 
   - id: state
@@ -115,7 +115,7 @@ steps:
                 print(f"EVENT|recovered|{repo}|success|{line}")
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Latest completed run per workflow and branch, and what changed"
 
   - id: failed
@@ -131,7 +131,7 @@ steps:
                 print(f"- {repo}: {line} ({how})")
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "A message only for newly failed runs"
 
   - tool_name: notify_user
@@ -142,7 +142,7 @@ steps:
       ask: "Open the failing run, fix the cause (or re-run it if it was a flake), and push."
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Action item only when a run newly failed"
 
   - id: recovered
@@ -158,7 +158,7 @@ steps:
                 print(f"- {repo}: {line}")
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "A message only for branches that recovered"
 
   - tool_name: notify_user
@@ -167,5 +167,5 @@ steps:
       context: "CI watch {{date}}"
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "A note when a failing branch passes again"

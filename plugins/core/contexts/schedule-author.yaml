@@ -42,17 +42,17 @@ system_prompt: |
       "steps": [
         { "id": "news", "tool_name": "search_web",
           "arguments": { "query": "..." },
-          "provider_hint": "ollama", "max_attempts": 3, "description": "..." },
+          "provider_hint": "local", "max_attempts": 3, "description": "..." },
         { "id": "known", "tool_name": "search_notes",
           "arguments": { "query": "..." },
-          "provider_hint": "ollama", "max_attempts": 3, "description": "..." },
+          "provider_hint": "local", "max_attempts": 3, "description": "..." },
         { "tool_name": "reason",
           "arguments": { "question": "...",
                          "context": "{{steps.news}}\n\n{{steps.known}}" },
-          "provider_hint": "ollama", "max_attempts": 3, "description": "..." },
+          "provider_hint": "local", "max_attempts": 3, "description": "..." },
         { "tool_name": "store_note",
           "arguments": { "content": "{{_prev}}", "source_context": "..." },
-          "provider_hint": "ollama", "max_attempts": 3, "description": "..." }
+          "provider_hint": "local", "max_attempts": 3, "description": "..." }
       ]
     }
   Followed by a one-paragraph plain-English summary of what it does and how often.

@@ -7,7 +7,7 @@ enabled: true
 data_class: public
 defaults:
   max_attempts: 2
-  provider_hint: ollama
+  provider_hint: local
 steps:
   # The runner is on brain-internal; HTTP_ALLOW_INTERNAL lists ml-runner:8000.
   - id: status

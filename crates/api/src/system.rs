@@ -400,6 +400,7 @@ pub async fn handle_health(Extension(state): Extension<Arc<RestState>>) -> impl 
         "scheduler": scheduler,
         "queue": queue,
         "gpu_lease": lease,
+        "local_engine": agent_brain_llm::engine::current().report(),
         "budget": budget,
         "version": version,
     }))

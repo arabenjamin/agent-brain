@@ -17,7 +17,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'sanctions_trade_watch' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch the prior report for the delta"
 
   - id: sanctions
@@ -31,7 +31,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: sanctions in the news"
 
   - id: treasury
@@ -45,7 +45,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: designations and penalties"
 
   - id: trade
@@ -59,7 +59,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: tariffs, export controls, trade deals"
 
   - id: report
@@ -120,7 +120,7 @@ steps:
       source_context: sanctions_trade_watch
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the watch report"
 
   - tool_name: claim
@@ -134,5 +134,5 @@ steps:
     optional: true
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Extract claims as checkable, attributed propositions"

@@ -1215,7 +1215,7 @@ mod tests {
         // A catalog row lets a pre-Phase-1 usage row (no provider) be attributed.
         tc.upsert_model(
             "gemma4-e4b",
-            "llamacpp",
+            "local",
             "gemma4-e4b",
             16384,
             0.0,
@@ -1281,10 +1281,7 @@ mod tests {
         let mut rows = tc.budget_usage_since(&day, &month).unwrap();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(rows.len(), 2);
-        assert_eq!(
-            (rows[0].0.as_str(), rows[0].1, rows[0].2),
-            ("llamacpp", 1, 2)
-        );
+        assert_eq!((rows[0].0.as_str(), rows[0].1, rows[0].2), ("local", 1, 2));
         assert_eq!(
             (rows[1].0.as_str(), rows[1].1, rows[1].2),
             ("openrouter", 2, 15)

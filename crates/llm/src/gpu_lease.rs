@@ -1,7 +1,7 @@
 //! GPU lease — Phase 5 of `project-docs/PROVIDER_ROUTING_PLAN.md`.
 //!
 //! A fine-tuning run needs the whole 8 GB card. The GPU hosts the llama.cpp
-//! sidecar, host Ollama's models, and bge-m3, which embeds every stored note and
+//! sidecar, and bge-m3, which embeds every stored note and
 //! search query. While a lease is held the brain keeps running on cloud
 //! providers and stops touching the GPU:
 //!
@@ -11,12 +11,12 @@
 //! - **`LlmClient`** refuses local generation and all embeddings, a backstop for
 //!   callers that build a client directly (the distiller, the context builder).
 //!   A single `search_notes` would otherwise reload bge-m3 mid-training.
-//! - **The queue defers local-pinned jobs** (`provider_hint: ollama` with no
+//! - **The queue defers local-pinned jobs** (`provider_hint: local` with no
 //!   capability routing) instead of failing them or pushing a day of local work
 //!   onto Ollama Cloud's single free slot. They keep their place and attempts.
 //! - **Notes stored meanwhile** are kept without a vector and marked
 //!   `embedding_pending`. Search degrades to BM25.
-//! - **On acquire** the brain unloads host Ollama's models itself. The llama.cpp
+//! - **On acquire** the brain unloads the engine's models once requests in flight finish, if the engine has an unload call (`engines:` in models.yaml). The llama.cpp
 //!   and whisper sidecars are separate containers it cannot stop; the holder
 //!   stops them from the host (`workspace/finetune/scripts/gpu_lease.sh`).
 //!
@@ -286,53 +286,89 @@ async fn persist(neo4j: &Neo4jClient, lease: &Lease) -> bool {
     }
 }
 
-/// Ask host Ollama to unload every model it holds (`keep_alive: 0` unloads
-/// generation and embedding models alike, verified against bge-m3), then report
-/// what is still loaded. Best effort: an unreachable Ollama holds nothing.
-async fn unload_ollama_models() -> Value {
-    let base = std::env::var("OLLAMA_LOCAL_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let client = match reqwest::Client::builder()
-        .timeout(StdDuration::from_secs(30))
+/// The models a llama-server router reports as loaded (`GET /models`).
+fn loaded_on_router(models: &Value) -> Vec<String> {
+    models["data"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|m| m["status"]["value"] == "loaded")
+                .filter_map(|m| m["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Ask the router to unload every model it holds, then report what stays loaded.
+/// Best effort: an unreachable engine holds nothing.
+async fn unload_router_models(base: &str) -> Result<(Vec<String>, Vec<String>), String> {
+    let client = reqwest::Client::builder()
+        .timeout(StdDuration::from_secs(60))
         .build()
-    {
-        Ok(c) => c,
-        Err(e) => return json!({ "error": e.to_string() }),
-    };
-    let loaded = |client: reqwest::Client, base: String| async move {
+        .map_err(|e| e.to_string())?;
+    let loaded = || async {
         let v: Value = client
-            .get(format!("{base}/api/ps"))
+            .get(format!("{base}/models"))
             .send()
             .await
-            .ok()?
+            .map_err(|e| e.to_string())?
             .json()
             .await
-            .ok()?;
-        Some(
-            v["models"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|m| m["name"].as_str().map(str::to_string))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
-        )
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>(loaded_on_router(&v))
     };
-    let Some(before) = loaded(client.clone(), base.clone()).await else {
-        return json!({ "error": format!("could not list models at {base}/api/ps") });
-    };
+    let before = loaded().await?;
     for model in &before {
         let _ = client
-            .post(format!("{base}/api/generate"))
-            .json(&json!({ "model": model, "keep_alive": 0 }))
+            .post(format!("{base}/models/unload"))
+            .json(&json!({ "model": model }))
             .send()
             .await;
     }
-    let still = loaded(client, base).await.unwrap_or_default();
-    json!({ "unloaded": before, "still_loaded": still })
+    // The router answers before the unload finishes, so give it a moment.
+    let mut still = loaded().await?;
+    for _ in 0..10 {
+        if still.is_empty() {
+            break;
+        }
+        tokio::time::sleep(StdDuration::from_secs(1)).await;
+        still = loaded().await?;
+    }
+    Ok((before, still))
+}
+
+/// How long the unload waits for local requests in flight, as the lease script does.
+const UNLOAD_WAIT: StdDuration = StdDuration::from_secs(600);
+
+/// Free the engine's memory once its requests in flight have finished: unloading
+/// sooner would kill them. What the reply says is what happens next.
+fn unload_engine() -> Value {
+    let engine = agent_brain_engine::current();
+    match engine.unload {
+        agent_brain_engine::Unload::None => json!({
+            "unload": format!("engine '{}' has no unload call; stop it by hand", engine.name),
+        }),
+        agent_brain_engine::Unload::Router => {
+            tokio::spawn(async move {
+                let start = std::time::Instant::now();
+                while crate::provider_gate::in_use(crate::model_router::LOCAL) > 0
+                    && start.elapsed() < UNLOAD_WAIT
+                {
+                    tokio::time::sleep(StdDuration::from_secs(5)).await;
+                }
+                if refusal().is_none() {
+                    return; // Released while waiting.
+                }
+                match unload_router_models(&engine.url).await {
+                    Ok((unloaded, still)) => {
+                        info!(?unloaded, ?still, "GPU lease: engine models unloaded")
+                    }
+                    Err(e) => warn!(error = %e, "GPU lease: could not unload the engine"),
+                }
+            });
+            json!({ "unload": "when local requests in flight finish" })
+        }
+    }
 }
 
 /// Take (or renew) the lease.
@@ -346,7 +382,7 @@ pub async fn acquire(holder: &str, reason: &str, ttl_hours: Option<i64>) -> Resu
         Some(n) => persist(n, &lease).await,
         None => false,
     };
-    let ollama = unload_ollama_models().await;
+    let engine = unload_engine();
     info!(
         holder = %lease.holder,
         reason = %lease.reason,
@@ -357,7 +393,7 @@ pub async fn acquire(holder: &str, reason: &str, ttl_hours: Option<i64>) -> Resu
         "held": true,
         "lease": lease.to_json(),
         "persisted": persisted,
-        "ollama": ollama,
+        "engine": engine,
         "next": "Stop the llama.cpp and whisper sidecars from the host (docker compose stop \
                  llamacpp whisper) once /api/llm/budget shows no local request in use. \
                  Acquire again as the same holder to extend the lease.",
@@ -421,6 +457,18 @@ pub async fn handle(args: Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape of llama-server's `GET /models`, from the running router.
+    #[test]
+    fn only_loaded_models_are_unloaded() {
+        let v = json!({"data": [
+            {"id": "bge-m3", "status": {"value": "loaded"}},
+            {"id": "nimble", "status": {"value": "unloaded"}},
+            {"id": "gemma4-e4b", "status": {"value": "loaded"}},
+        ]});
+        assert_eq!(loaded_on_router(&v), ["bge-m3", "gemma4-e4b"]);
+        assert!(loaded_on_router(&json!({})).is_empty());
+    }
     use chrono::TimeZone;
 
     fn at(h: u32) -> DateTime<Utc> {

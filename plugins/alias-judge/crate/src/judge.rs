@@ -4,8 +4,8 @@
 //!
 //! - **Model:** `nimble` (Bespoke Labs, a 9B decision model fine-tuned from
 //!   Qwen3.5) on the local router (`decision`), which answers a fixed choice
-//!   with a probability per option and no free text. `ALIAS_JUDGE_MODEL`
-//!   names it; `off` turns the judge off.
+//!   with a probability per option and no free text. The decision role
+//!   names it (`LOCAL_DECISION_MODEL`); `off` turns the judge off.
 //! - **Measured** on 40 live candidates graded by hand (2026-10-09): 33 right,
 //!   and no pair of different things called "same". Its misses are cautious
 //!   (Prince William → related, Columbus → different), so `different` means
@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_brain_plugin_api::decision::{self, Answer, Question};
+use agent_brain_plugin_api::engine;
 use agent_brain_plugin_api::graph::query;
 use agent_brain_plugin_api::{Graph, PluginContext};
 use anyhow::{Context, Result, anyhow, bail};
@@ -48,11 +49,9 @@ const QUESTION_NAME: &str = "same";
 /// Pairs judged per idle pass, re-checking for real work between pairs.
 const BATCH: usize = 10;
 
-/// The judge's model, or `None` when `ALIAS_JUDGE_MODEL=off` (or empty).
+/// The judge's model, or `None` when the decision role is off.
 pub fn model() -> Option<String> {
-    let m = std::env::var("ALIAS_JUDGE_MODEL").unwrap_or_else(|_| "nimble".to_string());
-    let m = m.trim();
-    (!m.is_empty() && !m.eq_ignore_ascii_case("off")).then(|| m.to_string())
+    engine::model(engine::Role::Decision)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -136,7 +135,7 @@ async fn state(graph: &Arc<dyn Graph>, from: &str, into: &str) -> Result<State> 
 
 /// Judge one candidate pair and store the verdict.
 pub async fn judge(graph: &Arc<dyn Graph>, from: &str, into: &str) -> Result<Verdict> {
-    let model = model().context("the alias judge is off (ALIAS_JUDGE_MODEL=off)")?;
+    let model = model().context("the alias judge is off (the decision role has no model)")?;
     let state = state(graph, from, into).await?;
     let answer = decision::ask(
         &model,
@@ -182,7 +181,7 @@ pub fn spawn(ctx: &PluginContext) {
     };
     let ctx = ctx.clone();
     let Some(model) = model() else {
-        info!("Alias judge disabled (ALIAS_JUDGE_MODEL=off)");
+        info!("Alias judge off: the decision role has no model");
         return;
     };
     info!(model = %model, "Alias judge started");
@@ -223,7 +222,7 @@ pub fn spawn(ctx: &PluginContext) {
                 match judge(&graph, a, b).await {
                     Ok(_) => done += 1,
                     Err(e) => {
-                        // Usually the model is missing or Ollama is down: wait a pass.
+                        // Usually the model is missing or the engine is down: wait a pass.
                         warn!(from = %a, into = %b, error = %e, "alias judge: failed");
                         break;
                     }

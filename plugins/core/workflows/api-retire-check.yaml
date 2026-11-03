@@ -19,7 +19,7 @@ steps:
       cypher: "MATCH (c:ApiContext) WHERE NOT coalesce(c.retire_exempt, false) WITH c, [x IN [c.last_used_at, c.created_at, c.use_tracked_from] WHERE x IS NOT NULL] AS ts WITH c, reduce(m = null, x IN ts | CASE WHEN m IS NULL OR x > m THEN x ELSE m END) AS since WHERE since IS NULL OR since < datetime() - duration('P60D') OPTIONAL MATCH (w:Workflow) WHERE w.enabled AND (w.steps CONTAINS ('\"context_name\":\"' + c.name + '\"') OR (coalesce(c.base_url, '') <> '' AND w.steps CONTAINS c.base_url)) WITH c, since, count(w) AS users WHERE users = 0 OPTIONAL MATCH (c)-[:EXPOSES]->(e:ApiEndpoint) WITH c, since, e ORDER BY e.path RETURN c.name AS name, coalesce(c.api_kind, 'untagged') AS kind, CASE WHEN since IS NULL THEN 'never recorded' ELSE toString(date(since)) END AS since, CASE WHEN c.last_used_at IS NULL THEN 'never, since tracking began' ELSE toString(date(c.last_used_at)) END AS last_call, [x IN collect(e) WHERE x IS NOT NULL | x.method + ' ' + x.path + ': ' + CASE WHEN x.probe IS NULL THEN 'never probed' ELSE x.probe + ' on ' + toString(date(x.probed_at)) END][0..8] AS probes, count(e) AS endpoints ORDER BY name"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "APIs unused 60+ days that no enabled workflow names"
 
   - id: prior
@@ -28,7 +28,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'api_retire_check' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "The prior check, for the change check"
 
   - id: report
@@ -52,7 +52,7 @@ steps:
             print("None.")
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "The list with probe history, in code"
 
   - id: record
@@ -63,7 +63,7 @@ steps:
       source_context: api_retire_check
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the check"
 
   - id: change
@@ -86,7 +86,7 @@ steps:
             print("For each: retire it (delete its ApiContext and endpoints), keep it for a workflow you mean to build, or mark it retire_exempt if it is used outside workflows.")
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "A message only for newly idle APIs"
 
   - tool_name: notify_user
@@ -97,5 +97,5 @@ steps:
       ask: "Decide, for each listed API, whether to retire it (delete its ApiContext and endpoints), keep it for a planned workflow, or mark it retire_exempt."
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Feed item only when an API newly went idle"

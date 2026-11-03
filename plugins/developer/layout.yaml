@@ -115,7 +115,7 @@ groups:
     label: Local models
     column: 4
     blurb: On the 8 GB GPU.
-    members: ["component:llamacpp", "component:ollama"]
+    members: ["component:local-engine"]
 
   - id: sidecars
     label: Sidecars
@@ -159,7 +159,7 @@ topology:
       networks: [brain-internal]
       ports: ["127.0.0.1:7689:7687", "127.0.0.1:7476:7474"]
     - name: llamacpp
-      component: llamacpp
+      component: local-engine
       networks: [brain-internal]
     - name: whisper
       component: whisper
@@ -180,6 +180,3 @@ topology:
       networks: [yt-egress, yt-link]
       note: yt-dlp's way to YouTube past the VPN exit; passes only YouTube's domains.
   host:
-    - name: ollama
-      component: ollama
-      note: Host Ollama, reached at host.docker.internal.

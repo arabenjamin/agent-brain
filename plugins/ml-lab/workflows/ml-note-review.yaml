@@ -13,7 +13,7 @@ every: 1w
 defaults:
   priority: 1
   max_attempts: 2
-  provider_hint: ollama
+  provider_hint: local
 steps:
   # Two reads, not one labelled list: with a `whose` field per row, local
   # E4B still called our own Squares score "a public notebook" (2026-10-26).

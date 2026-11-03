@@ -5,7 +5,7 @@
 //! up runtime provider changes made via `use_model`.
 //!
 //! When a background job sets the `USE_LOCAL_LLM` task-local (see `queue.rs`),
-//! `generate()` routes to `local_config` (always local Ollama) instead of the
+//! `generate()` routes to `local_config` (always the local engine) instead of the
 //! active config, preventing maintenance tasks from consuming cloud quota.
 
 use std::sync::{Arc, OnceLock, RwLock as StdRwLock};
@@ -44,7 +44,7 @@ fn background_fallback() -> Vec<LlmConfig> {
 pub struct SharedLlm {
     /// Active (possibly cloud) config — used for interactive calls.
     config: Arc<RwLock<Option<LlmConfig>>>,
-    /// Local-Ollama-only config — used when `USE_LOCAL_LLM` task-local is set.
+    /// Local-engine-only config — used when `USE_LOCAL_LLM` task-local is set.
     local_config: Arc<RwLock<Option<LlmConfig>>>,
     /// Optional telemetry sink for per-call usage logging.
     telemetry: Option<TelemetryClient>,
@@ -124,7 +124,7 @@ impl SharedLlm {
 /// - A **capability-selected** cloud route (e.g. a `reasoning` step routed to
 ///   gemini-2.5-flash) falls back first to the **active config** — the free
 ///   Ollama Cloud model the deployment was using before, which does not share
-///   the selected model's quota — and only then to **local** Ollama.
+///   the selected model's quota — and only then to the **local** engine.
 /// - A route that WAS the active config skips the active tier (retrying the same
 ///   model that just failed is pointless).
 /// - Then the **cloud rungs** of `background_fallback_ladder` (Mistral,
@@ -146,7 +146,7 @@ fn build_fallback_chain(
     if is_selected
         && let Some(active) = active
         && active.model != primary_model
-        && !matches!(active.provider, crate::LlmProviderType::Ollama)
+        && !matches!(active.provider, crate::LlmProviderType::Local)
     {
         chain.push(active);
     }
@@ -184,10 +184,10 @@ impl LlmProvider for SharedLlm {
         // local. A route that WAS the active config skips straight to local.
         let (primary, is_local_route, is_selected) = if let Some(sel) = selected {
             debug!(model = %sel.model, "SharedLlm: routing generate() to capability-selected model");
-            let local = matches!(sel.provider, crate::LlmProviderType::Ollama);
+            let local = matches!(sel.provider, crate::LlmProviderType::Local);
             (sel, local, true)
         } else if use_local {
-            debug!("SharedLlm: routing generate() to local Ollama (USE_LOCAL_LLM=true)");
+            debug!("SharedLlm: routing generate() to the local engine (USE_LOCAL_LLM=true)");
             let config = self.local_config.read().await.clone();
             (
                 config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?,
@@ -306,8 +306,7 @@ impl LlmProvider for SharedLlm {
     }
 
     async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        // Embeddings always use the active config (embed_base_url is already pinned
-        // to local Ollama even when provider=ollama-cloud).
+        // Any config will do: embeddings run on the local engine whatever generates.
         let config = self.config.read().await.clone();
         let llm = config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?;
         let client =
@@ -579,13 +578,13 @@ mod tests {
     /// straight to the weak local model the instant Gemini's daily quota is hit.
     #[test]
     fn selected_cloud_route_falls_back_to_active_then_local() {
-        use crate::LlmProviderType::{Gemini, Ollama, OllamaCloud};
+        use crate::LlmProviderType::{Gemini, Local, OllamaCloud};
         let chain = build_fallback_chain(
             true,
             "gemini-2.5-flash",
             Some(cfg(OllamaCloud, "gpt-oss:120b-cloud")),
             &[],
-            Some(cfg(Ollama, "granite4:latest")),
+            Some(cfg(Local, "granite4:latest")),
         );
         assert_eq!(
             models(&chain),
@@ -600,13 +599,13 @@ mod tests {
     /// straight to local.
     #[test]
     fn active_config_route_skips_active_and_falls_back_to_local_only() {
-        use crate::LlmProviderType::{Ollama, OllamaCloud};
+        use crate::LlmProviderType::{Local, OllamaCloud};
         let chain = build_fallback_chain(
             false,
             "gpt-oss:120b-cloud",
             Some(cfg(OllamaCloud, "gpt-oss:120b-cloud")),
             &[],
-            Some(cfg(Ollama, "granite4:latest")),
+            Some(cfg(Local, "granite4:latest")),
         );
         assert_eq!(models(&chain), vec!["granite4:latest"]);
     }
@@ -615,13 +614,13 @@ mod tests {
     /// route was capability-selected onto the same model the active config names.
     #[test]
     fn active_fallback_is_dropped_when_it_equals_the_primary() {
-        use crate::LlmProviderType::{Ollama, OllamaCloud};
+        use crate::LlmProviderType::{Local, OllamaCloud};
         let chain = build_fallback_chain(
             true,
             "gpt-oss:120b-cloud",
             Some(cfg(OllamaCloud, "gpt-oss:120b-cloud")),
             &[],
-            Some(cfg(Ollama, "granite4:latest")),
+            Some(cfg(Local, "granite4:latest")),
         );
         assert_eq!(models(&chain), vec!["granite4:latest"]);
     }
@@ -632,7 +631,7 @@ mod tests {
     /// is skipped.
     #[test]
     fn cloud_rungs_sit_between_active_and_local() {
-        use crate::LlmProviderType::{Ollama, OllamaCloud, OpenAiCompat};
+        use crate::LlmProviderType::{Local, OllamaCloud, OpenAiCompat};
         let cloud = [
             cfg(OpenAiCompat, "ministral-14b-latest"),
             cfg(OpenAiCompat, "codestral-latest"),
@@ -642,7 +641,7 @@ mod tests {
             "codestral-latest",
             Some(cfg(OllamaCloud, "gpt-oss:120b-cloud")),
             &cloud,
-            Some(cfg(Ollama, "granite4:latest")),
+            Some(cfg(Local, "granite4:latest")),
         );
         assert_eq!(
             models(&chain),
@@ -659,13 +658,13 @@ mod tests {
     /// rung, and never twice).
     #[test]
     fn a_local_active_config_is_not_used_as_the_cloud_rung() {
-        use crate::LlmProviderType::Ollama;
+        use crate::LlmProviderType::Local;
         let chain = build_fallback_chain(
             true,
             "gemini-2.5-flash",
-            Some(cfg(Ollama, "granite4:latest")),
+            Some(cfg(Local, "granite4:latest")),
             &[],
-            Some(cfg(Ollama, "granite4:latest")),
+            Some(cfg(Local, "granite4:latest")),
         );
         assert_eq!(models(&chain), vec!["granite4:latest"]);
     }

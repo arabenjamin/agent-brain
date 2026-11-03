@@ -30,16 +30,15 @@
 //!   ground the claim do not refute it. On 68 hand-graded refutations
 //!   (2026-10-22) it found 8 of the 53 wrong ones grounded and none of the 15
 //!   real ones.
-//! - `GROUNDING_CHECK_MODEL` names the model; `off` turns the check off.
+//! - `LOCAL_GROUNDING_MODEL` names the model; `off` turns the check off, and it is
+//!   off on an engine that does not declare `completions`.
 
 use std::time::Duration;
 
+use agent_brain_plugin_api::engine;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-/// The router when `LLAMACPP_URL` is unset (compose sets it).
-const DEFAULT_URL: &str = "http://localhost:8080";
-const DEFAULT_MODEL: &str = "guardian";
 /// The answer is `<score> yes </score>`; anything longer is not an answer.
 const MAX_TOKENS: u32 = 20;
 /// The model's prompt for this criterion, with `{{document}}` and `{{claim}}`.
@@ -47,11 +46,9 @@ const PROMPT: &str = include_str!("groundedness_prompt.txt");
 /// Per result, so one long page cannot crowd out the rest.
 const RESULT_CHARS: usize = 1200;
 
-/// The check's model, or `None` when `GROUNDING_CHECK_MODEL=off` (or empty).
+/// The check's model, or `None` when the role is off (`agent_brain_engine`).
 pub fn model() -> Option<String> {
-    let m = std::env::var("GROUNDING_CHECK_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
-    let m = m.trim();
-    (!m.is_empty() && !m.eq_ignore_ascii_case("off")).then(|| m.to_string())
+    engine::model(engine::Role::Grounding)
 }
 
 /// The cited results as one numbered document: title and snippet of each, in
@@ -132,9 +129,8 @@ fn http() -> &'static reqwest::Client {
 
 /// Ask the model whether `claim` is grounded in `document`.
 pub async fn is_grounded(model: &str, document: &str, claim: &str) -> Result<bool> {
-    let base = std::env::var("LLAMACPP_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
     let resp = http()
-        .post(format!("{}/v1/completions", base.trim_end_matches('/')))
+        .post(format!("{}/v1/completions", engine::current().url))
         .json(&json!({
             "model": model,
             "prompt": prompt(document, claim),
@@ -202,7 +198,7 @@ mod tests {
         assert_eq!(p.matches("THE CLAIM").count(), 1, "{p}");
     }
 
-    /// Against the real model on the router (`LLAMACPP_URL`):
+    /// Against the real model on the engine (`LOCAL_ENGINE_URL`):
     /// `cargo test -p agent-brain-plugin-epistemics --lib grounding -- --ignored`
     #[tokio::test]
     #[ignore = "needs the router with the guardian model"]
@@ -213,7 +209,7 @@ mod tests {
             [2] Russian-aligned group upgrades malware\n\
             CERT-UA reports that UAC-0099 upgraded malware used against Ukrainian transport \
             and energy firms.";
-        let m = model().unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        let m = model().expect("the grounding role is on");
         assert!(
             is_grounded(&m, doc, "UK lawmaker Graeme Downie claims Russian hybrid and cyber attacks cost the UK roughly $3.3 billion.")
                 .await

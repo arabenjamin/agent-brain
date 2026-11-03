@@ -15,7 +15,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'hardware_tripwire' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 4"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch hard-layer reports"
 
   - tool_name: push_context
@@ -25,7 +25,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank hard-layer evidence"
 
   # 2. Soft layer — the last ~2 bi-weekly benchmark reports (one month).
@@ -34,7 +34,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'slm_benchmark_watch' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 2"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch soft-layer reports"
 
   - tool_name: push_context
@@ -44,7 +44,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank soft-layer evidence"
 
   # 3. Prior synthesis, so the verdict can move rather than reset each month.
@@ -53,7 +53,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'tech_dependency_synthesis' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch prior synthesis verdict"
 
   - tool_name: push_context
@@ -63,7 +63,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank prior verdict"
 
   # 4. Reassemble all three layers.
@@ -72,7 +72,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'synthesis-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Reassemble hard + soft + prior verdict"
 
   # 5. The correlation pass. Evidence goes in `context`, never in `question`.
@@ -139,7 +139,7 @@ steps:
       provenance: synthesis_inference
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the synthesis verdict"
 
   # 7. Extract the WEAKEST LINK as a research question. Kept as its own step so
@@ -155,7 +155,7 @@ steps:
       store_inference: false
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Extract the research goal"
 
   # 8. Run fill-knowledge-gap on it (dispatched on the next tick).
@@ -168,7 +168,7 @@ steps:
       context: "Auto-generated from the monthly tech dependency synthesis. Research this and store findings as semantic knowledge — it is the weakest link in the asymmetric-advantage hypothesis."
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Spawn research task on the weakest link"
 
   - tool_name: neo4j_query
@@ -179,5 +179,5 @@ steps:
     # and starves under a fed queue. See workflows/fill-knowledge-gap.yaml.
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Delete scratch session"

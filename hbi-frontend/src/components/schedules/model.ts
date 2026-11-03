@@ -58,24 +58,24 @@ export interface StepDraft {
 /** The fields the step editor edits itself; everything else rides in `extra`. */
 const EDITED_FIELDS = new Set(["tool_name", "tool", "arguments", "args", "provider_hint", "model", "priority"]);
 
-export const DEFAULT_PROVIDER = "ollama";
+export const DEFAULT_PROVIDER = "local";
 
 /**
  * What a step's `provider_hint` actually does (`services/queue.rs`): only
- * "ollama" changes routing, to the local model. Every other value, or none,
+ * "local" changes routing, to the local model. Every other value, or none,
  * runs on the brain's active cloud model; the value only chooses which
  * concurrency slot the job waits for. A step that pins a `model` runs on it
  * instead, and its hint is derived from it.
  */
 export function providerLabel(hint: string, activeModel?: string): string {
   const cloud = activeModel ? `the brain's active model (${activeModel})` : "the brain's active model";
-  if (hint === "ollama") return "Local model";
+  if (hint === "local" || hint === "ollama") return "Local model";
   if (hint === "") return `Cloud: ${cloud}`;
   return `${hint}: also cloud, on ${cloud}`;
 }
 
 /** The hints offered for a new choice: local, or cloud. A step's own other value is kept. */
-export const PROVIDER_CHOICES = ["ollama", ""] as const;
+export const PROVIDER_CHOICES = ["local", ""] as const;
 
 // Grouped tool options for the dropdown — keep in sync with live tools/list
 export const TOOL_GROUPS: { group: string; tools: string[] }[] = [

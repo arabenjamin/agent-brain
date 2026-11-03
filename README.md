@@ -28,7 +28,7 @@ I have a NVidia3060, and the goal was to get this to work locally on a small GPU
 
 - Rust via rustup: the version is pinned in `rust-toolchain.toml` and installed automatically
 - Docker & Docker Compose
-- Ollama (for LLM features, or llama.cpp)
+- A GPU for the llama.cpp engine compose builds (`LOCAL_ENGINE`; `project-docs/env.md`)
 
 ## Getting Started
 
@@ -216,8 +216,8 @@ todo             Manage todos over HTTP
 |----------|---------|-------------|
 | `NEO4J_URI` | `bolt://localhost:7687` | Neo4j connection |
 | `NEO4J_PASSWORD` | — | Neo4j password (required) |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
-| `OLLAMA_MODEL` | `qwen3.5:4b` | LLM model |
+| `LOCAL_ENGINE` | `llamacpp` | The local engine, an entry of `engines:` in `models.yaml` |
+| `LLM_MODEL` | the engine's generation model | The active provider's model |
 | `MCP_TRANSPORT` | `stdio` | Transport type |
 | `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind |
 | `MCP_API_KEY` | — | HTTP bearer key; without it nothing is the owner's, so no paid model runs |

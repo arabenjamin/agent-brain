@@ -41,7 +41,7 @@ use agent_brain_protocol::{Content, ToolCallResult};
 use agent_brain_repository::Neo4jClient;
 
 const DEFAULT_MAX_CONCURRENT: usize = 5;
-const DEFAULT_MAX_CONCURRENT_OLLAMA: usize = 2;
+const DEFAULT_MAX_CONCURRENT_LOCAL: usize = 2;
 const DEFAULT_MAX_CONCURRENT_ANTHROPIC: usize = 2;
 const DEFAULT_MAX_CONCURRENT_GEMINI: usize = 5;
 
@@ -50,8 +50,8 @@ const DEFAULT_MAX_CONCURRENT_GEMINI: usize = 5;
 pub struct WorkerConfig {
     /// Global maximum number of jobs executing concurrently (informational).
     pub max_concurrent: usize,
-    /// Concurrency limit for Ollama (local) jobs.
-    pub max_concurrent_ollama: usize,
+    /// Concurrency limit for local jobs.
+    pub max_concurrent_local: usize,
     /// Concurrency limit for Anthropic API jobs.
     pub max_concurrent_anthropic: usize,
     /// Concurrency limit for Gemini API jobs.
@@ -67,7 +67,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             max_concurrent: DEFAULT_MAX_CONCURRENT,
-            max_concurrent_ollama: DEFAULT_MAX_CONCURRENT_OLLAMA,
+            max_concurrent_local: DEFAULT_MAX_CONCURRENT_LOCAL,
             max_concurrent_anthropic: DEFAULT_MAX_CONCURRENT_ANTHROPIC,
             max_concurrent_gemini: DEFAULT_MAX_CONCURRENT_GEMINI,
             enabled: true,
@@ -239,15 +239,6 @@ pub const DEFAULT_DISTILL_MAX_CHARS: usize = 2000;
 /// generated output (~4 chars/token).
 const DISTILL_INPUT_CAP_CHARS: usize = 24_000;
 
-/// Context window requested for the distillation call.
-///
-/// Ollama serves 4096 tokens by default *regardless of the model's real limit*,
-/// and silently truncates beyond it — a 24 000-char payload sent at the default
-/// arrives as a fragment with the trailing instruction cut off, and the model
-/// answers the fragment instead of compressing it. Distillation is the one call
-/// whose purpose is reading a large payload, so it asks for a real window.
-const DISTILL_NUM_CTX: u32 = 16_384;
-
 impl ChainStep {
     pub fn new(tool_name: impl Into<String>) -> Self {
         Self {
@@ -263,7 +254,7 @@ pub struct QueueService {
     tool_handler: Arc<RwLock<Option<ToolHandler>>>,
     heap: Arc<Mutex<BinaryHeap<PrioritizedJob>>>,
     notify: Arc<Notify>,
-    semaphore_ollama: Arc<RwLock<Arc<Semaphore>>>,
+    semaphore_local: Arc<RwLock<Arc<Semaphore>>>,
     semaphore_anthropic: Arc<RwLock<Arc<Semaphore>>>,
     semaphore_gemini: Arc<RwLock<Arc<Semaphore>>>,
     pub config: Arc<RwLock<WorkerConfig>>,
@@ -280,12 +271,8 @@ pub struct QueueService {
     /// Local-pinned jobs set aside on the last coordinator pass because a GPU
     /// lease is held (`services/gpu_lease.rs`).
     gpu_deferred: Arc<AtomicI64>,
-    /// Local-Ollama config used to compress chain handoffs (`distill_prev`).
-    ///
-    /// Held as a config rather than a provider because distillation needs its own
-    /// `num_ctx` — it is the one call in the brain whose whole point is reading a
-    /// large payload, and the shared local provider is pinned to Ollama's 4096
-    /// default. `None` disables distillation rather than failing the step.
+    /// Local-engine config used to compress chain handoffs (`distill_prev`).
+    /// `None` disables distillation rather than failing the step.
     distill_config: Arc<RwLock<Option<agent_brain_llm::LlmConfig>>>,
 }
 
@@ -300,8 +287,8 @@ impl QueueService {
             tool_handler,
             heap: Arc::new(Mutex::new(BinaryHeap::new())),
             notify: Arc::new(Notify::new()),
-            semaphore_ollama: Arc::new(RwLock::new(Arc::new(Semaphore::new(
-                DEFAULT_MAX_CONCURRENT_OLLAMA,
+            semaphore_local: Arc::new(RwLock::new(Arc::new(Semaphore::new(
+                DEFAULT_MAX_CONCURRENT_LOCAL,
             )))),
             semaphore_anthropic: Arc::new(RwLock::new(Arc::new(Semaphore::new(
                 DEFAULT_MAX_CONCURRENT_ANTHROPIC,
@@ -766,10 +753,10 @@ impl QueueService {
         let heap_len = self.heap.lock().await.len();
         let cfg = self.config.read().await;
 
-        let avail_ollama = self.semaphore_ollama.read().await.available_permits();
+        let avail_local = self.semaphore_local.read().await.available_permits();
         let avail_anthropic = self.semaphore_anthropic.read().await.available_permits();
         let avail_gemini = self.semaphore_gemini.read().await.available_permits();
-        let running_ollama = cfg.max_concurrent_ollama.saturating_sub(avail_ollama);
+        let running_local = cfg.max_concurrent_local.saturating_sub(avail_local);
         let running_anthropic = cfg.max_concurrent_anthropic.saturating_sub(avail_anthropic);
         let running_gemini = cfg.max_concurrent_gemini.saturating_sub(avail_gemini);
 
@@ -793,12 +780,12 @@ impl QueueService {
             },
             "in_memory_pending": heap_len,
             "deferred_for_gpu_lease": self.gpu_deferred.load(Ordering::Relaxed),
-            "running_now": running_ollama + running_anthropic + running_gemini,
+            "running_now": running_local + running_anthropic + running_gemini,
             "max_concurrent": cfg.max_concurrent,
             "enabled": cfg.enabled,
             "poll_interval_secs": cfg.poll_interval_secs,
             "per_provider": {
-                "ollama": { "running": running_ollama, "max": cfg.max_concurrent_ollama },
+                "local": { "running": running_local, "max": cfg.max_concurrent_local },
                 "anthropic": { "running": running_anthropic, "max": cfg.max_concurrent_anthropic },
                 "gemini": { "running": running_gemini, "max": cfg.max_concurrent_gemini },
             },
@@ -991,7 +978,7 @@ impl QueueService {
                     let lock = match pjob.job.provider_hint.as_deref() {
                         Some("anthropic") => self.semaphore_anthropic.read().await,
                         Some("gemini") => self.semaphore_gemini.read().await,
-                        _ => self.semaphore_ollama.read().await,
+                        _ => self.semaphore_local.read().await,
                     };
                     Arc::clone(&*lock)
                 };
@@ -1225,9 +1212,7 @@ impl QueueService {
         }
 
         let cfg = self.distill_config.read().await.clone()?;
-        let llm = match agent_brain_llm::LlmClient::with_config(
-            cfg.with_num_ctx(DISTILL_NUM_CTX).with_temperature(0.2),
-        ) {
+        let llm = match agent_brain_llm::LlmClient::with_config(cfg.with_temperature(0.2)) {
             Ok(c) => c,
             Err(e) => {
                 warn!(job_id = %job.id, "Distiller client build failed — passing raw output: {}", e);
@@ -1403,7 +1388,7 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
         // SELECTED_LLM (capability-resolved) takes precedence over USE_LOCAL_LLM
         // (background default), which takes precedence over the active config;
         // ROUTE_CONTEXT lets the routing policy judge every one of them.
-        let use_local = job.provider_hint.as_deref() == Some("ollama");
+        let use_local = agent_brain_llm::model_router::is_local_hint(job.provider_hint.as_deref());
         let result = agent_brain_llm::routing::ROUTE_CONTEXT
             .scope(
                 route_ctx,
@@ -2111,7 +2096,7 @@ fn meta_learning_chain(tool_name: &str, attempt: u32, error_text: &str) -> Vec<C
         arguments: Some(arguments),
         priority: Some(0),
         max_attempts: Some(2),
-        provider_hint: Some("ollama".to_string()),
+        provider_hint: Some("local".to_string()),
         description: Some(format!("Meta-learn: {what} for '{tool_name}'")),
         ..Default::default()
     };
@@ -2199,13 +2184,13 @@ fn should_meta_learn(tool_name: &str) -> bool {
 /// brain could fix. Meta-learning on these just burns LLM cycles hypothesising about a
 /// billing limit or a flaky network — e.g. repeated "SerpApi 429: run out of searches".
 /// Whether a job waits out a GPU lease: it is pinned to the local model
-/// (`provider_hint: ollama`) and has no capability routing, which would pick a
+/// (`provider_hint: local`) and has no capability routing, which would pick a
 /// permitted cloud model instead.
 fn defers_during_gpu_lease(
     provider_hint: Option<&str>,
     arguments: Option<&serde_json::Value>,
 ) -> bool {
-    provider_hint == Some("ollama")
+    agent_brain_llm::model_router::is_local_hint(provider_hint)
         && arguments
             .and_then(|a| a.get("__required_capabilities"))
             .is_none()
@@ -2599,7 +2584,7 @@ mod tests {
         let catalog = vec![
             CatalogModel {
                 name: "gemma4:latest".into(),
-                provider: "ollama".into(),
+                provider: "local".into(),
                 model: "gemma4:latest".into(),
             },
             CatalogModel {
@@ -2615,7 +2600,7 @@ mod tests {
         };
         // The Zero Trust step: written cloud, pinned to a host-local model.
         let zt = step(Some("ollama-cloud"), Some("gemma4:latest"));
-        assert_eq!(step_provider_hint(&zt, &catalog).as_deref(), Some("ollama"));
+        assert_eq!(step_provider_hint(&zt, &catalog).as_deref(), Some("local"));
         // A cloud pin picks its provider's lane.
         let haiku = step(None, Some("claude-haiku-5-5"));
         assert_eq!(
@@ -2624,8 +2609,8 @@ mod tests {
         );
         // No pin, a blank pin, or an unknown pin keeps the hint as written.
         assert_eq!(
-            step_provider_hint(&step(Some("ollama"), None), &catalog).as_deref(),
-            Some("ollama")
+            step_provider_hint(&step(Some("local"), None), &catalog).as_deref(),
+            Some("local")
         );
         assert_eq!(step_provider_hint(&step(None, Some("  ")), &catalog), None);
         assert_eq!(
@@ -3055,7 +3040,11 @@ mod gpu_lease_deferral_tests {
 
     #[test]
     fn only_local_pinned_jobs_without_capability_routing_wait_out_a_lease() {
-        assert!(defers_during_gpu_lease(Some("ollama"), None));
+        assert!(defers_during_gpu_lease(Some("local"), None));
+        assert!(
+            defers_during_gpu_lease(Some("ollama"), None),
+            "a stored job with the old name"
+        );
         assert!(defers_during_gpu_lease(
             Some("ollama"),
             Some(&json!({"query": "x"}))
@@ -3084,7 +3073,7 @@ mod meta_learning_chain_tests {
         assert!(
             steps
                 .iter()
-                .all(|s| s.provider_hint.as_deref() == Some("ollama"))
+                .all(|s| s.provider_hint.as_deref() == Some("local"))
         );
         let question = steps[1].arguments.as_ref().unwrap()["question"]
             .as_str()

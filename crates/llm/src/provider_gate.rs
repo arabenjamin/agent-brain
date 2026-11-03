@@ -19,7 +19,7 @@
 //! two slots in arrival order, so the front door waited behind background jobs.
 //!
 //! Waits are bounded without a timeout of their own: every holder is an HTTP
-//! request with its own timeout (120 s cloud, `OLLAMA_LOCAL_TIMEOUT_SECS` local).
+//! request with its own timeout (120 s cloud, `LOCAL_TIMEOUT_SECS` local).
 //! A waiter that gives up (an abandoned chat turn) is skipped without leaking a
 //! slot. Embeddings are not gated: they are short, local, and gating them behind
 //! generation would stall retrieval.
@@ -240,6 +240,11 @@ pub async fn acquire(provider: &str) -> Option<GatePermit> {
 }
 
 /// One provider's gate as JSON for `/api/llm/budget`, or `null` when ungated.
+/// Requests `provider` has in flight now.
+pub fn in_use(provider: &str) -> u64 {
+    global().snapshot(provider)["in_use"].as_u64().unwrap_or(0)
+}
+
 pub fn snapshot_json(provider: &str) -> Value {
     global().snapshot(&provider_registry::canonical_name(provider))
 }
@@ -313,16 +318,16 @@ mod tests {
 
     #[tokio::test]
     async fn chat_is_served_before_background_that_queued_first() {
-        let g = gate(&[("llamacpp", 1)]);
-        let held = g.acquire("llamacpp", Purpose::Background).await.unwrap();
+        let g = gate(&[("local", 1)]);
+        let held = g.acquire("local", Purpose::Background).await.unwrap();
 
         let gb = g.clone();
         let background =
-            tokio::spawn(async move { gb.acquire("llamacpp", Purpose::Background).await });
-        wait_until_queued(&g, "llamacpp", "background", 1).await;
+            tokio::spawn(async move { gb.acquire("local", Purpose::Background).await });
+        wait_until_queued(&g, "local", "background", 1).await;
         let gc = g.clone();
-        let chat = tokio::spawn(async move { gc.acquire("llamacpp", Purpose::Chat).await });
-        wait_until_queued(&g, "llamacpp", "chat", 1).await;
+        let chat = tokio::spawn(async move { gc.acquire("local", Purpose::Chat).await });
+        wait_until_queued(&g, "local", "chat", 1).await;
 
         drop(held);
         let chat_permit = chat.await.unwrap().expect("chat served first");
@@ -407,7 +412,7 @@ mod tests {
         let g = ProviderGate::default();
         g.configure(&provider_registry::merged(&catalog.providers));
         assert_eq!(g.snapshot("ollama-cloud")["capacity"], 1);
-        assert_eq!(g.snapshot("llamacpp")["capacity"], 2);
+        assert_eq!(g.snapshot("local")["capacity"], 2);
         assert!(
             g.snapshot("gemini").is_null(),
             "no declared concurrency, not gated"

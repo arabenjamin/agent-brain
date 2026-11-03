@@ -21,7 +21,7 @@ steps:
         print(int(time.time()) - 86400, end="")
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "The window: the last 24 hours, as a Unix time"
 
   - id: prior
@@ -30,7 +30,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'hn_ai_trial' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "The prior run, for what is new"
 
   - id: hn
@@ -47,7 +47,7 @@ steps:
       pick: ["nbHits", "hits[].objectID", "hits[].title", "hits[].url", "hits[].points", "hits[].created_at"]
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "One day of Hacker News stories with 50+ points"
 
   # The same arguments as daily-news's `tech` step: what HN would replace.
@@ -65,7 +65,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "daily-news's tech search, same arguments"
 
   - id: compare
@@ -117,7 +117,7 @@ steps:
         print("\n".join(f"- {k}" for k in both) or "None.")
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Keyword filter and overlap, in code (no model)"
 
   - tool_name: store_note
@@ -127,5 +127,5 @@ steps:
       source_context: hn_ai_trial
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the run's measurement"

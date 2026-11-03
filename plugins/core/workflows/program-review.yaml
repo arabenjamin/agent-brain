@@ -9,7 +9,7 @@ inputs:
     description: The program's name (manage_program list).
     required: true
 defaults:
-  provider_hint: ollama
+  provider_hint: local
   max_attempts: 2
 steps:
   - id: context

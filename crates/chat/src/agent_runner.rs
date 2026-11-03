@@ -12,7 +12,7 @@
 //! ## Why the loop machinery stays in `ChatService`
 //!
 //! The chat round loop with its provider adapters (`run_anthropic_loop`,
-//! `run_ollama_tool_loop`, `run_openai_loop`) and profile-model resolution are
+//! `run_openai_loop`) and profile-model resolution are
 //! large, incident-laden `ChatService` methods that encode the fallback ladder,
 //! the write guard, empty-completion retries, and the worker/voice split. Moving
 //! them wholesale would be a behaviour change dressed as a refactor — exactly

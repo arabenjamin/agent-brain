@@ -10,7 +10,7 @@ steps:
       cypher: "MATCH (t:Todo) WHERE t.status IN ['pending','in_progress'] RETURN t.title AS title, t.description AS description, t.priority AS priority, t.status AS status, t.due_at AS due_at, t.tags AS tags ORDER BY t.priority ASC, t.due_at ASC"
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: reason
     arguments:
@@ -25,7 +25,7 @@ steps:
       store_inference: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: store_note
     arguments:
@@ -34,4 +34,4 @@ steps:
       source_context: todo_snapshot
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local

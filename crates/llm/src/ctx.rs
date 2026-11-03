@@ -2,9 +2,9 @@
 //! attribute its calls (the queue sets them at dispatch, `SharedLlm` reads them).
 
 tokio::task_local! {
-    /// Set to `true` inside a background job task when `provider_hint == "ollama"`.
+    /// Set to `true` inside a background job task when `provider_hint` is `local`.
     ///
-    /// `SharedLlm` reads this flag to route generation calls to the local Ollama
+    /// `SharedLlm` reads this flag to route generation calls to the local engine
     /// endpoint instead of the active (possibly cloud) model, preventing background
     /// maintenance jobs from consuming cloud quota.
     pub static USE_LOCAL_LLM: bool;

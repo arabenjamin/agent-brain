@@ -10,7 +10,7 @@ steps:
       cypher: "MATCH (t:Todo) WHERE t.status IN ['pending','in_progress'] AND t.due_at IS NOT NULL AND t.due_at < datetime() RETURN t.id AS id, t.title AS title, t.description AS description, t.due_at AS due_at ORDER BY t.due_at ASC LIMIT 20"
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   # TODO: Update the context here so the prompt ask what could Agent-brain do to help, An Ai agent is ambigous.
   - tool_name: reason
@@ -27,7 +27,7 @@ steps:
       store_inference: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: store_note
     arguments:
@@ -36,4 +36,4 @@ steps:
       source_context: overdue_todo_review
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local

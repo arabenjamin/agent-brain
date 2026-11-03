@@ -15,9 +15,7 @@
 //!   struct and constructors, iteration caps, tool dispatch.
 //! - `turn` — one turn: profile/model resolution, the fallback ladder, one attempt.
 //! - Provider wire adapters, one `impl ChatService` each: `anthropic_loop`,
-//!   `ollama_loop` (host Ollama's native API, the only one that takes
-//!   `num_ctx`), `openai_loop` (Ollama Cloud / llama.cpp / Gemini / any
-//!   OpenAI-compatible provider). Gemini's `<tool_call>` text protocol went in
+//!   `openai_loop` (the local engine, Gemini, and any OpenAI-compatible provider). Gemini's `<tool_call>` text protocol went in
 //!   CORE_AND_PLUGINS_PLAN 6a.
 //! - `synthesis` — the worker/voice split. `delegate` — the `delegate` pseudo-tool
 //!   and the [`SubagentLoopRunner`] impl that `AgentRunner` drives.
@@ -51,7 +49,6 @@ mod delegate;
 mod events;
 mod handover;
 mod loop_policy;
-mod ollama_loop;
 mod openai_loop;
 mod prompt;
 mod round_loop;
@@ -147,7 +144,7 @@ pub enum ChatEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         model_saw_chars: Option<usize>,
     },
-    /// Streaming token chunk from the LLM (Ollama only).
+    /// Streaming token chunk. No loop emits it since the native Ollama loop went.
     Token { content: String },
     /// Final assistant message (no more tool calls).
     Message { content: String },

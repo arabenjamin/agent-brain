@@ -17,7 +17,7 @@ steps:
       limit: 20
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   # 2. Report what the sweep found, so a run that verified nothing is visible
   #    rather than silent.
@@ -28,7 +28,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   # 3. Per-source breakdown. Not a trust score and not a filter — a source whose
   #    claims nothing independently corroborates is a pattern worth a human
@@ -39,4 +39,4 @@ steps:
       action: sources
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local

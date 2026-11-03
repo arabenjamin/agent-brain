@@ -290,6 +290,11 @@ pub async fn seed_workflows(
         }
         seeded += 1;
     }
+    match neo4j.migrate_local_provider_hints().await {
+        Ok(0) => {}
+        Ok(n) => info!(workflows = n, "Stored provider_hint moved to `local`"),
+        Err(e) => warn!(error = %e, "Stored provider_hint not migrated; the old name still works"),
+    }
     Ok(seeded)
 }
 

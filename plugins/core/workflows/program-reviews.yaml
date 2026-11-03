@@ -9,7 +9,7 @@ every: 1d
 enabled: false
 steps:
   - tool_name: manage_program
-    provider_hint: ollama
+    provider_hint: local
     description: Start the reviews that are due
     arguments:
       action: start_due_reviews

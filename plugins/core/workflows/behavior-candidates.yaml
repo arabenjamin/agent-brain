@@ -103,7 +103,7 @@ steps:
       limit: 5
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: notify_user
     arguments:
@@ -112,7 +112,7 @@ steps:
       related_session_id: "behaviors-{{date}}"
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   # The report opens the session, so a reply ("build the todos one") lands in it.
   - tool_name: push_context
@@ -122,4 +122,4 @@ steps:
       role: assistant
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local

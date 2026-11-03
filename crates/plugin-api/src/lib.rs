@@ -22,6 +22,7 @@ pub use serde_json::{Map, Value};
 
 /// The protocol crate, for anything a tool needs beyond the re-exports.
 pub use agent_brain_decision as decision;
+pub use agent_brain_engine as engine;
 pub use agent_brain_protocol as protocol;
 pub use agent_brain_protocol::{Skill, ToolCallResult, ToolDefinition, parse_args};
 
@@ -274,7 +275,7 @@ pub trait Llm: Send + Sync {
 
     async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String>;
 
-    /// The embedding the core gives notes (bge-m3 on host Ollama), for a
+    /// The embedding the core gives notes (the local engine's embeddings role), for a
     /// plugin that writes its own retrievable notes.
     async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>>;
 

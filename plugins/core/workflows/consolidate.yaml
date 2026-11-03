@@ -7,7 +7,7 @@ steps:
       limit: 20
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Consolidate overdue spaced-repetition notes"
 
   - tool_name: update_task
@@ -16,4 +16,4 @@ steps:
       status: completed
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local

@@ -115,7 +115,7 @@ pub struct McpServerCore {
     /// existing single-model deployments continue to work without any config
     /// changes.  Set via [`with_chat_llm_config`] to run a different model
     /// (e.g. cloud Anthropic) for human chat while keeping brain internals on
-    /// local Ollama.
+    /// the local engine.
     chat_llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
 
     /// Models `/chat` falls back to, in order, when a turn produces nothing the

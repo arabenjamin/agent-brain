@@ -7,7 +7,7 @@ describe("step drafts", () => {
       {
         tool_name: "search_web",
         arguments: { query: "{{goal_topic}}", num_results: 5 },
-        provider_hint: "ollama",
+        provider_hint: "local",
         priority: 2,
         data_class: "public",
         model: "gemma4-e4b",
@@ -34,6 +34,7 @@ describe("step drafts", () => {
 
 describe("providerLabel", () => {
   it("says only local vs cloud changes where a step runs", () => {
+    expect(providerLabel("local")).toBe("Local model");
     expect(providerLabel("ollama")).toBe("Local model");
     expect(providerLabel("", "gpt-oss:120b-cloud")).toBe("Cloud: the brain's active model (gpt-oss:120b-cloud)");
     expect(providerLabel("anthropic", "gpt-oss:120b-cloud")).toBe("anthropic: also cloud, on the brain's active model (gpt-oss:120b-cloud)");

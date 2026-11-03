@@ -8,6 +8,7 @@ description = "Agent Brain's LLM stack: providers, registry, routing policy, bud
 agent-brain-models = { path = "../models" }
 agent-brain-repository = { path = "../repository" }
 agent-brain-plugin-api = { path = "../plugin-api" }
+agent-brain-engine = { path = "../engine" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

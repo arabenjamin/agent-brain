@@ -239,6 +239,25 @@ impl Neo4jClient {
         Ok(wf)
     }
 
+    /// Rewrite the old `provider_hint` for the local engine in stored steps. A
+    /// file-owned workflow gets this from its YAML, a runtime-owned one only from
+    /// here. Returns how many workflows changed; a second run finds none.
+    pub async fn migrate_local_provider_hints(&self) -> Result<i64, RepositoryError> {
+        let rows = self
+            .execute(query(
+                "MATCH (w:Workflow) \
+                 WHERE w.steps CONTAINS '\"provider_hint\":\"ollama\"' \
+                 SET w.steps = replace(w.steps, \
+                     '\"provider_hint\":\"ollama\"', '\"provider_hint\":\"local\"') \
+                 RETURN count(w) AS changed",
+            ))
+            .await?;
+        Ok(rows
+            .first()
+            .and_then(|r| r.get::<i64>("changed").ok())
+            .unwrap_or(0))
+    }
+
     /// Seed a workflow from its file: create it when absent (with `enabled`,
     /// which the file only sets at creation), overwrite its definition when
     /// yaml-owned, leave it alone when runtime-owned. A schedule added to a

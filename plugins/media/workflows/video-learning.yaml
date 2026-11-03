@@ -21,7 +21,7 @@ steps:
       store: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch transcript + map-reduce summary"
 
   # Hand-off: what the brain itself already does about this video (its
@@ -42,7 +42,7 @@ steps:
     priority: 1
     max_attempts: 2
     optional: true
-    provider_hint: ollama
+    provider_hint: local
     description: "Hand-off: the brain's own workflows and programs on this subject"
 
   # 2. Bank the summary so it survives past the reason step below.
@@ -53,7 +53,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank the summary in working memory"
 
   # 3. Reassemble the banked summary so it can be passed as `context` (not the
@@ -63,7 +63,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Reassemble summary for the reason step"
 
   # 4. Compare the new material against what the brain already knows. context =
@@ -93,7 +93,7 @@ steps:
     priority: 2
     max_attempts: 3
     # Why: dev_docs get yaml/chains-video-learning-4
-    provider_hint: ollama
+    provider_hint: local
     # Distilled handoff: this is the one cloud-routed step in the chain, and its
     # {{_prev}} is the full reassembled transcript summary. Safe to compress here
     # because the *durable* note (step 7) reassembles from working memory again,
@@ -113,7 +113,7 @@ steps:
       max: 2
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Spawn gap tasks from FOLLOW UP concepts"
 
   # 5. Bank the analysis alongside the summary.
@@ -124,7 +124,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank the analysis in working memory"
 
   # 6. Reassemble summary + analysis into one blob for the stored note.
@@ -134,7 +134,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Reassemble summary + analysis for storage"
 
   # 7. Persist the durable semantic note. store_note's async pipeline runs entity
@@ -151,7 +151,7 @@ steps:
       source_context: video_learning
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the sourced summary note"
 
   # Why: dev_docs get yaml/chains-video-learning-6
@@ -169,7 +169,7 @@ steps:
     optional: true
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Extract checkable claims from the video"
 
   # Hand-off: answer what the person asked (2026-10-26: "which model should
@@ -239,7 +239,7 @@ steps:
       context: "Hand-off: {{inputs.url}}"
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Hand-off: report back in the person's chat"
 
   # 8. Mark the video Task done.
@@ -249,7 +249,7 @@ steps:
       status: completed
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Complete the task"
 
   # 9. Clean up the scratch working-memory session.
@@ -262,5 +262,5 @@ steps:
       readonly: false
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Delete scratch session"

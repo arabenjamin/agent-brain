@@ -24,10 +24,8 @@ use serde_json::{Value, json};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
-    /// Native Ollama API (`/api/chat`).
-    Ollama,
-    /// llama.cpp `llama-server` (OpenAI wire, one model per instance).
-    Llamacpp,
+    /// The local engine (`agent_brain_engine`): its endpoint comes from there.
+    Local,
     /// Any OpenAI-compatible `/v1/chat/completions` endpoint.
     OpenaiCompat,
     Anthropic,
@@ -145,6 +143,9 @@ fn env_nonempty(name: &str) -> Option<String> {
 impl ProviderEntry {
     /// The endpoint: `base_url_env` when set, else `base_url_default`.
     pub fn base_url(&self) -> Option<String> {
+        if self.kind == ProviderKind::Local {
+            return Some(agent_brain_engine::current().url.clone());
+        }
         self.base_url_env
             .as_deref()
             .and_then(env_nonempty)
@@ -193,7 +194,9 @@ pub fn canonical_name(name: &str) -> String {
     let lower = name.trim().to_ascii_lowercase();
     match lower.as_str() {
         "ollamacloud" | "ollama_cloud" => "ollama-cloud".to_string(),
-        "llama-cpp" | "llama.cpp" | "llama_cpp" => "llamacpp".to_string(),
+        // Every name the local engine has had. Stored workflows, jobs and old
+        // ledger rows carry them.
+        "ollama" | "llamacpp" | "llama-cpp" | "llama.cpp" | "llama_cpp" => "local".to_string(),
         _ => lower,
     }
 }
@@ -201,18 +204,10 @@ pub fn canonical_name(name: &str) -> String {
 /// The endpoints `config_for_catalog_entry` hardcoded before the registry
 /// existed. A `providers:` entry of the same name replaces its row wholesale.
 const BUILTIN_PROVIDERS: &str = r#"
-ollama:
-  kind: ollama
+local:
+  kind: local
   billing: local
   data_policy: no_log
-  base_url_env: OLLAMA_LOCAL_URL
-  base_url_default: "http://localhost:11434"
-llamacpp:
-  kind: llamacpp
-  billing: local
-  data_policy: no_log
-  base_url_env: LLAMACPP_URL
-  base_url_default: "http://localhost:8080"
 ollama-cloud:
   kind: openai_compat
   billing: free
@@ -375,18 +370,13 @@ mod tests {
         );
         assert_eq!(cloud.api_key_env.as_deref(), Some("OLLAMA_API_KEY"));
 
-        let local = &t["ollama"];
-        assert_eq!(local.kind, ProviderKind::Ollama);
-        assert_eq!(local.base_url_env.as_deref(), Some("OLLAMA_LOCAL_URL"));
+        let local = &t["local"];
+        assert_eq!(local.kind, ProviderKind::Local);
         assert_eq!(
-            local.base_url_default.as_deref(),
-            Some("http://localhost:11434")
+            local.base_url(),
+            Some(agent_brain_engine::current().url.clone())
         );
         assert!(local.api_key_env.is_none());
-
-        let sidecar = &t["llamacpp"];
-        assert_eq!(sidecar.kind, ProviderKind::Llamacpp);
-        assert_eq!(sidecar.base_url_env.as_deref(), Some("LLAMACPP_URL"));
 
         assert_eq!(
             t["anthropic"].api_key_env.as_deref(),
@@ -401,8 +391,15 @@ mod tests {
         for n in ["ollama-cloud", "ollamacloud", "Ollama_Cloud"] {
             assert_eq!(canonical_name(n), "ollama-cloud");
         }
-        for n in ["llamacpp", "llama-cpp", "llama.cpp", "llama_cpp"] {
-            assert_eq!(canonical_name(n), "llamacpp");
+        for n in [
+            "local",
+            "ollama",
+            "llamacpp",
+            "llama-cpp",
+            "llama.cpp",
+            "llama_cpp",
+        ] {
+            assert_eq!(canonical_name(n), "local");
         }
         assert_eq!(canonical_name(" Mistral "), "mistral");
     }
@@ -462,7 +459,7 @@ mod tests {
         );
         assert!(e.api_key().is_none());
         assert!(!e.key_configured());
-        let keyless = parse("kind: ollama\nbilling: local");
+        let keyless = parse("kind: local\nbilling: local");
         assert!(keyless.key_configured());
     }
 

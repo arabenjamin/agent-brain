@@ -170,7 +170,7 @@ impl LlmProvider for OpenAiCompatProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError> {
-        // Same shrinking retry as Ollama: the ceiling is in tokens, the cap in chars.
+        // The shrinking retry: the ceiling is in tokens, the cap in chars.
         let url = format!("{}/embeddings", self.root);
         super::embed_with_backoff(text, |input| {
             let url = url.clone();
@@ -320,7 +320,7 @@ mod tests {
             "https://api.mistral.ai/v1"
         );
         assert_eq!(
-            api_root(LlmProviderType::LlamaCpp, None, "http://localhost:8000"),
+            api_root(LlmProviderType::Local, None, "http://localhost:8000"),
             "http://localhost:8000/v1"
         );
     }

@@ -20,7 +20,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE (n.source_context = 'slm_benchmark_watch' OR n.content STARTS WITH 'BASELINE: State of SLMs') AND coalesce(n.note_type, '') <> 'claim' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 2"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch prior Tier 2 list for delta analysis"
 
   - tool_name: push_context
@@ -30,7 +30,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank prior list"
 
   # 2-4. Release sweep, benchmark sweep, quantization/serving sweep.
@@ -43,7 +43,7 @@ steps:
       source_list: ml-research
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: new releases"
 
   - tool_name: push_context
@@ -53,7 +53,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank releases sweep"
 
   - tool_name: search_web
@@ -65,7 +65,7 @@ steps:
       source_list: ml-research
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: benchmark results"
 
   - tool_name: push_context
@@ -75,7 +75,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank benchmark sweep"
 
   - tool_name: search_web
@@ -87,7 +87,7 @@ steps:
       source_list: ml-research
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: local deployability"
 
   - tool_name: push_context
@@ -97,7 +97,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank deployability sweep"
 
   # 5. Reassemble everything for the reason step.
@@ -106,7 +106,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'slmwatch-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Reassemble prior list + sweeps"
 
   # 6. Material goes in `context`, not `question` (RAG contamination guard).
@@ -160,7 +160,7 @@ steps:
 
         ## RELEVANCE TO THIS BRAIN
         Whether any listed model is a better candidate than the current
-        OLLAMA_LOCAL_MODEL for background jobs, and why. Say "no change
+        LOCAL_MODEL for background jobs, and why. Say "no change
         warranted" if that is the honest answer.
 
         ## WATCH
@@ -191,7 +191,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank the finished report"
 
   - tool_name: neo4j_query
@@ -199,7 +199,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'slmwatch-{{task_id}}'}) WHERE w.content STARTS WITH '## REPORT' RETURN w.content AS content ORDER BY w.turn_index DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Re-read the report alone"
 
   # Why: dev_docs get yaml/schedules-slm-benchmark-watch-2
@@ -210,7 +210,7 @@ steps:
       source_context: slm_benchmark_watch
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the benchmark watch report"
 
   # Why: dev_docs get yaml/schedules-slm-benchmark-watch-3
@@ -227,7 +227,7 @@ steps:
     optional: true
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Extract benchmark claims as checkable, attributed propositions"
 
   - tool_name: neo4j_query
@@ -238,7 +238,7 @@ steps:
     # and starves under a fed queue. See workflows/fill-knowledge-gap.yaml.
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Delete scratch session"
 
   # 8. Tell the owner only when the Tier 2 list moved (AI & ML Research review,
@@ -297,7 +297,7 @@ steps:
             print("The full report, with evidence and the relevance to this brain, is the note `# SLM benchmark watch — {{date}}` (source_context slm_benchmark_watch).")
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Compare the Tier 2 list with the prior one, in code"
 
   - tool_name: notify_user
@@ -306,5 +306,5 @@ steps:
       context: "SLM Tier 2 list changed {{date}}"
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Notify only when the Tier 2 list changed"

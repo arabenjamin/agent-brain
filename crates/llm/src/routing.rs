@@ -306,6 +306,18 @@ impl RoutingPolicy {
                  policy are unknown"
             ));
         };
+        // An agent loop on a local engine that cannot make tool calls would answer
+        // with no tools at all; a ladder steps past it instead.
+        if e.kind == provider_registry::ProviderKind::Local
+            && ctx.purpose != Purpose::Background
+            && !agent_brain_engine::current().has(agent_brain_engine::Capability::Tools)
+        {
+            return Err(format!(
+                "engine '{}' does not declare tools, which {} needs",
+                agent_brain_engine::current().name,
+                ctx.purpose.as_str()
+            ));
+        }
         if !e.enabled {
             return Err(format!("provider '{name}' is disabled"));
         }
@@ -580,8 +592,8 @@ mod tests {
     fn registry() -> HashMap<String, ProviderEntry> {
         let mut m = HashMap::new();
         m.insert(
-            "llamacpp".into(),
-            entry("kind: llamacpp\nbilling: local\ndata_policy: no_log"),
+            "local".into(),
+            entry("kind: local\nbilling: local\ndata_policy: no_log"),
         );
         m.insert(
             "ollama-cloud".into(),
@@ -735,7 +747,7 @@ mod tests {
             assert!(check(&p, provider, Purpose::Background, DataClass::Public).is_ok());
         }
         assert!(check(&p, "ollama-cloud", Purpose::Background, DataClass::Private).is_ok());
-        assert!(check(&p, "llamacpp", Purpose::Chat, DataClass::Private).is_ok());
+        assert!(check(&p, "local", Purpose::Chat, DataClass::Private).is_ok());
     }
 
     #[test]
@@ -787,7 +799,7 @@ mod tests {
     #[test]
     fn tier_zero_admits_only_local() {
         let p = tier("0");
-        assert!(check(&p, "llamacpp", Purpose::Background, DataClass::Public).is_ok());
+        assert!(check(&p, "local", Purpose::Background, DataClass::Public).is_ok());
         assert!(check(&p, "ollama-cloud", Purpose::Background, DataClass::Public).is_err());
     }
 
@@ -891,7 +903,7 @@ mod tests {
                 ("gemini-2.5-flash", "gemini"),
                 ("gpt-oss:120b-cloud", "ollama-cloud"),
                 ("dead-model", "ollama-cloud"),
-                ("gemma4-e4b", "llamacpp"),
+                ("gemma4-e4b", "local"),
             ]),
             RouteContext::new(Purpose::Background, DataClass::Private),
             &tier("2"),
@@ -931,7 +943,7 @@ mod tests {
         let plan = route(
             &rows(&[
                 ("gpt-oss:120b-cloud", "ollama-cloud"),
-                ("gemma4-e4b", "llamacpp"),
+                ("gemma4-e4b", "local"),
             ]),
             RouteContext::new(Purpose::Background, DataClass::Private),
             &tier("2"),
@@ -955,7 +967,7 @@ mod tests {
     fn a_gpu_lease_refuses_local_providers_only() {
         let mut p = tier("2");
         p.gpu_lease = Some("the GPU is leased to finetune".into());
-        let err = check(&p, "llamacpp", Purpose::Chat, DataClass::Private).unwrap_err();
+        let err = check(&p, "local", Purpose::Chat, DataClass::Private).unwrap_err();
         assert!(err.contains("leased to finetune"), "{err}");
         assert!(check(&p, "ollama-cloud", Purpose::Background, DataClass::Private).is_ok());
     }

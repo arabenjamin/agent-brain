@@ -40,7 +40,7 @@ pub struct RestState {
     pub tool_registry: Option<Arc<RwLock<agent_brain_work::tools::ToolRegistry>>>,
     /// Read-only access to the retrieval pipeline for the HBI's search
     /// (`clients/search.rs`). Built from `neo4j` + `llm_config`; embeddings
-    /// go wherever that config sends them (host Ollama), as for every search.
+    /// go wherever that config sends them (the local engine), as for every search.
     pub knowledge: Option<Arc<agent_brain_knowledge::knowledge::KnowledgeService>>,
 }
 
@@ -1296,7 +1296,7 @@ pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> 
         // price list: Ollama Cloud and Gemini are consumed on their free tiers
         // (429 at the ceiling, no billing). Anthropic is the only metered path.
         "available_providers": [
-            { "name": "Ollama (local)", "type": LlmProviderType::Ollama.to_string(),      "cost": "free" },
+            { "name": "Local engine",   "type": LlmProviderType::Local.to_string(),       "cost": "free" },
             { "name": "Ollama Cloud",   "type": LlmProviderType::OllamaCloud.to_string(), "cost": "free tier" },
             { "name": "Anthropic",      "type": LlmProviderType::Anthropic.to_string(),   "cost": "paid" },
             { "name": "Gemini",         "type": LlmProviderType::Gemini.to_string(),      "cost": "free tier" },

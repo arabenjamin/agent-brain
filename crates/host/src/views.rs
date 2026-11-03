@@ -1004,6 +1004,16 @@ impl LookupSkill {
             views.push(e);
         }
         let mut out = json!({"count": views.len(), "views": views});
+        // Only when something is off: a feature missing on this engine explains an
+        // empty answer, and the normal case costs a caller nothing to read.
+        let off: Vec<_> = agent_brain_llm::engine::current()
+            .features()
+            .into_iter()
+            .filter(|f| !f.on)
+            .collect();
+        if !off.is_empty() {
+            out["local_engine_features_off"] = json!(off);
+        }
         if !self.skipped.is_empty() {
             out["skipped"] = json!(self.skipped);
         }

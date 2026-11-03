@@ -26,8 +26,6 @@ const TOP_LOGPROBS: u32 = 100;
 /// Ollama's limit: the codes are the letters A to Z.
 const MAX_CHOICES: usize = 26;
 
-const DEFAULT_URL: &str = "http://localhost:8080";
-
 /// The value of a yes/no question's "yes" in [`Answer::probabilities`].
 pub const YES: &str = "true";
 
@@ -254,12 +252,9 @@ pub async fn ask<S: Serialize>(
     q: &Question<'_>,
 ) -> Result<Answer, String> {
     let user = prompt(state, name, q)?;
-    let base = std::env::var("LLAMACPP_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
+    let base = agent_brain_engine::current().url.clone();
     let response = http()
-        .post(format!(
-            "{}/v1/chat/completions",
-            base.trim_end_matches('/')
-        ))
+        .post(format!("{base}/v1/chat/completions"))
         .json(&json!({
             "model": model,
             "temperature": 0,
@@ -292,6 +287,40 @@ pub async fn ask<S: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Against the real model on the engine (`LOCAL_ENGINE_URL`, `LOCAL_DECISION_MODEL`):
+    /// `cargo test -p agent-brain-decision -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "needs the engine with the decision model"]
+    async fn the_live_model_answers_a_fixed_choice() {
+        #[derive(Serialize)]
+        struct S<'a> {
+            a: &'a str,
+            b: &'a str,
+        }
+        let model = agent_brain_engine::model(agent_brain_engine::Role::Decision).unwrap();
+        let criteria = [
+            ("same".to_string(), "The same person.".to_string()),
+            ("different".to_string(), "Two different people.".to_string()),
+        ];
+        let q = Question::Choice {
+            instructions: "Are these two names the same person?",
+            criteria: &criteria,
+        };
+        let same = S {
+            a: "Barack Obama",
+            b: "President Obama",
+        };
+        let other = S {
+            a: "Barack Obama",
+            b: "Marie Curie",
+        };
+        let same = ask(&model, &same, "pair", &q).await.unwrap();
+        let other = ask(&model, &other, "pair", &q).await.unwrap();
+        println!("{same:?}\n{other:?}");
+        assert_eq!(same.choice, "same");
+        assert_eq!(other.choice, "different");
+    }
 
     #[derive(Serialize)]
     struct Api<'a> {

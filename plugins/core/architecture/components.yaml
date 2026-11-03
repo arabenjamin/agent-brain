@@ -23,22 +23,14 @@ components:
     probe: duckdb
     purpose: Model usage, budgets, search usage, the model registry.
 
-  - name: ollama
-    label: Host Ollama
+  - name: local-engine
+    label: Local engine
     kind: model
     probe: http
-    url_env: OLLAMA_LOCAL_URL
-    path: /api/version
+    url_env: LOCAL_ENGINE_URL
+    path: /v1/models
     required: true
-    purpose: Embeddings (bge-m3) for every stored note and every semantic search.
-
-  - name: llamacpp
-    label: llama.cpp sidecar
-    kind: model
-    probe: http
-    url_env: LLAMACPP_URL
-    path: /health
-    purpose: Local generation (Gemma-4-E4B) for background jobs, entity extraction and topics.
+    purpose: Local models (LOCAL_ENGINE) - embeddings for every note and search, background generation, decisions and the grounding check.
 
   - name: sandbox
     label: Python sandbox

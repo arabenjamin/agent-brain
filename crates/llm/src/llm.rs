@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use agent_brain_engine::Role;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 /// Default timeout for LLM requests (2 minutes for slow models).
@@ -27,33 +28,18 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// permit for the whole call.
 const DEFAULT_LOCAL_TIMEOUT_SECS: u64 = 600;
 
-/// Where embeddings go when `LOCAL_EMBED_BACKEND=llamacpp`: the sidecar's URL and
-/// the router's name for the model. `None` keeps them on host Ollama.
-fn llamacpp_embed_target() -> Option<(String, String)> {
-    let backend = std::env::var("LOCAL_EMBED_BACKEND").ok()?;
-    if !matches!(
-        backend.trim(),
-        "llamacpp" | "llama-cpp" | "llama.cpp" | "llama_cpp"
-    ) {
-        return None;
-    }
-    let url = std::env::var("LLAMACPP_URL").unwrap_or_else(|_| DEFAULT_LLAMACPP_URL.to_string());
-    let model = std::env::var("LLAMACPP_EMBED_MODEL").unwrap_or_else(|_| "bge-m3".to_string());
-    Some((url, model))
-}
-
-/// Resolve the local model's request timeout from `OLLAMA_LOCAL_TIMEOUT_SECS`,
+/// Resolve the local model's request timeout from `LOCAL_TIMEOUT_SECS`,
 /// falling back to [`DEFAULT_LOCAL_TIMEOUT_SECS`]. An unparseable or zero
 /// value warns and uses the default rather than disabling the timeout.
 pub fn local_timeout() -> Duration {
-    match std::env::var("OLLAMA_LOCAL_TIMEOUT_SECS") {
+    match std::env::var("LOCAL_TIMEOUT_SECS") {
         Ok(raw) => match raw.trim().parse::<u64>() {
             Ok(secs) if secs > 0 => Duration::from_secs(secs),
             _ => {
                 tracing::warn!(
                     value = %raw,
                     default_secs = DEFAULT_LOCAL_TIMEOUT_SECS,
-                    "OLLAMA_LOCAL_TIMEOUT_SECS is not a positive integer — using the default"
+                    "LOCAL_TIMEOUT_SECS is not a positive integer — using the default"
                 );
                 Duration::from_secs(DEFAULT_LOCAL_TIMEOUT_SECS)
             }
@@ -62,105 +48,15 @@ pub fn local_timeout() -> Duration {
     }
 }
 
-/// Default Ollama API URL.
-pub(crate) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
-
-/// Default `llama-server` OpenAI-compatible endpoint.
-const DEFAULT_LLAMACPP_URL: &str = "http://localhost:8080";
-
-/// Build the LLM config used for **background / scheduled jobs** (the "local"
-/// route taken whenever a step sets `provider_hint: "ollama"` / `USE_LOCAL_LLM`).
-///
-/// The generation backend is selected by `LOCAL_LLM_BACKEND`:
-/// - `ollama` (default) — native Ollama at `OLLAMA_LOCAL_URL` / `OLLAMA_LOCAL_MODEL`.
-/// - `llamacpp` — `llama-server`'s OpenAI-compatible API at `LLAMACPP_URL` /
-///   `LLAMACPP_MODEL` (falls back to `OLLAMA_LOCAL_MODEL` for the model name).
-///
-/// **Embeddings always stay on local Ollama** regardless of the generation
-/// backend: `embed_base_url` is pinned to `OLLAMA_LOCAL_URL` and the embed model
-/// to `OLLAMA_EMBED_MODEL` (`bge-m3`). llama.cpp single-model servers don't
-/// serve `/api/embeddings`, so this keeps `search_notes` / `store_note` working
-/// unchanged while generation moves to llama.cpp.
-/// Context window for **host-Ollama generation**, from `OLLAMA_NUM_CTX`.
-///
-/// Ollama serves a 4096-token window by default whatever the model claims, and
-/// input past it is dropped **silently** — no error, no marker, just a shorter
-/// prompt. Measured 2026-09-11 over 30 days: 103 of 874 `reason` calls came back
-/// with `tokens_in` sitting exactly on 4096 (granite4 58, gemma4 45; the
-/// llama.cpp and cloud paths showed zero), i.e. they were clipped and answered
-/// from a truncated prompt. Every host-Ollama config must therefore set this
-/// explicitly — leaving `num_ctx: None` is the bug, not the default.
-///
-/// Raising it costs KV-cache VRAM on a shared GPU, so it is env-tunable; 16384
-/// covers 99.4% of observed `reason` inputs (only 5/874 exceeded it).
-pub fn ollama_num_ctx() -> u32 {
-    const DEFAULT_OLLAMA_NUM_CTX: u32 = 16384;
-    std::env::var("OLLAMA_NUM_CTX")
-        .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_OLLAMA_NUM_CTX)
-}
-
+/// The config for **background and scheduled work**, the local lane a step takes
+/// with `provider_hint: local`: the engine's endpoint and its generation model,
+/// with the long local timeout.
 pub fn build_local_llm_config() -> LlmConfig {
-    let backend = std::env::var("LOCAL_LLM_BACKEND")
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-
-    let ollama_url =
-        std::env::var("OLLAMA_LOCAL_URL").unwrap_or_else(|_| DEFAULT_OLLAMA_URL.to_string());
-
-    let (provider, base_url, model) = match backend.as_str() {
-        "llamacpp" | "llama-cpp" | "llama.cpp" | "llama_cpp" => {
-            let url =
-                std::env::var("LLAMACPP_URL").unwrap_or_else(|_| DEFAULT_LLAMACPP_URL.to_string());
-            // A single-model llama-server serves whatever GGUF it was launched
-            // with regardless of the requested name, so this is mostly a ledger
-            // label; keep it meaningful by reusing OLLAMA_LOCAL_MODEL if set.
-            let model = std::env::var("LLAMACPP_MODEL")
-                .or_else(|_| std::env::var("OLLAMA_LOCAL_MODEL"))
-                .unwrap_or_else(|_| "local".to_string());
-            (LlmProviderType::LlamaCpp, url, model)
-        }
-        _ => {
-            let model =
-                std::env::var("OLLAMA_LOCAL_MODEL").unwrap_or_else(|_| "gemma4:latest".to_string());
-            (LlmProviderType::Ollama, ollama_url.clone(), model)
-        }
-    };
-
-    let mut cfg = LlmConfig::default()
-        .with_provider(provider)
-        .with_base_url(base_url)
-        .with_model(model)
-        // Embeddings are ALWAYS local Ollama — pin the embed endpoint to it even
-        // when generation runs on llama.cpp (whose base_url can't serve embeds).
-        .with_embed_base_url(ollama_url)
-        .with_timeout(local_timeout());
-
-    // Only the Ollama path needs this: llama.cpp fixes its context at launch
-    // (`-c` / `-np`) and ignores a per-request num_ctx entirely.
-    if matches!(cfg.provider, LlmProviderType::Ollama) {
-        cfg = cfg.with_num_ctx(ollama_num_ctx());
-    }
-
-    if let Ok(em) = std::env::var("OLLAMA_EMBED_MODEL") {
-        cfg = cfg.with_embed_model(em);
-    }
-    // keep_alive is Ollama-only (ignored by the llama.cpp/OpenAI-compat provider,
-    // which never serializes it). Keeping it set is harmless when backend=llamacpp.
-    if let Some(ka) = std::env::var("OLLAMA_KEEP_ALIVE")
-        .ok()
-        .and_then(|s| crate::llm::validate_go_duration(s.trim()))
-    {
-        cfg = cfg.with_keep_alive(ka);
-    }
-    cfg
+    LlmConfig::default().with_timeout(local_timeout())
 }
 
-/// Default model to use.
-const DEFAULT_MODEL: &str = "qwen3.5:4b";
+/// The model a config names before anything chooses one, if the engine has none.
+const DEFAULT_MODEL: &str = "local";
 
 #[derive(Debug, Error)]
 pub enum LlmError {
@@ -190,15 +86,18 @@ pub enum LlmError {
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
 pub enum LlmProviderType {
+    /// The local engine (`agent_brain_engine`), over its OpenAI wire. Context window
+    /// and GPU offload belong to the engine's own configuration, not to a request.
     #[default]
-    Ollama,
-    /// Ollama Cloud (https://ollama.com) — same wire format as local, requires API key.
+    #[serde(
+        alias = "ollama",
+        alias = "llamacpp",
+        alias = "llama-cpp",
+        alias = "llama.cpp"
+    )]
+    Local,
+    /// Ollama Cloud (https://ollama.com), a cloud provider on the OpenAI wire.
     OllamaCloud,
-    /// Local llama.cpp `llama-server`, spoken via its OpenAI-compatible API
-    /// (`/v1/chat/completions`, `/v1/embeddings`). One model per server instance;
-    /// context window / GPU offload are launch-time flags, not per-request.
-    #[serde(alias = "llamacpp", alias = "llama-cpp", alias = "llama.cpp")]
-    LlamaCpp,
     Anthropic,
     Gemini,
     /// Any other OpenAI-compatible `/v1/chat/completions` API (Mistral,
@@ -211,9 +110,8 @@ pub enum LlmProviderType {
 impl std::fmt::Display for LlmProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LlmProviderType::Ollama => write!(f, "ollama"),
+            LlmProviderType::Local => write!(f, "local"),
             LlmProviderType::OllamaCloud => write!(f, "ollama-cloud"),
-            LlmProviderType::LlamaCpp => write!(f, "llamacpp"),
             LlmProviderType::OpenAiCompat => write!(f, "openai-compat"),
             LlmProviderType::Anthropic => write!(f, "anthropic"),
             LlmProviderType::Gemini => write!(f, "gemini"),
@@ -236,13 +134,6 @@ pub struct LlmConfig {
     /// Model name to use for text generation.
     pub model: String,
 
-    /// Model name to use for embeddings.
-    pub embed_model: Option<String>,
-
-    /// Base URL for the embedding endpoint when it differs from the generation endpoint.
-    /// Used by OllamaCloud to pin embed() calls to local Ollama instead of the cloud endpoint.
-    pub embed_base_url: Option<String>,
-
     /// Request timeout.
     pub timeout: Duration,
 
@@ -251,20 +142,6 @@ pub struct LlmConfig {
 
     /// Maximum tokens to generate.
     pub max_tokens: Option<u32>,
-
-    /// Ollama-only: how long the model stays resident in VRAM after a request
-    /// (Go duration string, e.g. `30m`; a negative duration pins it indefinitely).
-    /// Ignored by every non-Ollama provider. `None` = Ollama's own default.
-    pub keep_alive: Option<String>,
-
-    /// Ollama-only context window override (`options.num_ctx`).
-    ///
-    /// Ollama defaults this to **4096 tokens regardless of what the model
-    /// supports** — `gemma4:latest` advertises a 131 072-token context but is
-    /// served at 4096 unless asked otherwise, and input past that is silently
-    /// truncated. `None` keeps Ollama's default; raise it only for calls that
-    /// genuinely need to read a large payload, since the window costs VRAM.
-    pub num_ctx: Option<u32>,
 
     /// The provider-registry key this config was built from (`mistral`,
     /// `ollama-cloud`, …). `provider` says which client code runs; this says
@@ -276,18 +153,18 @@ pub struct LlmConfig {
 
 impl Default for LlmConfig {
     fn default() -> Self {
+        let engine = agent_brain_engine::current();
         Self {
-            provider: LlmProviderType::Ollama,
-            base_url: Some(DEFAULT_OLLAMA_URL.to_string()),
+            provider: LlmProviderType::Local,
+            base_url: Some(engine.url.clone()),
             api_key: None,
-            model: DEFAULT_MODEL.to_string(),
-            embed_model: None,
-            embed_base_url: None,
+            model: engine
+                .model(Role::Generation)
+                .unwrap_or(DEFAULT_MODEL)
+                .to_string(),
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             temperature: 0.7,
             max_tokens: None,
-            keep_alive: None,
-            num_ctx: None,
             provider_name: None,
         }
     }
@@ -335,33 +212,6 @@ impl LlmConfig {
     /// Set the model name.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
-        self
-    }
-
-    /// Set the embedding model (separate from the generation model).
-    pub fn with_embed_model(mut self, model: impl Into<String>) -> Self {
-        self.embed_model = Some(model.into());
-        self
-    }
-
-    /// Set a separate base URL for the embedding endpoint.
-    /// When set, embed() calls are routed to this URL instead of `base_url`.
-    pub fn with_embed_base_url(mut self, url: impl Into<String>) -> Self {
-        self.embed_base_url = Some(url.into());
-        self
-    }
-
-    /// Set the Ollama `keep_alive` residency window (Go duration string).
-    /// No-op for non-Ollama providers, which never serialize the field.
-    pub fn with_keep_alive(mut self, keep_alive: impl Into<String>) -> Self {
-        self.keep_alive = Some(keep_alive.into());
-        self
-    }
-
-    /// Override Ollama's context window (`options.num_ctx`) for this config.
-    /// See [`LlmConfig::num_ctx`] — Ollama's 4096 default truncates silently.
-    pub fn with_num_ctx(mut self, num_ctx: u32) -> Self {
-        self.num_ctx = Some(num_ctx);
         self
     }
 
@@ -449,7 +299,7 @@ impl LlmClient {
     /// Create a new LLM client with custom configuration.
     pub fn with_config(config: LlmConfig) -> Result<Self, LlmError> {
         use crate::llm_providers::{
-            ProviderConfig, anthropic::AnthropicProvider, ollama::OllamaProvider,
+            ProviderConfig, anthropic::AnthropicProvider, openai_compat::OpenAiCompatProvider,
         };
 
         let provider_config = ProviderConfig {
@@ -460,97 +310,41 @@ impl LlmClient {
             timeout: config.timeout,
             temperature: config.temperature,
             max_tokens: config.max_tokens,
-            keep_alive: config.keep_alive.clone(),
-            num_ctx: config.num_ctx,
         };
 
         let provider: Arc<dyn crate::llm_providers::LlmProvider> = match config.provider {
-            LlmProviderType::Ollama => Arc::new(OllamaProvider::new(provider_config)),
-            // Ollama Cloud uses the OpenAI-compatible API at /v1/chat/completions,
-            // not the native Ollama /api/chat endpoint.
-            LlmProviderType::OllamaCloud => {
-                use crate::llm_providers::openai_compat::OpenAiCompatProvider;
-                Arc::new(OpenAiCompatProvider::new(provider_config, config.provider))
-            }
-            // llama.cpp's `llama-server` speaks the same OpenAI-compatible wire
-            // format as Ollama Cloud, so it reuses the same provider. `keep_alive`
-            // / `num_ctx` in provider_config are ignored (llama.cpp sets those at
-            // server launch, not per-request).
-            // Generic OpenAI-compatible providers (Mistral, OpenRouter, …) use the
-            // same client; their endpoint and key come from the provider registry.
-            // Gemini too, through Google's OpenAI-compatible API
+            // The local engine, Ollama Cloud, and every other OpenAI-wire provider
+            // (Mistral, OpenRouter, ...) share one client; the endpoint and key come
+            // from the registry. Gemini too, through Google's OpenAI-compatible API
             // (`openai_compat::api_root`; CORE_AND_PLUGINS_PLAN 6b).
-            LlmProviderType::LlamaCpp | LlmProviderType::OpenAiCompat | LlmProviderType::Gemini => {
-                use crate::llm_providers::openai_compat::OpenAiCompatProvider;
+            LlmProviderType::Local
+            | LlmProviderType::OllamaCloud
+            | LlmProviderType::OpenAiCompat
+            | LlmProviderType::Gemini => {
                 Arc::new(OpenAiCompatProvider::new(provider_config, config.provider))
             }
             LlmProviderType::Anthropic => Arc::new(AnthropicProvider::new(provider_config)),
         };
 
-        // Initialize embedding provider (separate from generation if requested)
-        let embed_provider = if let Some((url, model)) = llamacpp_embed_target() {
-            // LOCAL_EMBED_BACKEND=llamacpp: the llama-server router's own model.
-            let embed_config = ProviderConfig {
-                provider_name: "llamacpp".to_string(),
-                model,
-                api_key: None,
-                base_url: Some(url),
-                timeout: config.timeout,
-                temperature: 0.0,
-                max_tokens: None,
-                keep_alive: None,
-                num_ctx: None,
-            };
-            Arc::new(
-                crate::llm_providers::openai_compat::OpenAiCompatProvider::new(
-                    embed_config,
-                    LlmProviderType::LlamaCpp,
-                ),
-            ) as Arc<dyn crate::llm_providers::LlmProvider>
-        } else if let Some(ref embed_model) = config.embed_model {
-            let embed_base = config.embed_base_url.clone().or(config.base_url.clone());
-            let embed_config = ProviderConfig {
-                provider_name: "ollama".to_string(),
-                model: embed_model.clone(),
-                api_key: config.api_key.clone(),
-                base_url: embed_base,
-                timeout: config.timeout,
-                temperature: 0.0,
-                max_tokens: None,
-                // The embedding model is reloaded far more often than the
-                // generation model (every search_notes / store_note), so it
-                // benefits from residency at least as much.
-                keep_alive: config.keep_alive.clone(),
-                num_ctx: None, // embeddings don't use a generation context window
-            };
-            // Embeddings always use local Ollama regardless of the active generation provider.
-            Arc::new(OllamaProvider::new(embed_config))
-                as Arc<dyn crate::llm_providers::LlmProvider>
-        } else if let Some(ref embed_base) = config.embed_base_url {
-            // embed_base_url is set but no dedicated embed_model (OllamaCloud without
-            // OLLAMA_EMBED_MODEL).  Before the OllamaCloud→OpenAiCompatProvider refactor,
-            // the fallback `provider.clone()` was still an OllamaProvider.  Now it is an
-            // OpenAiCompatProvider pointed at the cloud URL, which causes embed() to hit
-            // `{cloud_url}/v1/embeddings` — hanging for the full 120-second timeout every
-            // time search_notes is called.  Route to local Ollama instead.  If the model
-            // isn't pulled locally the call fails fast and vector search is skipped
-            // gracefully; BM25 still runs.
-            let embed_config = ProviderConfig {
-                provider_name: "ollama".to_string(),
-                model: config.model.clone(),
-                api_key: None, // local Ollama doesn't need auth
-                base_url: Some(embed_base.clone()),
-                timeout: config.timeout,
-                temperature: 0.0,
-                max_tokens: None,
-                keep_alive: config.keep_alive.clone(),
-                num_ctx: None,
-            };
-            Arc::new(OllamaProvider::new(embed_config))
-                as Arc<dyn crate::llm_providers::LlmProvider>
-        } else {
-            provider.clone()
-        };
+        // Embeddings always run on the local engine, whatever generates: a remote
+        // API's embedding would be a different model and dimension.
+        let engine = agent_brain_engine::current();
+        let embed_provider: Arc<dyn crate::llm_providers::LlmProvider> =
+            Arc::new(OpenAiCompatProvider::new(
+                ProviderConfig {
+                    provider_name: LlmProviderType::Local.to_string(),
+                    model: engine
+                        .model(Role::Embeddings)
+                        .unwrap_or(DEFAULT_MODEL)
+                        .to_string(),
+                    api_key: None,
+                    base_url: Some(engine.url.clone()),
+                    timeout: config.timeout,
+                    temperature: 0.0,
+                    max_tokens: None,
+                },
+                LlmProviderType::Local,
+            ));
 
         Ok(Self {
             provider,
@@ -570,10 +364,7 @@ impl LlmClient {
     fn refuse_local_if_gpu_leased(&self) -> Result<(), LlmError> {
         let local = crate::provider_registry::get(&self.config.provider_label())
             .map(|e| e.billing == crate::provider_registry::Billing::Local)
-            .unwrap_or(matches!(
-                self.config.provider,
-                LlmProviderType::Ollama | LlmProviderType::LlamaCpp
-            ));
+            .unwrap_or(matches!(self.config.provider, LlmProviderType::Local));
         match crate::gpu_lease::refusal() {
             Some(reason) if local => Err(LlmError::ServerNotReachable(reason)),
             _ => Ok(()),
@@ -585,13 +376,9 @@ impl LlmClient {
     /// Callers already degrade (search to BM25; a stored note is marked
     /// `embedding_pending` and backfilled on release).
     fn refuse_embeddings_if_gpu_leased(&self) -> Result<(), LlmError> {
-        let local = llamacpp_embed_target().is_some()
-            || self.config.embed_base_url.is_some()
-            || self.config.embed_model.is_some()
-            || matches!(self.config.provider, LlmProviderType::Ollama);
         match crate::gpu_lease::refusal() {
-            Some(reason) if local => Err(LlmError::ServerNotReachable(reason)),
-            _ => Ok(()),
+            Some(reason) => Err(LlmError::ServerNotReachable(reason)),
+            None => Ok(()),
         }
     }
 
@@ -694,45 +481,6 @@ pub fn extract_json(text: &str) -> &str {
     trimmed
 }
 
-/// Validate a Go duration string (`30m`, `2h`, `-1m`, `1h30m`) before it is sent
-/// to Ollama as `keep_alive`.
-///
-/// Ollama rejects a malformed `keep_alive` with a 400, and `keep_alive` rides on
-/// *every* generate/chat/embeddings request — so a typo in the env var would take
-/// down all LLM calls rather than degrade one. This fails closed: anything that
-/// doesn't parse is dropped with a warning and Ollama keeps its own default.
-///
-/// Note the bare-number case is deliberately rejected. Ollama accepts a raw JSON
-/// *number* as seconds, but we serialize the value as a string, and `"30"` is not
-/// a valid Go duration — so requiring a unit suffix keeps the two representations
-/// from diverging.
-pub fn validate_go_duration(s: &str) -> Option<String> {
-    const UNITS: [&str; 6] = ["ns", "us", "ms", "s", "m", "h"];
-
-    let valid = !s.is_empty() && {
-        // Must end in a known unit, and every character must be part of a
-        // number/unit sequence (covers compound forms like "1h30m").
-        let ends_in_unit = UNITS.iter().any(|u| s.ends_with(u));
-        let body_ok = s
-            .strip_prefix('-')
-            .unwrap_or(s)
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.' || c.is_ascii_alphabetic());
-        let has_digit = s.chars().any(|c| c.is_ascii_digit());
-        ends_in_unit && body_ok && has_digit
-    };
-
-    if valid {
-        Some(s.to_string())
-    } else {
-        tracing::warn!(
-            value = %s,
-            "OLLAMA_KEEP_ALIVE is not a valid Go duration (e.g. '30m', '2h', '-1m' for indefinite) — ignoring"
-        );
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -780,8 +528,10 @@ mod tests {
     #[test]
     fn test_llm_config_default() {
         let config = LlmConfig::default();
-        assert_eq!(config.base_url.as_deref(), Some("http://localhost:11434"));
-        assert_eq!(config.model, "qwen3.5:4b");
+        let engine = agent_brain_engine::current();
+        assert_eq!(config.provider, LlmProviderType::Local);
+        assert_eq!(config.base_url.as_deref(), Some(engine.url.as_str()));
+        assert_eq!(Some(config.model.as_str()), engine.model(Role::Generation));
         assert_eq!(config.temperature, 0.7);
     }
 

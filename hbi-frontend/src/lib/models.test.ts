@@ -3,14 +3,14 @@ import { findModel, groupModels, hintForModel, providerBadges, refusal, type Cat
 
 const providers: ProviderInfo[] = [
   { name: "anthropic", kind: "anthropic", billing: "paid", data_policy: "no_log", enabled: true, key_configured: true },
-  { name: "ollama", kind: "ollama", billing: "local", data_policy: "no_log", enabled: true, key_configured: true },
+  { name: "local", kind: "local", billing: "local", data_policy: "no_log", enabled: true, key_configured: true },
   { name: "ollama-cloud", kind: "openai_compat", billing: "free", data_policy: "may_train", enabled: true, key_configured: false },
 ];
 const models: CatalogModel[] = [
   { name: "claude-haiku-5-5", provider: "anthropic", model: "claude-haiku-5-5" },
   { name: "gpt-oss:120b-cloud", provider: "ollama-cloud", model: "gpt-oss:120b-cloud",
     admission: { background: { private: "private work only reaches no_log providers", public: null } } },
-  { name: "gemma4:latest", provider: "ollama", model: "gemma4:latest" },
+  { name: "gemma4-e4b", provider: "local", model: "gemma4-e4b" },
 ];
 
 describe("model catalog", () => {
@@ -21,7 +21,7 @@ describe("model catalog", () => {
   });
 
   it("groups local first, then free, then paid", () => {
-    expect(groupModels(models, providers).map((g) => g.provider)).toEqual(["ollama", "ollama-cloud", "anthropic"]);
+    expect(groupModels(models, providers).map((g) => g.provider)).toEqual(["local", "ollama-cloud", "anthropic"]);
   });
 
   it("reads the policy's refusal for the work at hand", () => {
@@ -32,9 +32,9 @@ describe("model catalog", () => {
   });
 
   it("derives the hint the brain derives", () => {
-    expect(hintForModel(models[2], providers)).toBe("ollama");
+    expect(hintForModel(models[2], providers)).toBe("local");
     expect(hintForModel(models[1], providers)).toBe("ollama-cloud");
-    expect(hintForModel({ name: "x", provider: "nobody", model: "x" }, providers)).toBe("ollama");
+    expect(hintForModel({ name: "x", provider: "nobody", model: "x" }, providers)).toBe("local");
   });
 
   it("badges billing, data policy and a missing key", () => {

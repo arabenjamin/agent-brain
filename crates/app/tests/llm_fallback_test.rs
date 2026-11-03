@@ -34,15 +34,16 @@ fn init_test_env() {
 }
 
 fn local_url() -> String {
-    std::env::var("OLLAMA_LOCAL_URL").unwrap_or_else(|_| "http://localhost:11434".to_string())
+    agent_brain_llm::engine::current().url.clone()
 }
 
 fn local_model() -> String {
-    std::env::var("OLLAMA_LOCAL_MODEL").unwrap_or_else(|_| "gemma4:latest".to_string())
+    agent_brain_llm::engine::model(agent_brain_llm::engine::Role::Generation)
+        .unwrap_or_else(|| "local".to_string())
 }
 
-/// True when a local Ollama answers, so the test can skip instead of failing.
-async fn local_ollama_up() -> bool {
+/// True when the local engine answers, so the test can skip instead of failing.
+async fn local_engine_up() -> bool {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -51,7 +52,7 @@ async fn local_ollama_up() -> bool {
         Err(_) => return false,
     };
     client
-        .get(format!("{}/api/tags", local_url()))
+        .get(format!("{}/v1/models", local_url()))
         .send()
         .await
         .map(|r| r.status().is_success())
@@ -78,8 +79,8 @@ fn base_config(provider: LlmProviderType, base_url: &str, model: &str) -> LlmCon
 async fn cloud_transport_failure_falls_back_to_local() {
     init_test_env();
 
-    if !local_ollama_up().await {
-        eprintln!("SKIP: no local Ollama at {} — skipping", local_url());
+    if !local_engine_up().await {
+        eprintln!("SKIP: no local engine at {} — skipping", local_url());
         return;
     }
 
@@ -89,7 +90,7 @@ async fn cloud_transport_failure_falls_back_to_local() {
         "http://127.0.0.1:1",
         "unreachable-model",
     );
-    let local = base_config(LlmProviderType::Ollama, &local_url(), &local_model());
+    let local = base_config(LlmProviderType::Local, &local_url(), &local_model());
 
     let shared = SharedLlm::new_with_local(
         Arc::new(RwLock::new(Some(cloud))),
@@ -116,7 +117,7 @@ async fn cloud_transport_failure_falls_back_to_local() {
 async fn local_route_failure_does_not_retry_itself() {
     init_test_env();
 
-    let dead = base_config(LlmProviderType::Ollama, "http://127.0.0.1:1", "no-model");
+    let dead = base_config(LlmProviderType::Local, "http://127.0.0.1:1", "no-model");
 
     let shared = SharedLlm::new_with_local(
         Arc::new(RwLock::new(Some(dead.clone()))),

@@ -652,8 +652,8 @@ pub fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<Strin
             ));
         }
 
-        // Routing by omission. `use_local` in queue.rs is
-        // `provider_hint == Some("ollama")`, so leaving the field out is not
+        // Routing by omission. `use_local` in queue.rs needs
+        // `provider_hint: local`, so leaving the field out is not
         // "default to local" — it falls through to the active config, which is
         // a cloud model. A chat-authored schedule almost never sets the field,
         // so its every step lands on cloud: six near-duplicate supply-chain
@@ -669,7 +669,7 @@ pub fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<Strin
         {
             warnings.push(format!(
                 "step {n} (`{tool}`): no `provider_hint`, so it routes to the active \
-                 model (a cloud model) rather than local. Set `provider_hint: \"ollama\"` \
+                 model (a cloud model) rather than local. Set `provider_hint: \"local\"` \
                  unless this step genuinely needs the cloud, in which case set it \
                  explicitly to a cloud provider such as `\"mistral\"`."
             ));

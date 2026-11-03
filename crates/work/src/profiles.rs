@@ -667,7 +667,10 @@ pub fn validate(body: Option<&Value>, p: &ContextProfile, c: &ProfileChecks) -> 
     }
     let local = pref
         .and_then(|m| find_model(c.catalog, m))
-        .is_some_and(|row| matches!(row.provider.as_str(), "llamacpp" | "ollama"));
+        .is_some_and(|row| {
+            agent_brain_llm::provider_registry::canonical_name(&row.provider)
+                == agent_brain_llm::model_router::LOCAL
+        });
     if local {
         let size = p.system_prompt.len() + p.sections.iter().map(|s| s.text.len()).sum::<usize>();
         if size > LOCAL_PROMPT_BUDGET {
@@ -1077,9 +1080,9 @@ mod tests {
         let cat = catalog();
         let local = cat
             .iter()
-            .find(|m| m.provider == "llamacpp")
+            .find(|m| m.provider == "local")
             .map(|m| m.name.clone())
-            .expect("a llamacpp model in models.yaml");
+            .expect("a local model in models.yaml");
         let off = HashMap::new();
         let p = profile(
             json!({"spawnable": true, "model_preference": local, "system_prompt": "x".repeat(4000)}),

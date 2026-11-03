@@ -8,7 +8,7 @@ steps:
       context_lines: 2
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     confidence_threshold: 0.5
     description: "Search codebase for relevant code"
 
@@ -18,7 +18,7 @@ steps:
       limit: 8
     priority: 2
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Retrieve related failure and outcome notes"
 
   - tool_name: reason
@@ -31,7 +31,7 @@ steps:
       store_inference: true
     priority: 2
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Reason over root cause and propose fix"
 
   - tool_name: write_proposal
@@ -44,7 +44,7 @@ steps:
       severity: medium
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Stage proposal file for human review"
 
   - tool_name: update_task
@@ -53,4 +53,4 @@ steps:
       status: completed
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local

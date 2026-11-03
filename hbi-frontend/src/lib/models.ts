@@ -69,12 +69,12 @@ export function refusal(m: CatalogModel, purpose: Purpose, dataClass: DataClass)
 
 /**
  * The step `provider_hint` a model implies, as the brain derives it
- * (`model_router::provider_hint_for`): `ollama` for a local provider, else the
+ * (`model_router::provider_hint_for`): `local` for a local provider, else the
  * provider's own name.
  */
 export function hintForModel(m: CatalogModel, providers: ProviderInfo[]): string {
   const p = providers.find((x) => x.name === m.provider);
-  return !p || p.billing === "local" ? "ollama" : m.provider;
+  return !p || p.billing === "local" ? "local" : m.provider;
 }
 
 /** Short badges for a provider: billing and what it may do with prompts. */

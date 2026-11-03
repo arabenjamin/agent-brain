@@ -6,7 +6,7 @@
 //! shown in the stream. The profile's `routing:` block holds the rules and the
 //! non-agent choices; the agents come from the live roster.
 //!
-//! - **Picker:** the local background model (`LOCAL_LLM_BACKEND`: the llama.cpp
+//! - **Picker:** the local background model (the engine's generation role: the llama.cpp
 //!   E4B sidecar), its output held to the choice list. Measured on
 //!   `eval/routing_golden.yaml` (66 graded turns): 52 right first.
 //! - **Stored first:** a pick of the web agent for a turn that does not ask for
@@ -28,7 +28,8 @@
 use std::time::{Duration, Instant};
 
 use agent_brain_graph::topics::TopicDef;
-use agent_brain_llm::{LlmConfig, LlmProviderType};
+use agent_brain_llm::LlmConfig;
+use agent_brain_llm::engine::{self, Capability, Role};
 use agent_brain_work::context_builder::{Behavior, ContextProfile, RoutingSpec};
 use serde_json::{Value, json};
 
@@ -237,47 +238,23 @@ async fn constrained(
         .as_deref()
         .unwrap_or_default()
         .trim_end_matches('/');
-    let text = match cfg.provider {
-        LlmProviderType::Ollama => {
-            let body = json!({
-                "model": cfg.model, "stream": false, "think": false, "format": schema,
-                "messages": [{"role": "user", "content": prompt}],
-                "options": {"temperature": 0, "num_predict": max_tokens, "num_ctx": 8192},
-            });
-            let v: Value = http()
-                .post(format!("{base}/api/chat"))
-                .json(&body)
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
-            v["message"]["content"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string()
-        }
-        _ => {
-            let body = json!({
-                "model": cfg.model, "temperature": 0, "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}},
-            });
-            let v: Value = http()
-                .post(format!("{base}/v1/chat/completions"))
-                .json(&body)
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
-            v["choices"][0]["message"]["content"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string()
-        }
-    };
-    Ok(text)
+    let body = json!({
+        "model": cfg.model, "temperature": 0, "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+        "response_format": {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}},
+    });
+    let v: Value = http()
+        .post(format!("{base}/v1/chat/completions"))
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(v["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string())
 }
 
 /// The picker: the local model, held to the choices.
@@ -555,17 +532,19 @@ async fn check(
     Ok((a.choice, p))
 }
 
-/// The checker's model, or `None` (the default: no checker).
+/// The checker's model: the decision role when `CHAT_ROUTER_CHECKER` is set to
+/// anything but `off`. `None` is the default: no checker.
 fn checker_model() -> Option<String> {
     std::env::var("CHAT_ROUTER_CHECKER")
         .ok()
-        .map(|m| m.trim().to_string())
-        .filter(|m| !m.is_empty() && !m.eq_ignore_ascii_case("off"))
+        .filter(|v| !v.trim().is_empty() && !v.trim().eq_ignore_ascii_case("off"))?;
+    engine::model(Role::Decision)
 }
 
-/// Off with `CHAT_ROUTER=off`.
+/// Off with `CHAT_ROUTER=off`, or on an engine that cannot hold an answer to a schema.
 pub(super) fn enabled() -> bool {
     !std::env::var("CHAT_ROUTER").is_ok_and(|v| v.trim().eq_ignore_ascii_case("off"))
+        && engine::current().has(Capability::JsonSchema)
 }
 
 /// Route one turn. `None` when the router fails or times out (logged).

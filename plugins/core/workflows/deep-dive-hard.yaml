@@ -52,7 +52,7 @@ steps:
       provenance: synthesis_inference
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Deep dive: store the answer"
 
   - tool_name: update_task
@@ -61,5 +61,5 @@ steps:
       status: completed
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Deep dive: complete the task"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/app", "crates/decision", "crates/host", "crates/api", "crates/skills", "crates/retrieve", "crates/scheduler", "crates/chat", "crates/work", "crates/knowledge", "crates/graph", "crates/llm", "crates/models", "crates/repository", "crates/protocol", "crates/plugin-api", "plugins/*/crate"]
+members = ["crates/app", "crates/decision", "crates/engine", "crates/host", "crates/api", "crates/skills", "crates/retrieve", "crates/scheduler", "crates/chat", "crates/work", "crates/knowledge", "crates/graph", "crates/llm", "crates/models", "crates/repository", "crates/protocol", "crates/plugin-api", "plugins/*/crate"]
 resolver = "2"
 exclude = ["vendor/neo4rs"]
 

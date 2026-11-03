@@ -95,7 +95,7 @@ impl AgentSkill {
                                 },
                                 "provider_hint": {
                                     "type": "string",
-                                    "description": "Optional LLM provider hint (ollama/anthropic/gemini)"
+                                    "description": "Optional LLM provider hint (local/anthropic/gemini)"
                                 }
                             },
                             "required": ["tool_name"]

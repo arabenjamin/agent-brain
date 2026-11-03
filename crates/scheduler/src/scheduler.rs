@@ -51,8 +51,7 @@ pub struct SchedulerConfig {
     pub idle_sleep_after_ticks: u32,
     /// Scheduler tick interval while in sleep mode (seconds). Default: 1800.
     pub sleep_interval_secs: u64,
-    /// Ollama model used for background/scheduled jobs on the local instance.
-    /// Default: reads `OLLAMA_LOCAL_MODEL` env var, falls back to `"gemma4:latest"`.
+    /// The model for background/scheduled jobs. Default: the engine's generation role.
     pub local_model: String,
 }
 
@@ -77,8 +76,7 @@ impl Default for SchedulerConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1800),
-            local_model: std::env::var("OLLAMA_LOCAL_MODEL")
-                .unwrap_or_else(|_| "gemma4:latest".to_string()),
+            local_model: agent_brain_llm::llm::build_local_llm_config().model,
         }
     }
 }
@@ -125,7 +123,7 @@ pub struct SchedulerService {
     shutdown: Arc<AtomicBool>,
     wakeup: Arc<Notify>,
     context_builder: Option<Arc<ContextBuilderService>>,
-    /// Live local-Ollama config shared with `SharedLlm`. Mutated when `local_model` is updated.
+    /// Live local-engine config shared with `SharedLlm`. Mutated when `local_model` is updated.
     local_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
 }
 
@@ -578,7 +576,7 @@ impl SchedulerService {
                 arguments: Some(json!({ "task_id": task_id, "status": "completed" })),
                 priority: Some(1),
                 max_attempts: Some(3),
-                provider_hint: Some("ollama".to_string()),
+                provider_hint: Some("local".to_string()),
                 ..Default::default()
             });
         }
@@ -653,7 +651,7 @@ impl SchedulerService {
                 })),
                 priority: Some(0),
                 max_attempts: Some(2),
-                provider_hint: Some("ollama".to_string()),
+                provider_hint: Some("local".to_string()),
                 context_profile: None,
                 ttl_secs: None,
                 description: None,
@@ -670,7 +668,7 @@ impl SchedulerService {
                 })),
                 priority: Some(0),
                 max_attempts: Some(2),
-                provider_hint: Some("ollama".to_string()),
+                provider_hint: Some("local".to_string()),
                 context_profile: None,
                 ttl_secs: None,
                 description: None,
@@ -687,7 +685,7 @@ impl SchedulerService {
                 })),
                 priority: Some(0),
                 max_attempts: Some(2),
-                provider_hint: Some("ollama".to_string()),
+                provider_hint: Some("local".to_string()),
                 context_profile: None,
                 ttl_secs: None,
                 description: None,
@@ -1185,7 +1183,7 @@ impl SchedulerService {
                 })),
                 priority: Some(1),
                 max_attempts: Some(2),
-                provider_hint: Some("ollama".to_string()),
+                provider_hint: Some("local".to_string()),
                 description: Some("Evaluate output against success criteria".to_string()),
                 is_evaluator: true,
                 min_score: Some(3.5),
@@ -1243,7 +1241,7 @@ impl SchedulerService {
                 })),
                 priority: Some(1),
                 max_attempts: Some(2),
-                provider_hint: Some("ollama".to_string()),
+                provider_hint: Some("local".to_string()),
                 description: Some(
                     "Adversarial pre-flight: stress-test plan before execution".to_string(),
                 ),
@@ -1307,7 +1305,7 @@ impl SchedulerService {
                 arguments: Some(json!({ "query": goal, "limit": 8 })),
                 priority: Some(1),
                 max_attempts: Some(3),
-                provider_hint: Some("ollama".to_string()),
+                provider_hint: Some("local".to_string()),
                 description: Some("Guardrail: gather context before dispatch".to_string()),
                 ..Default::default()
             },
@@ -1316,7 +1314,7 @@ impl SchedulerService {
                 arguments: Some(json!({ "question": question, "store_inference": true })),
                 priority: Some(1),
                 max_attempts: Some(3),
-                provider_hint: Some("ollama".to_string()),
+                provider_hint: Some("local".to_string()),
                 description: Some("Guardrail: assess prerequisites and risks".to_string()),
                 ..Default::default()
             },
@@ -1330,7 +1328,7 @@ impl SchedulerService {
                 })),
                 priority: Some(1),
                 max_attempts: Some(3),
-                provider_hint: Some("ollama".to_string()),
+                provider_hint: Some("local".to_string()),
                 description: Some("Guardrail: mark task blocked pending diagnosis".to_string()),
                 ..Default::default()
             },
@@ -1420,8 +1418,8 @@ impl SchedulerService {
                 lc.model = model.clone();
                 info!(local_model = %model, "Updated scheduler local LLM model");
             } else {
-                // local_config was None — seed it from the configured background
-                // backend (LOCAL_LLM_BACKEND), then apply the requested model.
+                // local_config was None: seed it from the engine, then apply the
+                // requested model.
                 let mut seeded = agent_brain_llm::llm::build_local_llm_config();
                 seeded.model = model.clone();
                 *guard = Some(seeded);

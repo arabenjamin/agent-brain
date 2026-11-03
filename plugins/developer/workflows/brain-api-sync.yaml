@@ -13,7 +13,7 @@ steps:
       trigger: "schedule"
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   # 2. Bank what changed as a note, so "what changed in the brain this week"
   #    is answerable from memory too.
@@ -24,7 +24,7 @@ steps:
       source_context: "architecture_snapshot"
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   # 3. Regenerate the endpoint graph from the Axum route table (build-from-routes).
   #    prune=true makes it a true mirror: a route removed from the code is deleted
@@ -48,4 +48,4 @@ steps:
       source_context: "brain_api_sync"
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local

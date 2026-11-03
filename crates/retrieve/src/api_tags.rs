@@ -181,11 +181,9 @@ pub async fn store(
         .map_err(err)
 }
 
-/// The tagger model: `API_TAGGER_MODEL` (default `nimble`; `off` = none).
+/// The tagger model: the decision role, `None` when it is off.
 fn tagger_model() -> Option<String> {
-    let m = std::env::var("API_TAGGER_MODEL").unwrap_or_else(|_| "nimble".into());
-    let m = m.trim();
-    (!m.is_empty() && !m.eq_ignore_ascii_case("off")).then(|| m.to_string())
+    agent_brain_llm::engine::model(agent_brain_llm::engine::Role::Decision)
 }
 
 /// The text nimble reads: name, description, up to 15 endpoint summaries
@@ -249,7 +247,9 @@ pub fn decide(kind: &str, p_kind: f64, topic_scores: &[(String, f64)]) -> Propos
 /// Ask nimble. `Err` says why there is no proposal (model off, unreachable).
 pub async fn propose(text: &str, vocab: &Vocab) -> Result<Proposal, String> {
     let Some(model) = tagger_model() else {
-        return Err("API_TAGGER_MODEL is off".into());
+        return Err(
+            "the decision role is off (LOCAL_DECISION_MODEL or the engine's capabilities)".into(),
+        );
     };
     if vocab.kinds.is_empty() {
         return Err("no API kinds in the graph (apis/_kinds.yaml not seeded)".into());

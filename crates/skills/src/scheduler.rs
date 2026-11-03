@@ -183,7 +183,7 @@ impl SchedulerSkill {
                     },
                     "local_model": {
                         "type": "string",
-                        "description": "Ollama model for background jobs (default: gemma4:latest)."
+                        "description": "Model for background jobs (default: the local engine's generation model)."
                     }
                 },
                 "required": ["action"]
@@ -802,7 +802,7 @@ mod tests {
     /// [`step_without_hint`] for that one.
     fn step(tool: &str, args: Value) -> ChainStep {
         serde_json::from_value(
-            json!({ "tool_name": tool, "arguments": args, "provider_hint": "ollama" }),
+            json!({ "tool_name": tool, "arguments": args, "provider_hint": "local" }),
         )
         .unwrap()
     }

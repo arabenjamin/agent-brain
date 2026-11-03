@@ -12,7 +12,7 @@ steps:
   - id: reports
     tool_name: neo4j_query
     description: The latest run's report of each NIA-owned workflow, last 7 days
-    provider_hint: ollama
+    provider_hint: local
     arguments:
       cypher: |-
         MATCH (:Program {name: 'nia'})<-[:UNDER*0..]-(:Program)-[:OWNS]->(w:Workflow)

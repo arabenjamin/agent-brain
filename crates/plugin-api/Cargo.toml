@@ -8,6 +8,7 @@ edition.workspace = true
 [dependencies]
 agent-brain-protocol = { path = "../protocol" }
 agent-brain-decision = { path = "../decision" }
+agent-brain-engine = { path = "../engine" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

@@ -10,7 +10,7 @@ enabled: true
 defaults:
   max_attempts: 1
   # No model in this workflow: SQL picks, create_task starts.
-  provider_hint: ollama
+  provider_hint: local
 steps:
   - id: pick
     tool_name: duckdb_query

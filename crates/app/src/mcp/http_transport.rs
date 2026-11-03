@@ -900,7 +900,8 @@ async fn auth_middleware(
 /// Health check endpoint.
 async fn handle_health() -> impl IntoResponse {
     Json(serde_json::json!({
-        "status": "healthy"
+        "status": "healthy",
+        "local_engine": agent_brain_llm::engine::current().report(),
     }))
 }
 

@@ -46,45 +46,17 @@ services:
       # Mistral since 2026-11-01; Ollama Cloud is off (LOCAL_ENGINE_PLAN §2).
       - LLM_PROVIDER=mistral
       - OLLAMA_URL=https://ollama.com
-      # host Ollama — still the EMBEDDINGS backend (bge-m3) even after generation
-      # moves to llama.cpp. A single-model llama-server can't serve /api/embeddings,
-      # so build_local_llm_config keeps embed() pinned here regardless of backend.
-      - OLLAMA_LOCAL_URL=http://host.docker.internal:11434
-      # Background/scheduled generation backend: `llamacpp` routes every
-      # provider_hint:"ollama" step to the llama.cpp sidecar below (OpenAI-compatible
-      # API); `ollama` (the historical default) keeps generation on host Ollama.
-      # Embeddings are unaffected either way. See services/llm.rs build_local_llm_config.
-      - LOCAL_LLM_BACKEND=llamacpp
-      - LLAMACPP_URL=http://llamacpp:8080
-      # A section of llamacpp/preset.ini: the router serves the model a request names.
-      - LLAMACPP_MODEL=gemma4-e4b
-      # Embeddings on the same router; `ollama` (or unset) puts them back on host Ollama.
-      - LOCAL_EMBED_BACKEND=${LOCAL_EMBED_BACKEND:-llamacpp}
-      - LLAMACPP_EMBED_MODEL=${LLAMACPP_EMBED_MODEL:-bge-m3}
-      # The model every background/scheduled job runs on. Swapped off
-      # gemma4:latest 2026-09-01 on a clean benchmark (brain stopped, no model
-      # resident, real video_learning payload):
-      #
-      #   granite4:latest  1.95GB  100% VRAM  summarize 5.1s   extract 3.4s
-      #   gemma4:latest    8.94GB   32% VRAM  summarize 40.6s  extract 45.4s
-      #
-      # Residency is a cliff, not a curve: gemma4 is a 9.86GB model on an 8GB
-      # card and generates at 25.9 tok/s where anything that fits does 67-125.
-      # Output quality was indistinguishable on both tasks. granite4 is already
-      # in models.yaml (selection_rank 120, 131k context), so capability-routed
-      # steps are unaffected and `vision` still resolves to gemma4.
-      #
-      # Do NOT assume models co-reside — this card holds one generation model
-      # plus bge-m3. A swap is a replacement.
-      #
-      # Written as a LITERAL, not ${OLLAMA_LOCAL_MODEL:-...}. `.env` is
-      # gitignored, so a ${} default here is silently overridden by a stale
-      # value nobody reviews — which is exactly what happened on the first
-      # attempt at this swap: compose said granite4, `.env` line 16 said
-      # gemma4:latest, and the container came up on gemma4 with no warning.
-      # Keep deployment-shaping values literal in this file; reserve ${} for
-      # secrets and per-host paths.
-      - OLLAMA_LOCAL_MODEL=granite4:latest
+      # The local engine, picked at install: an entry of `engines:` in models.yaml
+      # (LOCAL_ENGINE_PLAN.md §4). The one deployment value that is a variable, because
+      # it is the install's choice; /health reports what is actually in use. An empty
+      # role model takes the entry's default; `off` turns decisions or grounding off.
+      - LOCAL_ENGINE=${LOCAL_ENGINE:-llamacpp}
+      - LOCAL_ENGINE_URL=${LOCAL_ENGINE_URL:-http://llamacpp:8080}
+      - LOCAL_ENGINE_CAPABILITIES=${LOCAL_ENGINE_CAPABILITIES:-}
+      - LOCAL_MODEL=${LOCAL_MODEL:-}
+      - LOCAL_EMBED_MODEL=${LOCAL_EMBED_MODEL:-}
+      - LOCAL_DECISION_MODEL=${LOCAL_DECISION_MODEL:-}
+      - LOCAL_GROUNDING_MODEL=${LOCAL_GROUNDING_MODEL:-}
       # Request budget for the LOCAL background model, separate from the 120s
       # default every cloud call keeps. A cloud model that has not answered in
       # 120s is not going to; a local one on a shared 8 GB GPU routinely is —
@@ -93,7 +65,7 @@ services:
       # burst was pure data loss: one hour on 2026-08-31 logged 31 local calls,
       # 31 failures, average exactly 120.0s. See CLAUDE.md, "The local model has
       # its own timeout".
-      - OLLAMA_LOCAL_TIMEOUT_SECS=${OLLAMA_LOCAL_TIMEOUT_SECS:-600}
+      - LOCAL_TIMEOUT_SECS=${LOCAL_TIMEOUT_SECS:-600}
       # The brain's default model — what a call with no provider_hint and no
       # required_capabilities lands on. Moved off gemma4:31b-cloud 2026-08-31.
       #
@@ -107,8 +79,8 @@ services:
       # this back. It stays in models.yaml as the free tier's only vision
       # model, so a future vision step still resolves to it; it is just no
       # longer what unhinted calls fall through to.
-      # Despite the name, this is the active provider's model (config::default_model_for).
-      - OLLAMA_MODEL=ministral-14b-latest
+      # The active provider's model (config::default_model_for).
+      - LLM_MODEL=ministral-14b-latest
       # Billing classes the routing policy may use: CLOUD_TIER 2 = local, free
       # and paid (ROUTING_BILLING, a comma list, overrides it when set). It no
       # longer decides alone — services/routing.rs also requires the work's
@@ -167,28 +139,13 @@ services:
       - SECRETS_INDEX=/home/agent/vault/index.yaml
       # The front door's router (GRAPH_CONTEXT_PLAN Phase 3): the profile's
       # `routing:` block picks each turn's first stop on the local E4B. "off"
-      # turns it off. The Nimble check is off by default; it adds 2-4 seconds
-      # to a turn (a section of llamacpp/preset.ini).
+      # turns it off. The check by the decision model is off by default; it adds 2-4
+      # seconds to a turn.
       - CHAT_ROUTER=${CHAT_ROUTER:-on}
       - CHAT_ROUTER_CHECKER=${CHAT_ROUTER_CHECKER:-off}
-      - OLLAMA_EMBED_MODEL=bge-m3:latest
-      # Merge candidates get a verdict from this classifier on idle time
-      # (plugins/alias-judge/crate/src/judge.rs), a section of llamacpp/preset.ini;
-      # "off" turns it off.
-      - ALIAS_JUDGE_MODEL=${ALIAS_JUDGE_MODEL:-nimble}
-      - API_TAGGER_MODEL=${API_TAGGER_MODEL:-nimble}
-      # Every "supports" in claim verification is checked against its cited results
-      # by this guardian model (plugins/epistemics/crate/src/grounding.rs), a section
-      # of llamacpp/preset.ini; "off" turns the check off.
-      - GROUNDING_CHECK_MODEL=${GROUNDING_CHECK_MODEL:-guardian}
       # Wikimedia asks automated clients for a contact in the user agent; entity
       # linking (plugins/reference/crate/src/wiki.rs) refuses to look anything up without one. Set in .env.
       - WIKIMEDIA_CONTACT=${WIKIMEDIA_CONTACT-}
-      # Keep local models resident between chain steps. Steps run serially with
-      # gaps, so at Ollama's 5m default the background model and bge-m3 are
-      # routinely evicted mid-chain and reloaded per step. Override with a Go
-      # duration; "-1m" pins indefinitely (whisper also wants VRAM, so 30m).
-      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
       # The conversational front door. Deliberately tool-poor: it holds no
       # retrieval tools and reaches everything through `delegate` (chat) or
       # `run_agent` (MCP). Both vars point at the same profile on purpose — a
@@ -357,21 +314,10 @@ services:
       - brain-internal
     restart: unless-stopped
 
-  # Local llama.cpp inference server (OpenAI-compatible) for all background /
-  # scheduled jobs — the generation backend when LOCAL_LLM_BACKEND=llamacpp.
-  # Replaces host Ollama as the *generation* backend; embeddings still run on
-  # host Ollama (bge-m3), which a single-model llama-server does not serve, so
-  # the brain keeps OLLAMA_LOCAL_URL pointed at host Ollama for embed() only.
+  # The llama.cpp engine: every local model, one port (llamacpp/preset.ini).
   #
-  # GPU (cuda): host driver 535.261.03 (CUDA 12.2) satisfies the -cuda image.
-  # Shares the 8 GB RTX 3060 Ti with host Ollama's bge-m3 (~1.2 GB) and the
-  # whisper sidecar (~1 GB, on-demand). Qwen3-8B Q4_K_M (~4.7 GB) fits alongside
-  # them with a q8_0 KV cache and a conservative context; tune -c / -ngl below.
-  #
-  # -hf auto-downloads the GGUF into the mounted cache on first start (persists
-  # across restarts via the llamacpp_cache volume). --reasoning-budget 0 disables
-  # Qwen3's <think> output so background steps that parse JSON get clean text
-  # (see CLAUDE.md — a thinking model emits into `thinking` and returns empty).
+  # GPU (cuda): host driver 535.261.03 (CUDA 12.2). Built from source for it. Shares
+  # the 8 GB RTX 3060 Ti with the whisper sidecar (~1 GB, on-demand).
   llamacpp:
     # Built from source against CUDA 12.2 to match the host's 535 driver — the
     # upstream prebuilt image's CUDA 12.8 kernels won't load on it. See

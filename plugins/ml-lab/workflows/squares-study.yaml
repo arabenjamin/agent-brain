@@ -16,7 +16,7 @@ steps:
     arguments:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'squares_study' AND NOT (n)-[:PART_OF]->() AND n.content STARTS WITH '# Squares study — ' RETURN substring(n.content, 18, 3) AS id ORDER BY id"
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "Methods already studied"
 
   # The methods, best-scoring public work first (read 2026-10-24). Each
@@ -53,7 +53,7 @@ steps:
         else:
             print("id: none (every method is studied)")
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "The next public method not yet studied"
 
   - id: study

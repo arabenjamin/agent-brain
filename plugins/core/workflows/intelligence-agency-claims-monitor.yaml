@@ -15,7 +15,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'intelligence_agency_watch' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch prior report for delta analysis"
 
   - tool_name: push_context
@@ -25,7 +25,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank prior report"
 
   # ApiTube removed 2026-10-14: its responses were ~200K of the report step's
@@ -42,7 +42,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: US agencies"
 
   - tool_name: push_context
@@ -52,7 +52,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank US sweep"
 
   - tool_name: search_web
@@ -68,7 +68,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: Russian services"
 
   - tool_name: push_context
@@ -78,7 +78,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank Russia sweep"
 
   - tool_name: search_web
@@ -91,7 +91,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: Israeli, British and Chinese services"
 
   - tool_name: push_context
@@ -101,7 +101,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank other-services sweep"
 
   - tool_name: neo4j_query
@@ -109,7 +109,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'intel-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Reassemble prior report + sources"
 
   - tool_name: reason
@@ -173,7 +173,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank the finished report"
 
   - tool_name: neo4j_query
@@ -181,7 +181,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'intel-{{task_id}}'}) WHERE w.content STARTS WITH '## REPORT' RETURN w.content AS content ORDER BY w.turn_index DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Re-read the report alone"
 
   - tool_name: store_note
@@ -191,7 +191,7 @@ steps:
       source_context: intelligence_agency_watch
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the watch report"
 
   - tool_name: claim
@@ -207,7 +207,7 @@ steps:
     optional: true
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Extract claims as checkable, attributed propositions"
 
   - tool_name: neo4j_query
@@ -216,5 +216,5 @@ steps:
       readonly: false
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Delete scratch session"

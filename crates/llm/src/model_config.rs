@@ -1,6 +1,6 @@
 //! Model catalog loader — reads `models.yaml` and syncs entries into DuckDB.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::Result;
@@ -9,14 +9,6 @@ use tracing::{info, warn};
 
 use crate::provider_registry::{self, ProviderEntry};
 use agent_brain_repository::TelemetryClient;
-
-/// Context window forced onto a LOCAL chat-fallback rung. Ollama serves 4096 by
-/// default (silently truncating), so the local safety net needs a window that
-/// can hold a real chat turn. Sized to cover the current ~20k-token tool-using
-/// turn with generation headroom; granite4 (the local rung) carries a 128k
-/// catalog window, and this stays well under it. Lower it if the turn size is
-/// trimmed and GPU memory is tight.
-const CHAT_LOCAL_FALLBACK_NUM_CTX: u32 = 32768;
 
 /// Top-level structure of `models.yaml`.
 #[derive(Debug, Deserialize)]
@@ -42,6 +34,9 @@ pub struct ModelCatalog {
     /// endpoint. Installed process-wide by [`Self::install_providers`].
     #[serde(default)]
     pub providers: HashMap<String, ProviderEntry>,
+    /// The local engines this install can pick from with `LOCAL_ENGINE`.
+    #[serde(default)]
+    pub engines: BTreeMap<String, agent_brain_engine::EngineEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,12 +123,15 @@ impl ModelCatalog {
             chat_fallback_ladder: Vec::new(),
             background_fallback_ladder: Vec::new(),
             providers: HashMap::new(),
+            engines: BTreeMap::new(),
         }
     }
 
     /// Install this catalog's providers as the process-wide registry and warn
     /// about every declaration that cannot work. Returns the provider count.
     pub fn install_providers(&self) -> usize {
+        // First: the registry's `local` entry reads its endpoint from the engine.
+        agent_brain_engine::install(&self.engines);
         let n = provider_registry::install(&self.providers);
         let limited =
             provider_registry::install_model_limits(self.models.values().filter_map(|m| {
@@ -153,8 +151,8 @@ impl ModelCatalog {
     }
 
     /// Problems with the provider declarations this catalog produces: a model
-    /// naming a provider the registry does not know (it would be called as
-    /// local Ollama), a paid provider with no spend cap, an OpenAI-compatible
+    /// naming a provider the registry does not know (it would be called on the
+    /// local engine), a paid provider with no spend cap, an OpenAI-compatible
     /// provider with no endpoint. Sorted, so the startup log is stable.
     pub fn provider_issues(&self) -> Vec<String> {
         let registry = provider_registry::merged(&self.providers);
@@ -170,7 +168,7 @@ impl ModelCatalog {
             if !registry.contains_key(&provider_registry::canonical_name(&m.provider)) {
                 out.push(format!(
                     "model {key}: provider '{}' is not in the provider registry — \
-                     it would be called as local Ollama",
+                     it would be called on the local engine",
                     m.provider
                 ));
             }
@@ -259,17 +257,8 @@ impl ModelCatalog {
                 continue;
             }
             seen.push(entry.model.clone());
-            let mut cfg =
+            let cfg =
                 crate::model_router::config_for_catalog_entry(base, &entry.provider, &entry.model);
-            // A LOCAL fallback rung must be given a real context window. Ollama
-            // silently serves 4096 tokens by default, which truncates a real
-            // (~20k-token) chat turn to a fragment — the local safety net then
-            // answers from garbage (the 2026-09-09 "apply to #N → generic
-            // refusal" incident). Cloud rungs carry the model's catalog window;
-            // only the local rung needs this override.
-            if cfg.provider == crate::LlmProviderType::Ollama {
-                cfg = cfg.with_num_ctx(CHAT_LOCAL_FALLBACK_NUM_CTX);
-            }
             out.push(cfg);
         }
         out
@@ -350,7 +339,7 @@ mod tests {
             &[
                 ("a", "ollama-cloud", "a-model"),
                 ("b", "ollama-cloud", "b-model"),
-                ("c", "ollama", "c-model"),
+                ("c", "ollama-cloud", "c-model"),
             ],
         );
         // Order is a measured preference, not a set — resolving must not sort it.
@@ -402,32 +391,17 @@ mod tests {
     /// environment, so a checked-in file never carries a credential.
     #[test]
     fn a_local_rung_resolves_to_the_local_provider() {
-        let c = catalog(&["local"], &[("local", "ollama", "gemma4:latest")]);
+        let c = catalog(&["local"], &[("local", "ollama", "old-name")]);
         let resolved = c.resolve_chat_fallback_ladder(&LlmConfig::default(), "none");
         assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].provider, crate::LlmProviderType::Ollama);
-        assert_eq!(resolved[0].model, "gemma4:latest");
-        assert!(resolved[0].api_key.is_none(), "a local rung needs no key");
+        assert_eq!(resolved[0].provider, crate::LlmProviderType::Local);
+        assert_eq!(resolved[0].provider_label(), "local");
         assert_eq!(
-            resolved[0].num_ctx,
-            Some(CHAT_LOCAL_FALLBACK_NUM_CTX),
-            "a local rung must get a real context window, not Ollama's 4096 default"
+            resolved[0].model,
+            agent_brain_engine::model(agent_brain_engine::Role::Generation).unwrap(),
+            "the engine serves its own model, whatever the row calls it"
         );
-    }
-
-    #[test]
-    fn a_cloud_rung_keeps_the_default_context_window() {
-        let c = catalog(
-            &["cloud"],
-            &[("cloud", "ollama-cloud", "gpt-oss:120b-cloud")],
-        );
-        let resolved = c.resolve_chat_fallback_ladder(&LlmConfig::default(), "none");
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].provider, crate::LlmProviderType::OllamaCloud);
-        assert!(
-            resolved[0].num_ctx.is_none(),
-            "the num_ctx override is local-only; cloud rungs carry the catalog window"
-        );
+        assert!(resolved[0].api_key.is_none(), "a local rung needs no key");
     }
 
     // ── Guards against the real checked-in catalog ───────────────────────────
@@ -485,7 +459,7 @@ mod tests {
 
     /// Tier 1: local plus free Mistral, the deployed configuration since
     /// Ollama Cloud went off (2026-11-01, LOCAL_ENGINE_PLAN §2).
-    const TIER1: &[&str] = &["ollama", "mistral"];
+    const TIER1: &[&str] = &["local", "mistral"];
 
     #[test]
     fn reasoning_routes_to_the_fastest_clean_cloud_model() {
@@ -508,24 +482,11 @@ mod tests {
     }
 
     #[test]
-    fn computation_still_routes_to_the_code_model() {
-        // `execute_code` steps must reach a model that emits Python. Its rank
-        // of 150 loses to every cloud entry, so this only holds while the
-        // capability has exactly one holder — which is the point of the test.
-        assert_eq!(
-            routes_to(&real_catalog(), "computation", TIER1),
-            "qwen2.5-coder:7b"
-        );
-    }
-
-    #[test]
     fn tier_zero_reasoning_is_the_background_workhorse() {
-        // With cloud filtered out, local must resolve deterministically.
-        // Three local models tie at a 128000 window, so before ranking this
-        // was decided by whatever order the rows came back in.
+        // With cloud filtered out, the one local model holds it.
         assert_eq!(
-            routes_to(&real_catalog(), "reasoning", &["ollama"]),
-            "gemma4:latest"
+            routes_to(&real_catalog(), "reasoning", &["local"]),
+            "gemma4-e4b"
         );
     }
 
@@ -535,7 +496,7 @@ mod tests {
     /// `CLOUD_TIER=2`. This is the deployed routing; lock it by name like the
     /// tier-1 guard above so a future catalog edit that steals `reasoning` from
     /// Gemini (or hands it to a paid model on cost) is caught at build time.
-    const TIER2: &[&str] = &["ollama", "mistral", "gemini", "anthropic"];
+    const TIER2: &[&str] = &["local", "mistral", "gemini", "anthropic"];
 
     #[test]
     fn reasoning_at_tier2_routes_to_mistral() {
@@ -798,7 +759,7 @@ mod tests {
             Some("ministral-14b-latest")
         );
         let mistral = pos("ministral-14b-latest").expect("mistral admitted");
-        let local = pos("gemma4:latest").expect("local admitted");
+        let local = pos("gemma4-e4b").expect("local admitted");
         assert!(mistral < local, "{got:?}");
         assert!(pos("gemini-2.5-flash").is_none(), "{got:?}");
     }

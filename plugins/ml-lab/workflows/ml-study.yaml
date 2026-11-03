@@ -19,7 +19,7 @@ steps:
     arguments:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'ml_study' AND NOT (n)-[:PART_OF]->() AND n.content STARTS WITH '# ML study — ' RETURN substring(n.content, 13, 3) AS id ORDER BY id"
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "Lessons already studied"
 
   # 2. The curriculum, in order (owner, 2026-10-23: Kaggle Learn, Karpathy's
@@ -74,7 +74,7 @@ steps:
         else:
             print("id: none (every lesson is done)")
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "The next lesson not yet studied"
 
   - id: study

@@ -58,7 +58,7 @@ Canonical LLM catalog synced from `models.yaml` at startup. Source of truth for 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `name` | TEXT | PRIMARY KEY | Logical name, e.g. `"sonnet-3-7"` |
-| `provider` | TEXT | NOT NULL | `Ollama` \| `Anthropic` \| `Gemini` \| `VLlm` |
+| `provider` | TEXT | NOT NULL | A provider-registry name: `local`, `mistral`, `anthropic`, ... Rows before 2026-11-02 also say `llamacpp` or `ollama` for the local engine |
 | `model` | TEXT | NOT NULL | Provider model ID string |
 | `context_window` | INTEGER | NOT NULL | Max context tokens |
 | `cost_input` | DOUBLE | NOT NULL | Cost per 1k input tokens (USD) |
@@ -396,7 +396,7 @@ Background job records executed by `QueueService`. Supports chaining, retry, and
 | `error` | String? | Last error message on failure |
 | `session_id` | String? | Associated HTTP session (for SSE push notifications) |
 | `parent_job_id` | String? | Predecessor job ID (used for chaining — parked until parent succeeds) |
-| `provider_hint` | String? | `"ollama"` \| `"anthropic"` \| `"gemini"` — selects concurrency semaphore |
+| `provider_hint` | String? | `"local"` \| `"anthropic"` \| `"gemini"` — selects concurrency semaphore. `"ollama"` and `"llamacpp"` still mean local, logged as deprecated |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `updated_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `started_at` | DateTime | Native Neo4j `DATETIME`, UTC |

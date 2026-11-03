@@ -16,7 +16,7 @@ steps:
         RETURN open_todos, recent_technologies, prior_deep_dives, recent_learning
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   # Why: dev_docs get yaml/schedules-deep-dive-2
   - tool_name: reason
@@ -62,4 +62,4 @@ steps:
       context: "Self-directed deep dive ({{date}}), narrowed from open todos, recent technologies and prior deep dives by workflows/deep-dive-pick.yaml."
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local

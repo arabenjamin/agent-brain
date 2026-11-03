@@ -17,7 +17,7 @@ Brain down? `grep devdocs/devnotes.jsonl` (the git seed; the graph rewrites it o
 
 A persistent, self-improving MCP server in Rust backed by a Neo4j knowledge graph. Long-term memory with hybrid vector+BM25 RAG, a durable priority job queue, reasoning over stored knowledge, and an autonomous scheduler that dispatches pending tasks as job chains.
 
-**Stack:** Rust (Tokio, Edition 2024) · MCP over stdio or HTTP (Axum + SSE) · Neo4j via `neo4rs` · DuckDB telemetry · pluggable LLMs (host Ollama, llama.cpp sidecar, Ollama Cloud, Anthropic, Gemini, any OpenAI-compatible API via `providers:` in `models.yaml`), chosen per call by the routing policy.
+**Stack:** Rust (Tokio, Edition 2024) · MCP over stdio or HTTP (Axum + SSE) · Neo4j via `neo4rs` · DuckDB telemetry · pluggable LLMs (one local engine, llama.cpp by default; Anthropic, Gemini, any OpenAI-compatible API via `providers:` in `models.yaml`), chosen per call by the routing policy.
 
 ## Commands
 
@@ -38,7 +38,7 @@ More: `project-docs/cli.md`. Endpoints: `POST/GET/DELETE /mcp`, `GET /health`, `
 
 - **The brain runs in Docker.** Test Rust changes by rebuilding the image; never install deps on the host; external CLI tools (yt-dlp, ffmpeg) go in the Dockerfile.
 - **The brain has a `env_file`** — `.env` is the live environment file.
-- Env reference: **`project-docs/env.md`**. Compose sets the values that matter (`LOCAL_LLM_BACKEND=llamacpp`, `CHAT_DEFAULT_PROFILE`/`MCP_TOOL_PROFILE=GeneralDefault-Orchrestator`, `CLOUD_TIER=2`, `TZ`); code defaults are often stale.
+- Env reference: **`project-docs/env.md`**. Compose sets the values that matter (`CHAT_DEFAULT_PROFILE`/`MCP_TOOL_PROFILE=GeneralDefault-Orchrestator`, `CLOUD_TIER=2`, `TZ`); code defaults are often stale.
 - The GPU is an 8 GB RTX 3060 Ti on driver 535 / CUDA 12.2. The llama.cpp sidecar is built from source for it and runs as a router (`llamacpp/preset.ini`: Gemma-4-E4B, 16384 tokens/request, and bge-m3 for embeddings).
 - `.githooks/post-commit` runs `docker compose up -d --build` (`git config core.hooksPath .githooks`).
 
@@ -48,6 +48,7 @@ Cargo workspace; source is in `crates/*/src/`, not `src/`. A crate depends only 
 
 ```
 protocol/ models/ repository/   MCP types + Skill trait; data types; Neo4j + DuckDB layer
+engine/ decision/   the local engine (`LOCAL_ENGINE`); fixed-choice model calls
 llm/        providers, registry, routing, budget, gate, model selection
 graph/      plugin bundles, logging, clock, entity resolution, topics, snapshots
 knowledge/  notes, hybrid retrieval, reasoning, consolidation, store traits
@@ -66,7 +67,6 @@ Plugins:    plugins/<name>/ (plugin.yaml, seeds, crate/ on crates/plugin-api); m
 - **No hardcoded data in Rust.** Declarative data (domains, seeds, chains, schedules, profiles, models) lives in plugin bundles and the graph.
 - **Timestamps:** every temporal graph property is a native UTC `DATETIME`. Cypher compares a datetime to a string as null and silently drops the row. Read `project-docs/schema.md` § Timestamps before writing date Cypher. Stored is UTC; anything said to a person is local (`services/clock.rs`).
 - **Structured LLM output:** use `LlmProvider::generate_json`, and parse with `first_json_object`, never first-`{`-to-last-`}`.
-- **Host Ollama defaults to a 4096-token context** and truncates silently; every host-Ollama config sets `num_ctx`.
 - **Workflow steps:** `provider_hint` is a step top-level field (omitting it means cloud, not local); a `reason` step past position 1 takes `context: "{{_prev}}"` (or `{{steps.<id>}}`); a run's subject is `{{inputs.<name>}}`, not `{{goal}}`; steps run verbatim, checked only if `checks` opts in.
 - **A `runtime`-owned workflow silently shadows its YAML file.** Check `managed_by` before assuming the file is what runs. Pause with `manage_workflow` upsert `{name, enabled: false}`.
 - **Privacy before budget:** work is `private` unless marked `data_class: public`, and private work only reaches `no_log` providers. Paid providers need a spend cap and `ROUTING_PAID_FOR`.

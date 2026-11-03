@@ -6,14 +6,14 @@ steps:
       store_as_note: true
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: get_git_log
     arguments:
       n: 10
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: reason
     arguments:
@@ -24,7 +24,7 @@ steps:
       store_inference: true
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: update_task
     arguments:
@@ -32,4 +32,4 @@ steps:
       status: completed
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local

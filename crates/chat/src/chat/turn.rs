@@ -119,21 +119,8 @@ impl ChatService {
                     )
                     .await
                 }
-                LlmProviderType::Ollama => {
-                    self.run_ollama_tool_loop(
-                        cfg,
-                        tools,
-                        handler,
-                        request,
-                        system_prompt,
-                        attempt_tx,
-                        allow_delegate,
-                        max_iterations,
-                    )
-                    .await
-                }
-                LlmProviderType::OllamaCloud
-                | LlmProviderType::LlamaCpp
+                LlmProviderType::Local
+                | LlmProviderType::OllamaCloud
                 | LlmProviderType::OpenAiCompat
                 | LlmProviderType::Gemini => {
                     // All speak the OpenAI-compatible chat/completions wire

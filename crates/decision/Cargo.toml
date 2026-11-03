@@ -5,6 +5,10 @@ edition.workspace = true
 
 # No brain crates: plugins reach this through plugin-api.
 [dependencies]
+agent-brain-engine = { path = "../engine" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -21,7 +21,7 @@ steps:
       cypher: "MATCH (m:ModelDef) RETURN m.name AS name, m.provider AS provider, m.model AS model, m.context_window AS context_window, m.cost_per_1k_input AS cost_in, m.cost_per_1k_output AS cost_out ORDER BY provider, name"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "The models the brain routes to"
 
   - id: prior
@@ -30,7 +30,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'model_metadata_drift' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "The prior comparison, for the change check"
 
   - id: anthropic
@@ -43,7 +43,7 @@ steps:
       pick: ["lastUpdated", "vendors.anthropic[].id", "vendors.anthropic[].contextWindow", "vendors.anthropic[].maxOutputTokens", "vendors.anthropic[].pricing.inputPer1M", "vendors.anthropic[].pricing.outputPer1M"]
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Catalog: Anthropic"
 
   - id: gemini
@@ -56,7 +56,7 @@ steps:
       pick: ["vendors.gemini[].id", "vendors.gemini[].contextWindow", "vendors.gemini[].maxOutputTokens", "vendors.gemini[].pricing.inputPer1M", "vendors.gemini[].pricing.outputPer1M"]
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Catalog: Gemini"
 
   - id: mistral
@@ -69,7 +69,7 @@ steps:
       pick: ["vendors.mistral[].id", "vendors.mistral[].contextWindow", "vendors.mistral[].maxOutputTokens", "vendors.mistral[].pricing.inputPer1M", "vendors.mistral[].pricing.outputPer1M"]
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Catalog: Mistral"
 
   # ~58 KB picked; the sandbox takes 256 KB of code.
@@ -83,7 +83,7 @@ steps:
       pick: ["vendors.openrouter[].id", "vendors.openrouter[].contextWindow", "vendors.openrouter[].maxOutputTokens", "vendors.openrouter[].pricing.inputPer1M", "vendors.openrouter[].pricing.outputPer1M"]
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Catalog: OpenRouter"
 
   - id: compare
@@ -106,7 +106,7 @@ steps:
         for m in models:
             prov, mid = m.get("provider"), m.get("model") or m.get("name")
             if prov not in by_id:
-                why = "local, not in a public catalog" if prov == "llamacpp" else "the catalog lists ollama families with no limits"
+                why = "local, not in a public catalog" if prov == "local" else "the catalog lists ollama families with no limits"
                 skipped.append(f"{mid} ({prov}: {why})")
                 continue
             c = by_id[prov].get(mid)
@@ -147,7 +147,7 @@ steps:
         print("models.yaml sets none; the catalog's maxOutputTokens: " + ("; ".join(limits) or "none listed."))
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Compare in code (no model): context windows, paid prices"
 
   - id: record
@@ -158,7 +158,7 @@ steps:
       source_context: model_metadata_drift
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the comparison"
 
   # One Feed item when the DIFFERENCES section changed since the prior run;
@@ -191,7 +191,7 @@ steps:
             print("The catalog is indicative (list prices, vendor-stated limits); check the vendor before changing models.yaml. Full comparison: the note `# Model metadata drift — {{date}}`.")
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "A message only when the differences changed"
 
   - tool_name: notify_user
@@ -202,5 +202,5 @@ steps:
       ask: "Check each differing value with its vendor and correct models.yaml where the brain is wrong (or note why ours is deliberate, e.g. a cheap-tier context window)."
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Feed item only on a changed set of differences"

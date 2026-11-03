@@ -420,16 +420,12 @@ impl BrainCore {
             Some(svc)
         };
 
-        // Local-Ollama config for background jobs — always points to localhost,
-        // so maintenance tasks never touch cloud quota even when the active
-        // provider is ollama-cloud or anthropic.
+        // The local engine's config for background jobs, so maintenance never touches
+        // cloud quota whatever the active provider is.
         let local_config_arc = {
-            // Backend (Ollama vs llama.cpp) is chosen by LOCAL_LLM_BACKEND; the
-            // local model needs a far larger request budget than the shared 120s
-            // default (see `DEFAULT_LOCAL_TIMEOUT_SECS`) because on a shared
-            // consumer GPU a background call takes 54–79s idle and 80–120s under
-            // the media-watch burst. Embeddings stay pinned to local Ollama
-            // regardless of the generation backend. See `build_local_llm_config`.
+            // It needs a far larger request budget than the shared 120s default (see
+            // `DEFAULT_LOCAL_TIMEOUT_SECS`): on a shared consumer GPU a background call
+            // takes 54–79s idle and 80–120s under the media-watch burst.
             let local_llm_config = crate::services::llm::build_local_llm_config();
             info!(
                 provider = %local_llm_config.provider,
@@ -459,7 +455,7 @@ impl BrainCore {
             };
 
         // Local-only LLM for internal knowledge ops (entity extraction, etc.)
-        // Always routes to local Ollama regardless of the active provider.
+        // Always routes to the local engine regardless of the active provider.
         // It records to the usage ledger like every other LLM path: before
         // 2026-10-01 it had no telemetry sink, so consolidation and entity
         // extraction never appeared in `model_usage` at all.

@@ -32,7 +32,7 @@ use crate::llm::{ChatMessage, LlmResponse};
 /// 4,000 is safe for ordinary dense content; `embed_with_backoff` covers what
 /// is denser still, so this does not have to be right for pathological input.
 /// Note it sits far below the 32K the model's 8192-token context implies —
-/// that is Ollama's serving config, not the model, and cannot be derived.
+/// that is the engine's serving config, not the model, and cannot be derived.
 pub const MAX_EMBED_CHARS: usize = 4_000;
 
 /// Compile-time guard on the measured ceiling: ~10,327 chars embed, ~11,882
@@ -175,12 +175,6 @@ pub struct ProviderConfig {
     pub timeout: Duration,
     pub temperature: f32,
     pub max_tokens: Option<u32>,
-    /// Ollama-only model residency window (Go duration string). Other providers
-    /// ignore it — only `OllamaProvider` serializes it onto the request.
-    pub keep_alive: Option<String>,
-    /// Ollama-only context window override. `None` leaves Ollama's 4096 default,
-    /// which silently truncates longer prompts.
-    pub num_ctx: Option<u32>,
 }
 
 #[async_trait]
@@ -206,7 +200,6 @@ pub trait LlmProvider: Send + Sync {
 }
 
 pub mod anthropic;
-pub mod ollama;
 pub mod openai_compat;
 
 #[cfg(test)]

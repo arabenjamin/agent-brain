@@ -46,8 +46,8 @@ use serde_json::Value;
 /// Shared by capability routing ([`resolve_model_config`]), the `/chat`
 /// fallback ladder and profile pins, which all answer the same question: *this
 /// catalog row is the model now; what does it take to call it?* A provider the
-/// registry does not know is called as local Ollama, as it always was; startup
-/// names every such model (`ModelCatalog::provider_issues`).
+/// registry does not know is called on the local engine; startup names every such
+/// model (`ModelCatalog::provider_issues`).
 pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -> LlmConfig {
     let name = provider_registry::canonical_name(provider);
     match provider_registry::get(&name) {
@@ -56,21 +56,13 @@ pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -
             tracing::warn!(
                 provider = %name,
                 model = %model,
-                "provider is not in the registry; building a host-Ollama config for this model"
+                "provider is not in the registry; building a local-engine config for this model"
             );
-            let local = provider_registry::get("ollama")
-                .unwrap_or_else(|| provider_registry::builtin()["ollama"].clone());
-            config_for_provider(base, "ollama", &local, model)
+            let local = provider_registry::get(LOCAL)
+                .unwrap_or_else(|| provider_registry::builtin()[LOCAL].clone());
+            config_for_provider(base, LOCAL, &local, model)
         }
     }
-}
-
-/// The local Ollama endpoint embeddings are pinned to, whatever generates.
-fn local_embed_url() -> String {
-    std::env::var("OLLAMA_LOCAL_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "http://localhost:11434".to_string())
 }
 
 /// [`config_for_catalog_entry`] for a resolved registry entry. Reads only the
@@ -96,8 +88,6 @@ pub fn config_for_provider(
             };
             cfg.base_url = entry.base_url();
             cfg.api_key = entry.api_key();
-            // A remote OpenAI-wire API has no bge-m3; embeddings stay local.
-            cfg.embed_base_url.get_or_insert_with(local_embed_url);
         }
         ProviderKind::Anthropic => {
             cfg.provider = LlmProviderType::Anthropic;
@@ -109,33 +99,16 @@ pub fn config_for_provider(
             cfg.base_url = entry.base_url();
             cfg.api_key = entry.api_key();
         }
-        ProviderKind::Llamacpp => {
-            // The llama.cpp `llama-server` sidecar (OpenAI-compatible). base_url
-            // points at LLAMACPP_URL regardless of LOCAL_LLM_BACKEND, because the
-            // caller asked for this provider explicitly (a profile/catalog pin,
-            // not the background backend switch). A single-model llama-server
-            // cannot serve embeddings, so embeddings stay pinned to host Ollama —
-            // mirroring build_local_llm_config.
-            cfg.provider = LlmProviderType::LlamaCpp;
-            cfg.base_url = entry.base_url();
-            cfg.embed_base_url = Some(local_embed_url());
+        ProviderKind::Local => {
+            // One generation model per install: whatever a catalog row or a pin
+            // called it, the engine serves the role's model.
+            let engine = agent_brain_engine::current();
+            cfg.provider = LlmProviderType::Local;
+            cfg.base_url = Some(engine.url.clone());
             cfg.api_key = None;
-        }
-        ProviderKind::Ollama => {
-            cfg.provider = LlmProviderType::Ollama;
-            cfg.base_url = entry.base_url();
-            cfg.api_key = None;
-            // The router is called with `LlmConfig::default()` as base, so
-            // keep_alive has to be sourced here like base_url and api_key are.
-            cfg.keep_alive = std::env::var("OLLAMA_KEEP_ALIVE")
-                .ok()
-                .and_then(|s| crate::llm::validate_go_duration(s.trim()));
-            // Same reason as base_url/keep_alive: the router builds on
-            // `LlmConfig::default()`, whose `num_ctx` is None — which means
-            // Ollama's silent 4096. A capability-routed local model (granite4 at
-            // selection_rank 120) landed here and answered `reason` off a clipped
-            // prompt 58 times in 30 days. See `llm::ollama_num_ctx`.
-            cfg.num_ctx = Some(crate::llm::ollama_num_ctx());
+            if let Some(m) = engine.model(agent_brain_engine::Role::Generation) {
+                cfg.model = m.to_string();
+            }
         }
     }
     cfg.provider_name = Some(name.to_string());
@@ -211,7 +184,28 @@ fn plans_turns_in(rows: &[Value], model: &str) -> bool {
         .is_some_and(|caps| caps.iter().any(|c| c == PLANS_TURNS))
 }
 
-/// The step `provider_hint` a provider implies: `ollama` (the queue's local
+/// The registry's name for the local engine, and the step `provider_hint` for it.
+pub const LOCAL: &str = "local";
+
+/// Whether a step's `provider_hint` puts it on the local lane. `ollama` and
+/// `llamacpp` still do, because stored workflows and queued jobs carry them; they
+/// are logged once as deprecated.
+pub fn is_local_hint(hint: Option<&str>) -> bool {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let Some(hint) = hint else { return false };
+    let local = provider_registry::canonical_name(hint) == LOCAL;
+    if local && hint.trim() != LOCAL {
+        WARNED.call_once(|| {
+            tracing::warn!(
+                hint,
+                "provider_hint names an engine; it is deprecated, use `local`"
+            );
+        });
+    }
+    local
+}
+
+/// The step `provider_hint` a provider implies: `local` (the queue's local
 /// lane) for any provider billed as local, else the provider's own name. The
 /// queue gives `anthropic` and `gemini` their own semaphores; every other name
 /// shares the default one, as a cloud step with no hint always has.
@@ -219,9 +213,9 @@ pub fn provider_hint_for(provider: &str) -> String {
     let name = provider_registry::canonical_name(provider);
     match provider_registry::get(&name) {
         Some(e) if e.billing != provider_registry::Billing::Local => name,
-        // A provider the registry does not know is called as local Ollama
+        // A provider the registry does not know is called on the local engine
         // (`config_for_catalog_entry`), so it rides the local lane too.
-        _ => "ollama".to_string(),
+        _ => LOCAL.to_string(),
     }
 }
 
@@ -380,11 +374,11 @@ mod tests {
         let rows = vec![
             row("claude-haiku-5-5", "anthropic", "claude-haiku-5-5"),
             row("gemma4:31b-cloud", "ollama-cloud", "gemma4:31b-cloud"),
-            row("gemma4:latest", "ollama", "gemma4:latest"),
+            row("gemma4:latest", "local", "gemma4:latest"),
         ];
         assert_eq!(
             find_model(&rows, "GEMMA4:latest").unwrap().provider,
-            "ollama"
+            "local"
         );
         assert_eq!(
             find_model(&rows, "claude-haiku-5-5").unwrap().model,
@@ -399,43 +393,51 @@ mod tests {
 
     #[test]
     fn a_hint_must_agree_with_the_pinned_provider() {
-        // Built-in registry: ollama and llamacpp are local, ollama-cloud is not.
-        assert_eq!(provider_hint_for("ollama"), "ollama");
-        assert_eq!(provider_hint_for("llamacpp"), "ollama");
+        // Every old name of the engine is local; ollama-cloud is a cloud provider.
+        assert_eq!(provider_hint_for("local"), "local");
+        assert_eq!(provider_hint_for("ollama"), "local");
+        assert_eq!(provider_hint_for("llamacpp"), "local");
         assert_eq!(provider_hint_for("ollama-cloud"), "ollama-cloud");
         assert_eq!(provider_hint_for("anthropic"), "anthropic");
         // The Zero Trust schedule: a host-local model on a step marked cloud.
         assert!(!hint_agrees("ollama-cloud", "ollama"));
-        assert!(hint_agrees("ollama", "ollama"));
+        assert!(hint_agrees("local", "local"));
+        assert!(hint_agrees("ollama", "local"));
         assert!(hint_agrees("ollama", "llamacpp"));
         assert!(hint_agrees("", "anthropic"));
         assert!(hint_agrees("anthropic", "anthropic"));
         // A cloud model on a step marked local.
+        assert!(!hint_agrees("local", "ollama-cloud"));
         assert!(!hint_agrees("ollama", "ollama-cloud"));
     }
 
+    /// Stored rows and pins carry every name the engine has had.
     #[test]
-    fn llamacpp_provider_resolves_to_the_sidecar() {
-        // A profile/catalog pin with provider `llamacpp` must produce a LlamaCpp
-        // config (routed to the sidecar), NOT collapse into the host-Ollama
-        // default branch. Embeddings stay pinned (a single-model llama-server
-        // can't embed) and no api key is sent (llama-server needs none).
+    fn every_old_engine_name_resolves_to_the_local_engine() {
         let base = LlmConfig::default();
-        for name in ["llamacpp", "llama-cpp", "llama.cpp", "llama_cpp"] {
-            let cfg = config_for_catalog_entry(&base, name, "gemma4-e4b");
+        let engine = agent_brain_engine::current();
+        for name in ["local", "ollama", "llamacpp", "llama-cpp", "llama.cpp"] {
+            let cfg = config_for_catalog_entry(&base, name, "granite4:latest");
+            assert_eq!(cfg.provider, LlmProviderType::Local, "provider for {name}");
+            assert_eq!(cfg.provider_label(), "local");
+            assert_eq!(cfg.base_url.as_deref(), Some(engine.url.as_str()));
             assert_eq!(
-                cfg.provider,
-                LlmProviderType::LlamaCpp,
-                "provider for {name}"
-            );
-            assert_eq!(cfg.model, "gemma4-e4b");
-            assert!(cfg.base_url.is_some(), "base_url set for {name}");
-            assert!(
-                cfg.embed_base_url.is_some(),
-                "embed endpoint pinned for {name}"
+                Some(cfg.model.as_str()),
+                engine.model(agent_brain_engine::Role::Generation)
             );
             assert!(cfg.api_key.is_none(), "no api key for {name}");
         }
+    }
+
+    #[test]
+    fn a_local_hint_is_local_and_a_cloud_one_is_not() {
+        for hint in ["local", "ollama", "llamacpp", " Ollama "] {
+            assert!(is_local_hint(Some(hint)), "{hint}");
+        }
+        for hint in ["ollama-cloud", "mistral", "", "anthropic"] {
+            assert!(!is_local_hint(Some(hint)), "{hint}");
+        }
+        assert!(!is_local_hint(None));
     }
 
     #[test]
@@ -457,10 +459,6 @@ mod tests {
         assert_eq!(cfg.model, "mistral-medium-latest");
         assert!(cfg.api_key.is_none(), "an unset key var yields no key");
         assert_eq!(cfg.provider_label(), "mistral");
-        assert!(
-            cfg.embed_base_url.is_some(),
-            "embeddings stay local for a remote OpenAI-wire API"
-        );
     }
 
     #[test]
@@ -474,14 +472,10 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_provider_is_still_called_as_local_ollama() {
+    fn an_unknown_provider_is_called_on_the_local_engine() {
         let cfg = config_for_catalog_entry(&LlmConfig::default(), "vllm", "some-model");
-        assert_eq!(cfg.provider, LlmProviderType::Ollama);
-        assert_eq!(cfg.provider_label(), "ollama");
-        assert!(
-            cfg.num_ctx.is_some(),
-            "local Ollama never runs at its 4096 default"
-        );
+        assert_eq!(cfg.provider, LlmProviderType::Local);
+        assert_eq!(cfg.provider_label(), "local");
     }
 
     #[test]

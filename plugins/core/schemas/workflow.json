@@ -165,7 +165,7 @@
         },
         "provider_hint": {
           "type": "string",
-          "description": "Top-level, sibling of tool_name/arguments. `ollama` = local; omission routes to cloud. Inside arguments it is silently ignored by routing."
+          "description": "Top-level, sibling of tool_name/arguments. `local` = the local engine; omission routes to cloud. Inside arguments it is silently ignored by routing."
         },
         "context_profile": {
           "type": "string"

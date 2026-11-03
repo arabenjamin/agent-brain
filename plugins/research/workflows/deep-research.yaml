@@ -11,7 +11,7 @@ steps:
       question: "{{inputs.question}}"
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Deep research: run the Parallel task"
 
   - tool_name: store_note
@@ -22,7 +22,7 @@ steps:
       provenance: synthesis_inference
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Deep research: store the report"
 
   - tool_name: update_task
@@ -31,5 +31,5 @@ steps:
       status: completed
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Deep research: complete the task"

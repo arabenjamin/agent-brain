@@ -1,5 +1,4 @@
 pub use agent_brain_graph::logging::{LogFormat, LoggingConfig};
-use agent_brain_llm::llm::validate_go_duration;
 use std::env;
 
 /// Top-level configuration loaded from environment variables.
@@ -22,43 +21,31 @@ pub struct DatabaseConfig {
     pub password: String,
 }
 
-/// The brain's active LLM: which provider and model, plus the host-Ollama
-/// settings every config inherits (embeddings always run there). Endpoints and
-/// keys are not here: the provider registry (`models.yaml` `providers:`) names
+/// The brain's active LLM: which provider and model. Endpoints and keys are not
+/// here: the provider registry (`models.yaml` `providers:`) names
 /// the env vars that hold them, and `model_router::config_for_catalog_entry`
 /// reads them, for this config as for every routed one.
 #[derive(Debug, Clone)]
 pub struct LlmProviderConfig {
     /// A provider-registry name (`LLM_PROVIDER`, folded by `canonical_name`;
-    /// default `ollama`). A name the registry does not know runs as host Ollama.
+    /// default `local`). A name the registry does not know runs on the local engine.
     pub provider: String,
-    /// The active model: `ANTHROPIC_MODEL`, `GEMINI_MODEL` or `LLAMACPP_MODEL`
-    /// for those providers when set, else `OLLAMA_MODEL`.
+    /// The active model: `ANTHROPIC_MODEL` or `GEMINI_MODEL` for those providers
+    /// when set, else `LLM_MODEL`.
     pub model: String,
-    /// Host Ollama (default: http://localhost:11434), where embeddings run.
-    pub ollama_local_url: String,
-    pub ollama_embed_model: Option<String>,
-    /// How long Ollama keeps a model resident in VRAM after a request, as a Go
-    /// duration string (`30m`, `2h`).  A negative duration (`-1m`) pins the model
-    /// indefinitely.  `None` leaves Ollama's own default (5m) in place.
-    ///
-    /// Chain steps run serially with gaps between them, so on a shared GPU the
-    /// model can be evicted between consecutive steps of the same chain and pay a
-    /// full reload each time.  Env var: `OLLAMA_KEEP_ALIVE`.
-    pub ollama_keep_alive: Option<String>,
 }
 
 /// The model a provider runs when `LLM_PROVIDER` / `CHAT_LLM_PROVIDER` names it
-/// and no model is given: its own `*_MODEL` env var, else `OLLAMA_MODEL`.
+/// and no model is given: its own `*_MODEL` env var, else `LLM_MODEL`.
 pub fn default_model_for(provider: &str) -> String {
     let own = match provider {
         "anthropic" => env::var("ANTHROPIC_MODEL").ok(),
         "gemini" => env::var("GEMINI_MODEL").ok(),
-        "llamacpp" => env::var("LLAMACPP_MODEL").ok(),
         _ => None,
     };
-    own.or_else(|| env::var("OLLAMA_MODEL").ok())
-        .unwrap_or_else(|| "granite4:latest".to_string())
+    own.or_else(|| env::var("LLM_MODEL").ok())
+        .or_else(|| agent_brain_llm::engine::model(agent_brain_llm::engine::Role::Generation))
+        .unwrap_or_else(|| "local".to_string())
 }
 
 /// Optional LLM overrides for the human-facing chat adapter.
@@ -68,7 +55,7 @@ pub fn default_model_for(provider: &str) -> String {
 /// chat service uses exactly the same model as the brain's internal LLM.
 ///
 /// Set these when you want a different model for chat than for internal
-/// cognitive operations (e.g. cloud Anthropic for chat, local Ollama for
+/// cognitive operations (e.g. cloud Anthropic for chat, the local engine for
 /// consolidation/embeddings).
 #[derive(Debug, Clone, Default)]
 pub struct ChatLlmConfig {
@@ -121,17 +108,11 @@ impl Config {
             },
             llm: {
                 let provider = crate::services::provider_registry::canonical_name(
-                    &env::var("LLM_PROVIDER").unwrap_or_else(|_| "ollama".to_string()),
+                    &env::var("LLM_PROVIDER").unwrap_or_else(|_| "local".to_string()),
                 );
                 LlmProviderConfig {
                     model: default_model_for(&provider),
                     provider,
-                    ollama_local_url: env::var("OLLAMA_LOCAL_URL")
-                        .unwrap_or_else(|_| "http://localhost:11434".to_string()),
-                    ollama_embed_model: env::var("OLLAMA_EMBED_MODEL").ok(),
-                    ollama_keep_alive: env::var("OLLAMA_KEEP_ALIVE")
-                        .ok()
-                        .and_then(|s| validate_go_duration(s.trim())),
                 }
             },
             chat_llm: ChatLlmConfig {
@@ -169,11 +150,8 @@ impl Config {
                 password: "testpassword".to_string(),
             },
             llm: LlmProviderConfig {
-                provider: "ollama".to_string(),
-                model: "granite4:latest".to_string(),
-                ollama_local_url: "http://localhost:11434".to_string(),
-                ollama_embed_model: None,
-                ollama_keep_alive: None,
+                provider: "local".to_string(),
+                model: "local".to_string(),
             },
             chat_llm: ChatLlmConfig::default(),
             logging: LoggingConfig {
@@ -199,27 +177,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn go_duration_accepts_valid_forms() {
-        for s in ["30m", "2h", "1h30m", "500ms", "-1m", "1.5h"] {
-            assert_eq!(validate_go_duration(s), Some(s.to_string()), "rejected {s}");
-        }
-    }
-
-    #[test]
-    fn go_duration_rejects_malformed_values() {
-        // A bad keep_alive rides on every request, so anything questionable must
-        // fail closed to None rather than 400 the whole LLM path.
-        for s in ["", "30", "forever", "5 minutes", "m", "30x"] {
-            assert_eq!(validate_go_duration(s), None, "accepted {s:?}");
-        }
-    }
-
-    #[test]
     fn test_config_defaults() {
         let config = Config::test_config();
         assert_eq!(config.database.uri, "bolt://localhost:7687");
-        assert_eq!(config.llm.provider, "ollama");
-        assert_eq!(config.llm.model, "granite4:latest");
+        assert_eq!(config.llm.provider, "local");
+        assert_eq!(config.llm.model, "local");
         assert_eq!(config.logging.format, LogFormat::Pretty);
     }
 

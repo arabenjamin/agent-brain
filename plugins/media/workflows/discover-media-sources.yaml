@@ -11,7 +11,7 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: search_web
     arguments:
@@ -19,11 +19,11 @@ steps:
       count: 15
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: discover_media_sources
     arguments:
       text: "{{_prev}}"
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local

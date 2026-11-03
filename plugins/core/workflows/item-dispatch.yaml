@@ -7,7 +7,7 @@ every: 1h
 steps:
   - tool_name: dispatch_due_todos
     arguments: {}
-    provider_hint: ollama
+    provider_hint: local
     priority: 1
     max_attempts: 1
     description: "Start or ask about every due agent item"

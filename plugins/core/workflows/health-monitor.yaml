@@ -43,7 +43,7 @@ steps:
       limit: 200
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   # The reason step stores the analysis as an inference note. context carries
   # the live data so the RAG path is bypassed — without it, reason retrieves
@@ -67,4 +67,4 @@ steps:
       store_inference: true
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local

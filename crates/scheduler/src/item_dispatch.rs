@@ -427,7 +427,7 @@ impl Dispatcher {
                 arguments: Some(agent_args),
                 priority: Some(2),
                 max_attempts: Some(2),
-                provider_hint: Some("ollama".into()),
+                provider_hint: Some("local".into()),
                 description: Some(format!("Run {agent} on the item")),
                 ..ChainStep::new("run_agent")
             },
@@ -435,7 +435,7 @@ impl Dispatcher {
                 arguments: Some(json!({ "action": "deliver", "id": t.id, "result": "{{_prev}}" })),
                 priority: Some(2),
                 max_attempts: Some(3),
-                provider_hint: Some("ollama".into()),
+                provider_hint: Some("local".into()),
                 description: Some("Store the result and hand it to the user for review".into()),
                 ..ChainStep::new("manage_todo")
             },
@@ -443,7 +443,7 @@ impl Dispatcher {
                 arguments: Some(json!({ "task_id": task_id, "status": "completed" })),
                 priority: Some(1),
                 max_attempts: Some(3),
-                provider_hint: Some("ollama".into()),
+                provider_hint: Some("local".into()),
                 ..ChainStep::new("update_task")
             },
         ];

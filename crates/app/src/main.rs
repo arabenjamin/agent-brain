@@ -146,25 +146,18 @@ async fn warn_on_string_timestamps(client: &Neo4jClient) {
 }
 
 fn build_llm_config(config: &Config) -> LlmConfig {
-    config_for_active(config, &config.llm.provider, &config.llm.model)
+    config_for_active(&config.llm.provider, &config.llm.model)
 }
 
 /// The config for `provider` + `model`, built the way every routed config is
-/// (`model_router::config_for_catalog_entry`: endpoint and key from the
-/// provider registry) on a base that pins embeddings to host Ollama.
-fn config_for_active(config: &Config, provider: &str, model: &str) -> LlmConfig {
-    let llm = &config.llm;
-    let mut base = LlmConfig::default().with_embed_base_url(llm.ollama_local_url.clone());
-    if let Some(embed_model) = &llm.ollama_embed_model {
-        base = base.with_embed_model(embed_model);
-    }
-    // Applied for every provider: the embedding endpoint is always local Ollama,
-    // so even an Anthropic/Gemini deployment has a local model worth keeping
-    // resident. Non-Ollama providers never serialize the field.
-    if let Some(ka) = &llm.ollama_keep_alive {
-        base = base.with_keep_alive(ka);
-    }
-    agent_brain::services::model_router::config_for_catalog_entry(&base, provider, model)
+/// (`model_router::config_for_catalog_entry`: endpoint and key from the provider
+/// registry).
+fn config_for_active(provider: &str, model: &str) -> LlmConfig {
+    agent_brain::services::model_router::config_for_catalog_entry(
+        &LlmConfig::default(),
+        provider,
+        model,
+    )
 }
 
 /// Build the LLM config for the human-facing chat adapter.
@@ -193,7 +186,7 @@ fn build_chat_llm_config(config: &Config) -> LlmConfig {
         (None, Some(p)) => agent_brain::config::default_model_for(p),
         (None, None) => config.llm.model.clone(),
     };
-    let mut base = config_for_active(config, provider, &model);
+    let mut base = config_for_active(provider, &model);
     if let Some(ref key) = chat.api_key {
         base = base.with_api_key(key);
     }
@@ -540,9 +533,17 @@ async fn run_serve(
     // Before anything builds a config from the catalog: endpoints and key env
     // var names for every provider come from here.
     catalog.install_providers();
+    // No chat or no embeddings on the local engine means no brain: say so and stop.
+    let engine = agent_brain_llm::engine::require().map_err(|e| anyhow::anyhow!("{e}"))?;
+    info!(
+        engine = %engine.name,
+        url = %engine.url,
+        features = %engine.report()["features"],
+        "Local engine"
+    );
 
     // Configure LLM. After the install: a provider declared only in models.yaml
-    // (mistral) is unknown before it, and an unknown name builds a host-Ollama config.
+    // (mistral) is unknown before it, and an unknown name builds a local-engine config.
     let llm_config = build_llm_config(config);
     {
         let ladder = catalog.resolve_background_fallback_ladder(&llm_config, &llm_config.model);

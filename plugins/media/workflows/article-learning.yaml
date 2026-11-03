@@ -18,7 +18,7 @@ steps:
       url: "{{inputs.url}}"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch article text + map-reduce summary"
 
   # Hand-off: what the brain itself already does about this article (its
@@ -39,7 +39,7 @@ steps:
     priority: 1
     max_attempts: 2
     optional: true
-    provider_hint: ollama
+    provider_hint: local
     description: "Hand-off: the brain's own workflows and programs on this subject"
 
   # 2. Bank the summary so it survives past the reason step.
@@ -50,7 +50,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank the summary in working memory"
 
   # 3. Reassemble the banked summary for the reason step's `context`.
@@ -59,7 +59,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'article-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Reassemble summary for the reason step"
 
   # 4. New-vs-known comparison. context = the summary; NEVER restate it in
@@ -85,7 +85,7 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "New-vs-known comparison"
 
   # 4b. FOLLOW UP → at most one 'fill knowledge gap:' Task. Pass-through: echoes
@@ -96,7 +96,7 @@ steps:
       max: 1
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Spawn a gap task from the FOLLOW UP question"
 
   # 5. Bank the analysis alongside the summary.
@@ -107,7 +107,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank the analysis in working memory"
 
   # 6. Reassemble summary + analysis for the stored note.
@@ -117,7 +117,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'article-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Reassemble summary + analysis for storage"
 
   # 7. source_record, not semantic: a record of what one outlet reported, not
@@ -129,7 +129,7 @@ steps:
       source_context: article_learning
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the sourced summary note"
 
   # 8. Claims from the stored note, with ASSERTED_IN back to it via {{_prev.id}}.
@@ -147,7 +147,7 @@ steps:
     optional: true
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Extract checkable claims from the article"
 
   # Hand-off: answer what the person asked (2026-10-26: "which model should
@@ -214,7 +214,7 @@ steps:
       context: "Hand-off: {{inputs.url}}"
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Hand-off: report back in the person's chat"
 
   # 9. Mark the Task done.
@@ -224,7 +224,7 @@ steps:
       status: completed
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Complete the task"
 
   # 10. Clean up the scratch session. priority 1, not 0 (max-heap; 0 starves).
@@ -234,5 +234,5 @@ steps:
       readonly: false
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Delete scratch session"

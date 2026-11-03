@@ -19,12 +19,12 @@
 #
 # READING A STEP'S ROUTING — the rule is narrower than it looks. In queue.rs:
 #
-#     let use_local = job.provider_hint.as_deref() == Some("ollama");
+#     let use_local = model_router::is_local_hint(job.provider_hint.as_deref());
 #
-# so a step is local ONLY when `provider_hint` is exactly `"ollama"`. An
+# so a step is local ONLY when `provider_hint` is `"local"` (or an old name). An
 # OMITTED hint is `None`, which is not local — it falls through to the active
 # config, and that is a cloud model (`OLLAMA_MODEL=gemma4:31b-cloud`). Auditing
-# with "cloud if provider_hint is present and != ollama" therefore reads every
+# with "cloud if provider_hint is present and != local" therefore reads every
 # chat-authored schedule as local, because chat-authored steps rarely set the
 # field at all. That mistake was made here on 2026-08-26 and missed seven
 # schedules on the first pass.
@@ -56,7 +56,7 @@ MARKER="cloud-paused:"
 # to re-derive:
 #
 #   MATCH (s:Workflow) WHERE s.enabled AND s.interval_seconds IS NOT NULL RETURN s.name, s.steps
-#   -- then flag any step whose provider_hint is not exactly "ollama"
+#   -- then flag any step whose provider_hint is not "local"
 #
 TARGETS=(
   # --- own a cloud step ---

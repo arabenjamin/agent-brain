@@ -16,7 +16,7 @@ steps:
     arguments:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'playground_study' AND NOT (n)-[:PART_OF]->() RETURN substring(n.content, 0, 400) AS head"
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "Sources already studied"
 
   # The runner is on brain-internal; HTTP_ALLOW_INTERNAL lists ml-runner:8000.
@@ -27,7 +27,7 @@ steps:
       method: GET
       timeout_ms: 150000
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "The forum and top-voted notebooks of each competition"
 
   - id: state
@@ -36,7 +36,7 @@ steps:
       url: "http://ml-runner:8000/playground"
       method: GET
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "The ladder so far"
 
   - id: menu
@@ -45,7 +45,7 @@ steps:
       url: "http://ml-runner:8000/playground/menu"
       method: GET
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "What a proposal may use"
 
   # The forum first (what helped, in the community's words), then the
@@ -91,7 +91,7 @@ steps:
                 raise SystemExit
         print("id: none (every source is studied)")
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "The next source not yet studied, with the ladder and the menu"
 
   # A notebook's own cells, pulled by the runner with the Kaggle API (the
@@ -106,7 +106,7 @@ steps:
         m = re.search(r"reading URL: https://www\.kaggle\.com/code/([a-z0-9-]+/[a-z0-9-]+)", r"""{{steps.pick.stdout}} """)
         print(m.group(1) if m else "none", end="")
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "The notebook to pull, if the source is one"
 
   - id: nbtext
@@ -118,7 +118,7 @@ steps:
         ref: "{{steps.ref.stdout}}"
       timeout_ms: 200000
     priority: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "The notebook's markdown and code cells"
 
   - id: study
@@ -177,7 +177,7 @@ steps:
         spec["proposed_by"] = "playground-study {{date}}"
         print(json.dumps(spec))
     priority: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Extract the proposed rung"
 
   - tool_name: http_request
@@ -188,5 +188,5 @@ steps:
         spec: "{{steps.propose.stdout}}"
     priority: 2
     max_attempts: 1
-    provider_hint: ollama
+    provider_hint: local
     description: "Queue it for the next window"

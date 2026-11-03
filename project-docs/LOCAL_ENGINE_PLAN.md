@@ -158,8 +158,9 @@ on in Rust.
 ```yaml
 engines:
   llamacpp: { base_url_default: "http://llamacpp:8080", unload: router,
-              capabilities: [chat, tools, json_schema, embeddings, logprobs, completions] }
-  openai:   { base_url_env: LOCAL_ENGINE_URL, capabilities: [chat] }   # bring your own; declare what it has
+              capabilities: [chat, tools, json_schema, embeddings, logprobs, completions],
+              models: { generation: gemma4-e4b, embeddings: bge-m3, decision: nimble, grounding: guardian } }
+  openai:   { capabilities: [chat, tools, embeddings] }   # bring your own; declare what it has
 ```
 
 **A missing capability turns one feature off, visibly.** No `logprobs` means no
@@ -187,8 +188,8 @@ logs any difference from the installer's record.
 
 ## 5. Phases
 
-Host Ollama stays installed and untouched until Phase 5, so every phase can go
-back by flipping an env var.
+Host Ollama stays installed and untouched until Phase 5. Phases 1 to 3 could go back
+by flipping an env var; Phase 4 removes the native client (see its result).
 
 **Phase 1: router with bge-m3, on the GPU.** Replace the sidecar's command with a
 preset. Measure under the GPU lease, with the brain resting: E4B + bge-m3 VRAM
@@ -283,6 +284,29 @@ The plan's feared 16 s was the CPU-only setup. The two differences both reject a
 one client, `ollama_loop` and the Ollama provider gone or reduced to its entry.
 Run the same evals with `openai` pointed at Ollama's OpenAI endpoint, to prove the
 flag is real.
+
+*Phase 4 result, 2026-11-02.* `crates/engine/` holds the engine, its capabilities and the role models. `engines:` in `models.yaml` declares them. There is one `local` provider, `ollama_loop.rs` and the Ollama client are gone, and old names (`ollama`, `llamacpp`) still fold onto `local`, with a deprecation warning on a hint. 242 hints moved to `local` in this repo and 32 in the private bundle; 3 runtime-owned workflows moved at startup (the migration logs its count, and finds none on a second start). The ledger now says `local`; old rows stay.
+
+Differences from §4: the role defaults live in the engine entry, not in Rust. The URL is `LOCAL_ENGINE_URL` for every entry, with the entry's default under it. `LOCAL_ENGINE_CAPABILITIES` was added so bringing your own needs no edit to a tracked file. `chat` also refuses to start, since every local step needs it. The five host-only catalog rows went; E4B now holds `reasoning` and `code`, so `computation` and local `vision` have no holder (no workflow asks for either). `ALIAS_JUDGE_MODEL` and `API_TAGGER_MODEL` are one role now, so the two cannot be turned off separately. Installer record check: Phase 5.
+
+The brain ran for real on `LOCAL_ENGINE=openai` against host Ollama 0.40.2, router stopped, scheduler paused so nothing could be stored unchecked:
+
+| Check | llama.cpp | Ollama's `/v1` |
+|---|---|---|
+| Retrieval, 25 golden cases | recall@10 0.880, MRR 0.691 | **the same** |
+| Queued `reason` step on the local lane | ran, ledger `local` | ran in 4.5 s, ledger `local` / `gemma4:e4b` |
+| Tool call, `json_schema` (direct) | yes | yes |
+| Agent loop, `researcher`, E4B, 1 probe | 1 tool call, 3.3 s | **0 tool calls**, 21 s, said it had no such tool |
+| Decisions | same 0.988, different 0.9997 on the live test | **off.** 400 at `top_logprobs` 100 (its limit is 20); at 20, one option was not among the first tokens |
+| Grounding | live | **off.** `/v1/completions` returned empty text for the rendered prompt |
+
+So Ollama's endpoint declares `chat,tools,json_schema,embeddings`: the flag is real, and on that engine decisions and grounding say off in `/health`, the no-argument `lookup` and the startup log. The empty agent run is one probe. The likely cause, not checked here: a dev note measured this endpoint reading only the first ~2K tokens of a prompt (2026-10-11, same version), and `num_ctx` cannot be set on it, so the tool list may never reach the model. Anyone running Ollama this way would need a larger context on the server's side, which is untested; it is not a shipped engine (§7.3).
+
+Refusals, each naming the cause: unknown engine, no `embeddings`, `LOCAL_EMBED_MODEL=off`, a misspelled capability.
+
+GPU lease: acquire now unloads through the router once requests in flight finish. Live: 5,254 to 319 MiB with the sidecar still up; bge-m3 back on demand in 1.6 s after release. `gpu_lease.sh` still stops the sidecars. Decisions and grounding go straight to the engine and do not check the lease, as in Phases 2 and 3; with the sidecar stopped they fail and say so.
+
+Not tested live: a chat turn's router picker, which needs the paid front door. `json_schema` on the same wire was tested on both engines, and `/health` shows the feature. `unchecked` stayed 0 through the flip. Going back now means reverting the commits; flipping the flag gives Ollama without decisions or grounding.
 
 **Phase 5: install, then remove Ollama.** The installer and manifest. Test on a
 fresh clone with no private bundle and no host Ollama (joins OUTSIDE_REVIEW Phase

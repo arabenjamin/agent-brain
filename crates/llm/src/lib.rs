@@ -17,6 +17,7 @@ pub mod routing;
 pub mod shared_llm;
 pub mod traits;
 
+pub use agent_brain_engine as engine;
 pub use llm::{LlmClient, LlmConfig, LlmProviderType};
 pub use model_config::ModelCatalog;
 pub use shared_llm::SharedLlm;

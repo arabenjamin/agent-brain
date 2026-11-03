@@ -35,7 +35,7 @@ steps:
       cypher: "MATCH (w:Workflow) WHERE w.enabled AND w.steps CONTAINS '\"needs\"' RETURN w.name AS name, replace(w.steps, '{{', '{ {') AS steps ORDER BY name"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Enabled workflows with step needs"
 
   - id: apis
@@ -44,7 +44,7 @@ steps:
       cypher: "MATCH (c:ApiContext) WHERE c.api_kind IS NOT NULL OPTIONAL MATCH (k:ApiKind {name: c.api_kind}) OPTIONAL MATCH (c)-[:SERVES]->(t:Topic) RETURN c.name AS name, c.api_kind AS kind, coalesce(k.beat, false) AS beat, coalesce(c.base_url, '') AS base_url, coalesce(c.description, '') AS description, collect(t.name) AS topics ORDER BY name"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Tagged APIs"
 
   - id: prior
@@ -53,7 +53,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'api_match_digest' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "The prior digest, for the change check"
 
   - id: match
@@ -111,7 +111,7 @@ steps:
         print("\n".join(sorted(served)) or "None.")
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Match needs to API tags, in code (no model)"
 
   - id: record
@@ -122,7 +122,7 @@ steps:
       source_context: api_match_digest
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the digest"
 
   - id: change
@@ -147,7 +147,7 @@ steps:
             print("To take matches, open this item in chat and name them: the brain drafts each changed workflow (with schedule-author) and saves it as a disabled copy for your review. Or dismiss it. The full digest, with the needs no API covers, is the note `# API match digest — {{date}}`.")
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "A message only when the matches changed"
 
   - tool_name: notify_user
@@ -158,5 +158,5 @@ steps:
       ask: "Decide which proposed matches to take. To take one, open this item in chat and name it: the brain drafts the changed workflow and saves it as a disabled copy for your review. Or dismiss the item."
     priority: 2
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "One digest item, only when the matches changed"

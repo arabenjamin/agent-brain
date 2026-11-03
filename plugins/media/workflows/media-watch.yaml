@@ -9,4 +9,4 @@ steps:
     arguments: {}
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local

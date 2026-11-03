@@ -11,7 +11,7 @@ steps:
       cypher: "MATCH (t:Task) WHERE t.status IN ['failed','blocked'] WITH split(t.goal, ':')[0] AS capability, t ORDER BY t.updated_at DESC WITH capability, count(*) AS failures, collect(DISTINCT t.status) AS statuses, collect(substring(coalesce(t.context,''), 0, 600))[0..3] AS sample_context WHERE failures >= 2 RETURN capability, failures, statuses, sample_context ORDER BY failures DESC LIMIT 20"
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: reason
     arguments:
@@ -39,7 +39,7 @@ steps:
       store_inference: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: store_note
     arguments:
@@ -53,7 +53,7 @@ steps:
       source_context: capability_mining
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
 
   - tool_name: run_agent
     arguments:
@@ -92,4 +92,4 @@ steps:
       source_context: capability_mining_grounded
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local

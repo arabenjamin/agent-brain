@@ -15,7 +15,7 @@ defaults:
 # (`api_key_env`). A provider whose key var is unset or empty is skipped, never
 # an error.
 #
-#   kind         client code: ollama | llamacpp | openai_compat | anthropic | gemini.
+#   kind         client code: local | openai_compat | anthropic | gemini.
 #                Any OpenAI-wire API, free or paid, is a new `openai_compat` entry.
 #   billing      local (own hardware) | free (rate-limited, $0) | paid (money).
 #                Omitted ⇒ paid.
@@ -35,21 +35,40 @@ defaults:
 # Every call is judged by the routing policy (services/routing.rs) against
 # these declarations. A provider left out of this section falls back to the built-in table in
 # services/provider_registry.rs, which matches the old hardcoded endpoints.
-providers:
-  ollama:
-    kind: ollama
-    billing: local
-    data_policy: no_log
-    base_url_env: OLLAMA_LOCAL_URL
-    base_url_default: "http://localhost:11434"
-    limits: { concurrency: 2 }
+#
+# ── engines: what `LOCAL_ENGINE` can name ──────────────────────────────────────
+#
+# Everything talks to the engine over the OpenAI wire; what differs is declared
+# here (project-docs/LOCAL_ENGINE_PLAN.md §4). A capability left out turns its
+# feature off, and /health says so. No chat or no embeddings refuses to start.
+#
+#   base_url_default  used when LOCAL_ENGINE_URL is unset; none means it is required
+#   unload            router (llama-server's /models/unload) | none
+#   capabilities      chat tools json_schema embeddings logprobs completions.
+#                     LOCAL_ENGINE_CAPABILITIES (comma-separated) replaces the list.
+#   models            each role's default. LOCAL_MODEL, LOCAL_EMBED_MODEL,
+#                     LOCAL_DECISION_MODEL, LOCAL_GROUNDING_MODEL win; `off` turns
+#                     the last two off.
+engines:
   llamacpp:
-    kind: llamacpp
+    base_url_default: "http://llamacpp:8080"
+    unload: router
+    capabilities: [chat, tools, json_schema, embeddings, logprobs, completions]
+    # Sections of llamacpp/preset.ini.
+    models: { generation: gemma4-e4b, embeddings: bge-m3, decision: nimble, grounding: guardian }
+  # Bring your own: any server on the OpenAI wire. Set LOCAL_ENGINE_URL and the role
+  # models, and declare what it does beyond this.
+  openai:
+    capabilities: [chat, tools, embeddings]
+
+providers:
+  # The local engine `LOCAL_ENGINE` picks below: its endpoint comes from there, and
+  # one generation model answers whatever a local row is called.
+  local:
+    kind: local
     billing: local
     data_policy: no_log
-    base_url_env: LLAMACPP_URL
-    base_url_default: "http://localhost:8080"
-    limits: { concurrency: 2 }   # llama-server -np 2
+    limits: { concurrency: 2 }   # the preset's `parallel = 2` for E4B
   # Off since 2026-11-01 (LOCAL_ENGINE_PLAN §2): the free tier ends 2026-11-09 and
   # ollama.com/pricing now lists only pay-per-token. Disabled and declared paid so
   # nothing can bill untracked; turning it back on means raising `spend:` as well.
@@ -176,65 +195,11 @@ providers:
 # only after watching it run a few real front-door turns: the free fallbacks
 # keep the behaviors, so a capped or failed pin still gets the help.
 models:
-  # ── Ollama Local (http://localhost:11434) ─────────────────────────────────────
-  qwen3.5:4b:
-    provider: ollama
-    model: "qwen3.5:4b"
-    context_window: 32768
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    selection_rank: 140
-    capabilities:
-      - reasoning
-      - code
-    system_prompt: |
-      You are agent-brain, an autonomous AI agent backed by a persistent
-      Neo4j knowledge graph. You can search notes, manage tasks, reason
-      over stored knowledge, and use many other tools. Think step-by-step
-      before acting and use available tools for grounded answers.
-
-  nemotron-3-nano:4b:
-    provider: ollama
-    model: "nemotron-3-nano:4b"
-    context_window: 128000
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    selection_rank: 130
-    capabilities:
-      - reasoning
-      - tools
-    system_prompt: |
-      You are agent-brain, an autonomous AI agent backed by a persistent
-      Neo4j knowledge graph. You can search notes, manage tasks, reason
-      over stored knowledge, and use many other tools. Think step-by-step
-      before acting and use available tools for grounded answers.
-
-
-  granite4:latest:
-    provider: ollama
-    model: "granite4:latest"
-    context_window: 128000
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    selection_rank: 120
-    capabilities:
-      - reasoning
-      - code
-    system_prompt: |
-      You are agent-brain, an autonomous AI agent backed by a persistent
-      Neo4j knowledge graph. You can search notes, manage tasks, reason
-      over stored knowledge, and use many other tools. Think step-by-step
-      before acting and use available tools for grounded answers.
-
-  # The llama.cpp `llama-server` sidecar (LLAMACPP_URL, OpenAI-compatible), which
-  # serves Gemma-4-E4B GPU-resident at ~3.3 GB (see llamacpp/Dockerfile). This is
-  # the background-generation model; the entry exists so a chat/sub-agent PROFILE
-  # can pin it (provider `llamacpp` → LlamaCpp @ LLAMACPP_URL, embeddings stay on
-  # host Ollama). `model` is a ledger label — llama-server serves whatever GGUF it
-  # launched with regardless. Local band (110–199); it never wins capability
-  # routing over cloud on cost ties.
+  # The local engine's generation model, for a profile or a ladder to name. The
+  # engine serves its LOCAL_MODEL whatever this row is called. Local band (110-199):
+  # it never wins capability routing over cloud on cost ties.
   gemma4-e4b:
-    provider: llamacpp
+    provider: local
     model: "gemma4-e4b"
     context_window: 16384
     cost_per_1k_input: 0.0
@@ -242,62 +207,8 @@ models:
     selection_rank: 118
     capabilities:
       - fast
-
-  gemma4:latest:
-    provider: ollama
-    model: "gemma4:latest"
-    context_window: 128000
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    selection_rank: 110
-    capabilities:
       - reasoning
       - code
-      - vision
-    system_prompt: |
-      You are agent-brain, an autonomous AI agent backed by a persistent
-      Neo4j knowledge graph. You can search notes, manage tasks, reason
-      over stored knowledge, and use many other tools. Think step-by-step
-      before acting and use available tools for grounded answers.
-
-  # Tool-integrated computation specialist. Paired with the `execute_code` tool:
-  # a step that declares `required_capabilities: ["computation"]` routes here and
-  # is expected to *emit Python and run it*, not narrate arithmetic in prose.
-  #
-  # `computation` is deliberately held by this model ALONE, which is what makes
-  # its rank of 150 harmless — with one holder there is nothing to tie against.
-  # Widen the capability and `selection_rank` starts deciding, and at 150 this
-  # model loses to every cloud entry: a step meant to run Python would route to
-  # a model that will narrate arithmetic instead. If a second model ever claims
-  # `computation`, rank it above 150 only if you mean it. The capability is a
-  # routing selector, not a description of aptitude.
-  #
-  # VRAM: 4.68 GB (Q4) on an 8 GB card that already holds gemma4 + Whisper, so
-  # this model swaps rather than co-resides. That is the accepted cost of a
-  # correct answer on checkable work; keep computation steps rare and batched.
-  qwen2.5-coder:7b:
-    provider: ollama
-    model: "qwen2.5-coder:7b"
-    context_window: 32768
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    selection_rank: 150
-    capabilities:
-      - reasoning
-      - code
-      - computation
-    temperature: 0.1
-    system_prompt: |
-      You are agent-brain's computation engine. You solve quantitative problems
-      by WRITING AND RUNNING CODE, never by doing arithmetic in prose.
-
-      For any calculation, projection, unit conversion, or data aggregation:
-      call `execute_code` with a Python program that computes the result and
-      prints it. Read the printed output and report that number. If the code
-      errors, fix it and run again. Never state a figure you have not computed.
-
-      State assumptions as named variables at the top of the program so the
-      inputs behind a result are visible and checkable.
 
   # ── Ollama Cloud (https://ollama.com) ─────────────────────────────────────────
   # Every model here was verified reachable on the current (free) Ollama plan on

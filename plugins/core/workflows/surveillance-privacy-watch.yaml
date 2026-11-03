@@ -16,7 +16,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE n.source_context = 'surveillance_privacy_watch' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch the prior report for the delta"
 
   - id: spyware
@@ -30,7 +30,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: spyware and state surveillance"
 
   - id: privacy
@@ -44,7 +44,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: privacy lawsuits and regulators"
 
   - id: tracking
@@ -58,7 +58,7 @@ steps:
       prior_knowledge: false
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Sweep: police and commercial tracking"
 
   # Outlet RSS feeds (folded in 2026-10-23, owner): a trial run of the
@@ -74,7 +74,7 @@ steps:
       url: "feed/"
     optional: true
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Outlet feed: bleepingcomputer_rss (RSS)"
 
   - id: feed_therecord
@@ -86,7 +86,7 @@ steps:
       url: "feed"
     optional: true
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Outlet feed: therecord_rss (RSS)"
 
   - id: feed_securityweek
@@ -98,7 +98,7 @@ steps:
       url: "feed/"
     optional: true
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Outlet feed: securityweek_rss (RSS)"
 
   - id: rss
@@ -138,7 +138,7 @@ steps:
         print(f"(RSS: {len(out)} of {seen} feed items kept: last 7 days, beat keywords" + (f"; errors: {errors}" if errors else "") + ")")
     optional: true
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Parse the feeds: last 7 days, beat keywords (code, no model)"
 
   - id: report
@@ -195,7 +195,7 @@ steps:
       source_context: surveillance_privacy_watch
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the watch report"
 
   - tool_name: claim
@@ -209,5 +209,5 @@ steps:
     optional: true
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Extract claims as checkable, attributed propositions"

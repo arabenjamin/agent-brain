@@ -15,7 +15,7 @@ steps:
       cypher: "MATCH (n:Note) WHERE (n.source_context = 'hardware_tripwire' OR n.content STARTS WITH 'BASELINE: State of AI Accelerator Hardware') AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 2"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Fetch prior baseline for delta analysis"
 
   - tool_name: push_context
@@ -25,7 +25,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank prior baseline"
 
   # Why: dev_docs get yaml/schedules-hardware-tripwire-3
@@ -38,7 +38,7 @@ steps:
       count: 10
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Signal sweep: memory / HBM"
 
   - tool_name: push_context
@@ -48,7 +48,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank memory signal"
 
   - tool_name: search_web
@@ -60,7 +60,7 @@ steps:
       count: 10
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Signal sweep: packaging"
 
   - tool_name: push_context
@@ -70,7 +70,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank packaging signal"
 
   - tool_name: search_web
@@ -82,7 +82,7 @@ steps:
       count: 10
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Signal sweep: raw materials / geopolitics"
 
   - tool_name: push_context
@@ -92,7 +92,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank materials signal"
 
   # Why: dev_docs get yaml/schedules-hardware-tripwire-4
@@ -105,7 +105,7 @@ steps:
       count: 10
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Signal sweep: alternative memory architectures"
 
   - tool_name: push_context
@@ -115,7 +115,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank memory-substitution signal"
 
   #     batteries-materials list and battery-only query (2026-10-06): gallium
@@ -130,7 +130,7 @@ steps:
       count: 10
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Signal sweep: battery chemistries"
 
   - tool_name: push_context
@@ -140,7 +140,7 @@ steps:
       role: observation
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Bank battery/material-substitution signal"
 
   # 5. Reassemble baseline + all five sweeps into one blob for the reason step.
@@ -149,7 +149,7 @@ steps:
       cypher: "MATCH (w:WorkingMemory {session_id: 'tripwire-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Reassemble baseline + signals"
 
   # 6. Delta analysis. The material goes in `context`, never in `question` — a
@@ -211,7 +211,7 @@ steps:
       source_context: hardware_tripwire
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
+    provider_hint: local
     description: "Store the tripwire report"
 
   # 8. Clean up the scratch session.
@@ -223,5 +223,5 @@ steps:
     # and starves under a fed queue. See workflows/fill-knowledge-gap.yaml.
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
+    provider_hint: local
     description: "Delete scratch session"
