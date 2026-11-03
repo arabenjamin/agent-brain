@@ -185,7 +185,7 @@ mod citation_check_tests {
     async fn the_forwarder_flags_the_final_message() {
         let (inner_tx, inner_rx) = mpsc::channel::<ChatEvent>(8);
         let (tx, mut rx) = mpsc::channel::<ChatEvent>(8);
-        let (result_tx, mut result_rx) = mpsc::channel::<String>(1);
+        let (result_tx, mut result_rx) = mpsc::channel::<(String, Option<String>)>(1);
         inner_tx
             .send(ChatEvent::Message {
                 content: format!("see [[id:{FAKE}]]"),
@@ -210,6 +210,6 @@ mod citation_check_tests {
             }
         }
         assert!(shown.contains("Citation check"), "{shown}");
-        assert_eq!(result_rx.recv().await.unwrap(), shown);
+        assert_eq!(result_rx.recv().await.unwrap().0, shown);
     }
 }

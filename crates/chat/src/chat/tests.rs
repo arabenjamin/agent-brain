@@ -463,9 +463,67 @@ mod fallback_ladder_tests {
         );
     }
 
+    /// The 2026-11-03 turn: `manage_program get` and `manage_workflow list/get`,
+    /// then a transport failure. Reads, so the next rung takes over.
+    #[tokio::test]
+    async fn a_failure_after_a_manage_read_hands_the_work_over() {
+        let server = MockServer::start().await;
+        tool_then_503(&server, "manage_workflow", r#"{"action":"get","name":"x"}"#).await;
+
+        let (_, outcome) = attempt(&server).await;
+
+        assert!(
+            matches!(outcome, AttemptOutcome::Interrupted { .. }),
+            "a manage_* read must not keep the turn: {outcome:?}"
+        );
+    }
+
+    /// The other side: a `manage_*` write still owns the turn.
+    #[tokio::test]
+    async fn a_failure_after_a_manage_write_keeps_the_turn() {
+        let server = MockServer::start().await;
+        tool_then_503(
+            &server,
+            "manage_workflow",
+            r#"{"action":"upsert","name":"x"}"#,
+        )
+        .await;
+
+        let (_, outcome) = attempt(&server).await;
+
+        assert!(
+            matches!(outcome, AttemptOutcome::Delivered),
+            "a manage_* write must not be repeated by another model: {outcome:?}"
+        );
+    }
+
     #[test]
     fn read_only_classification_is_conservative() {
         let none = json!({});
+        for (tool, action) in [
+            ("manage_workflow", "list"),
+            ("manage_workflow", "get"),
+            ("manage_program", "get"),
+            ("manage_todo", "list"),
+        ] {
+            assert!(
+                call_is_read_only(tool, &json!({"action": action})),
+                "{tool} {action}"
+            );
+        }
+        for (tool, action) in [
+            ("manage_workflow", "upsert"),
+            ("manage_workflow", "delete"),
+            ("manage_workflow", "run"),
+            ("manage_program", "upsert"),
+            ("manage_todo", "add"),
+            ("manage_plugin", "install"),
+        ] {
+            assert!(
+                !call_is_read_only(tool, &json!({"action": action})),
+                "{tool} {action}"
+            );
+        }
         assert!(call_is_read_only("search_notes", &none));
         assert!(call_is_read_only(
             "delegate",

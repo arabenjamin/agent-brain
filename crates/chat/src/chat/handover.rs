@@ -76,6 +76,10 @@ pub(super) fn probe_may_run(tool: &str, args: &Value) -> bool {
     if PROBE_READ_TOOLS.contains(&tool) {
         return true;
     }
+    is_read_action(tool, args)
+}
+
+fn is_read_action(tool: &str, args: &Value) -> bool {
     let action = args["action"].as_str().unwrap_or("");
     PROBE_READ_ACTIONS
         .iter()
@@ -86,6 +90,11 @@ pub(super) fn probe_may_run(tool: &str, args: &Value) -> bool {
 /// safely continue from it (and even repeat it). Conservative: an unknown
 /// mutating shape counts as a write.
 pub(super) fn call_is_read_only(tool: &str, args: &Value) -> bool {
+    // Before the name checks: `manage_workflow get` reads, and calling it a write
+    // kept a failed turn off the ladder (2026-11-03).
+    if is_read_action(tool, args) {
+        return true;
+    }
     if WRITE_TOOLS.contains(&tool) || tool == "run_agent" {
         return false;
     }

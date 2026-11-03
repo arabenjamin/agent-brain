@@ -86,7 +86,8 @@ function toHistory(msgs: Msg[]): ChatHistoryMessage[] {
       hist.push({ role: "user", content: m.text });
     } else {
       const text = m.events.find((e) => e.type === "message")?.content ?? "";
-      if (text) hist.push({ role: "assistant", content: text });
+      // A restored failure is a record for the reader, not something the model said.
+      if (text && m.role !== "error") hist.push({ role: "assistant", content: text });
     }
   }
   return hist;

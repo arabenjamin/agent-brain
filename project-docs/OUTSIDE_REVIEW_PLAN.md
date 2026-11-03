@@ -281,6 +281,35 @@ restarts the brain, docs-only ones included.
    `skills/knowledge.rs` are first in line. A split that only moves lines
    does not count.
 
+**Built 2026-11-03.**
+
+`scripts/size_budget.sh` reports tokens for core, each plugin and the repo, and fails when core is over `scripts/core_token_budget`. It runs in CI on `dev` and pull requests and in the pre-commit hook. Tokens are bytes / 4, which needs nothing installed: on Rust a real tokenizer gives 4.24 bytes a token (cl100k_base, all tracked Rust) or 3.70 (Gemma, one 8 KB sample).
+
+| Measured 2026-11-03 | Tokens |
+|---|---|
+| Core code (`crates/`, no tests) | 723,868 |
+| Core data (`plugins/core`) | 53,432 |
+| **Core, what the budget counts** | **777,300** |
+| Core tests, not counted | 170,886 |
+| Everything tracked | 2.38M |
+
+**The budget is 778,000** (§9.3): today's number, rounded up to the next thousand so a small fix doesn't need the owner. Core can only grow when the owner edits that file.
+
+Against the old line budget: core's crates are 73.8K lines, up from 59.2K on 2026-10-11, and `work` is 10.4K against a hard limit of 8K. `size_budget.sh` was never in CI, so nothing caught it, though the dev note said it ran there. The per-crate limit is gone, replaced by the single token gate.
+
+The four files, tokens to read each (tests included):
+
+| File | Before | After |
+|---|---|---|
+| `api/rest.rs` | 23,379 | shared state and helpers 3,209 + one of 8 resources, 1,314 to 4,743 |
+| `retrieve/http.rs` | 26,720 | `http_request` 5,459, `define_api_context` 4,694, `ingest_api` 16,852 |
+| `skills/knowledge.rs` | 26,475 | dispatch, prune, consolidate 7,234, `store` 4,042, `recall` 8,715, `reason` 6,910 |
+| `work/queue.rs` | 32,768 | coordinator and running a job 19,954, `templates` 6,197, `gates` 4,667, `ops` 2,101 |
+
+Each split is along something a change can touch alone: a resource, a tool, the template language. `rest.rs` has the best evidence: 9 of its last 11 commits touch one resource. `knowledge.rs` has the least, with 4 commits in the history I could follow. `queue.rs` stays the largest, because the coordinator and running a job change together.
+
+Only whole items moved. Checking every non-import line against the originals, the differences are visibility (`pub(super)`), the new module scaffolding and comment headers; one test helper is now in two test modules. The split costs 1,374 tokens of imports and module lines. Unit tests stay at 1,157, and clippy with `-D warnings` is clean.
+
 ## 9. Decisions for the owner
 
 1. **Trust boundary.** Parked (owner, 2026-11-02). The owner is the only one
@@ -291,8 +320,9 @@ restarts the brain, docs-only ones included.
    for small GPUs that handles privacy and spend for you." Recommended: ours,
    since the graph is what the code is built around; theirs describes how it
    is delivered.
-3. **Size budget.** Recommended: measure first (Phase 4.1), then set the
-   core budget at today's number so it can only shrink.
+3. **Size budget.** Set at the recommendation for now (2026-11-03): 778,000
+   tokens, today's number. The owner can change it in
+   `scripts/core_token_budget`.
 4. **Runtime edits back to YAML?** Decided (owner, 2026-11-02): yes, through a
    human. The brain never writes or commits a repo file. It shows the diff and
    renders the file; the owner writes it (HBI copy, or

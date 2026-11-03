@@ -290,6 +290,17 @@ impl ChatService {
                 .map(agent_brain_llm::shared_llm::failure_kind_of)
                 .unwrap_or("other")
         });
+        // The ledger keeps only the kind; this is the one lasting copy of the text.
+        if let Some(kind) = kind {
+            warn!(
+                provider,
+                model,
+                duration_ms,
+                kind,
+                error = error.unwrap_or("-"),
+                "Chat model call failed"
+            );
+        }
         agent_brain_llm::budget::record_call(
             self.telemetry.as_ref(),
             provider,
@@ -772,7 +783,7 @@ impl ChatService {
         // save the assistant response to working memory without changing the
         // loop functions.
         let (inner_tx, inner_rx) = mpsc::channel::<ChatEvent>(128);
-        let (result_tx, mut result_rx) = mpsc::channel::<String>(1);
+        let (result_tx, mut result_rx) = mpsc::channel::<(String, Option<String>)>(1);
 
         // Forwarding task: relay every event to the caller; capture final text.
         //
@@ -1048,7 +1059,7 @@ impl ChatService {
         drop(inner_tx);
 
         // Wait for the forwarder to return the captured assistant text.
-        let final_text = result_rx.recv().await.unwrap_or_default();
+        let (final_text, turn_error) = result_rx.recv().await.unwrap_or_default();
 
         // One row per turn for route mining (GRAPH_CONTEXT_PLAN Phase B): what
         // the router chose, every tool the turn ran, and whether it answered.
@@ -1082,17 +1093,21 @@ impl ChatService {
             );
         }
 
-        // Persist the assistant response to working memory.
-        if let (Some(sid), Some(h)) = (&session_id, &handler)
-            && !final_text.is_empty()
-        {
+        // Persist the assistant response to working memory, or why there is none:
+        // a turn that failed must still say so when the session is reopened.
+        let stored = if final_text.is_empty() {
+            turn_error.as_deref().map(|e| (e, "error"))
+        } else {
+            Some((final_text.as_str(), "assistant"))
+        };
+        if let (Some(sid), Some(h), Some((content, role))) = (&session_id, &handler, stored) {
             let _ = h
                 .execute(
                     "push_context",
                     Some(json!({
                         "session_id": sid,
-                        "content":    final_text,
-                        "role":       "assistant"
+                        "content":    content,
+                        "role":       role
                     })),
                 )
                 .await;

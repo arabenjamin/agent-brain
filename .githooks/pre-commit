@@ -30,6 +30,16 @@ cargo test --lib
 echo "✓ Unit tests passed"
 echo ""
 
+# Core size against its budget
+if ! scripts/size_budget.sh >/tmp/size_budget.$$ 2>&1; then
+    tail -n 2 /tmp/size_budget.$$
+    rm -f /tmp/size_budget.$$
+    exit 1
+fi
+tail -n 1 /tmp/size_budget.$$
+rm -f /tmp/size_budget.$$
+echo ""
+
 # 4. Integration tests — auto-detect Neo4j
 NEO4J_URI="${NEO4J_URI:-bolt://localhost:7688}"
 HOST=$(echo "$NEO4J_URI" | sed 's|bolt://||' | cut -d: -f1)

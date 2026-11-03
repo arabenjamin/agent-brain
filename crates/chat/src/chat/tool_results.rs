@@ -501,7 +501,7 @@ mod limits_marker_tests {
     async fn drive_forwarder(events: Vec<ChatEvent>) -> (Vec<ChatEvent>, String) {
         let (inner_tx, inner_rx) = mpsc::channel::<ChatEvent>(64);
         let (tx, mut rx) = mpsc::channel::<ChatEvent>(64);
-        let (result_tx, mut result_rx) = mpsc::channel::<String>(1);
+        let (result_tx, mut result_rx) = mpsc::channel::<(String, Option<String>)>(1);
 
         for e in events {
             inner_tx.send(e).await.expect("scripted send");
@@ -523,8 +523,40 @@ mod limits_marker_tests {
         while let Ok(e) = rx.try_recv() {
             seen.push(e);
         }
-        let final_text = result_rx.try_recv().unwrap_or_default();
+        let (final_text, _) = result_rx.try_recv().unwrap_or_default();
         (seen, final_text)
+    }
+
+    /// The turn persists the error when there is no answer, so the forwarder
+    /// must hand back the first one, and name a silently dropped turn too.
+    #[tokio::test]
+    async fn the_forwarder_returns_why_a_turn_has_no_answer() {
+        for (events, expected) in [
+            (
+                vec![
+                    ChatEvent::Error {
+                        message: "first".into(),
+                    },
+                    ChatEvent::Error {
+                        message: "second".into(),
+                    },
+                ],
+                "first",
+            ),
+            (vec![], "no response"),
+        ] {
+            let (inner_tx, inner_rx) = mpsc::channel::<ChatEvent>(8);
+            let (tx, _rx) = mpsc::channel::<ChatEvent>(8);
+            let (result_tx, mut result_rx) = mpsc::channel(1);
+            for e in events {
+                inner_tx.send(e).await.unwrap();
+            }
+            drop(inner_tx);
+            forward_chat_events(inner_rx, tx, result_tx, None, "q".into(), None, None).await;
+            let (text, error) = result_rx.try_recv().unwrap();
+            assert!(text.is_empty());
+            assert!(error.unwrap().contains(expected));
+        }
     }
 
     /// A turn that drains normally is NOT an abandonment, however it ended —

@@ -33,6 +33,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets
       - run: scripts/check_plugin_deps.sh
+      - run: scripts/size_budget.sh
       - run: cargo test --lib
       # Core must build and pass with no compiled plugin (OUTSIDE_REVIEW_PLAN Phase 1).
       - run: cargo build -p agent-brain --no-default-features --features http-transport,telemetry
@@ -85,6 +86,9 @@ jobs:
 
       - name: Plugin crates depend only on plugin-api
         run: scripts/check_plugin_deps.sh
+
+      - name: Core size against its budget
+        run: scripts/size_budget.sh
 
       - name: Release build
         run: cargo build --release

@@ -171,6 +171,7 @@ impl ProviderTurn for AnthropicTurn {
         {
             Ok(r) => r,
             Err(e) => {
+                let e = agent_brain_llm::llm_providers::describe_reqwest(&e);
                 svc.record_llm_call(
                     &self.provider_label,
                     &model,
@@ -178,7 +179,7 @@ impl ProviderTurn for AnthropicTurn {
                     call_start.elapsed().as_millis() as i64,
                     None,
                     None,
-                    Some(&e.to_string()),
+                    Some(&e),
                 );
                 return Err(format!("Anthropic request failed: {e}"));
             }

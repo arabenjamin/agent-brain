@@ -1,0 +1,3 @@
+# Most tokens core may hold (crates/ code + plugins/core data, tests excluded).
+# Only the owner raises this. See scripts/size_budget.sh.
+778000

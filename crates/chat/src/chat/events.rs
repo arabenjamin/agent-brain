@@ -107,7 +107,7 @@ fn trace_call(tool: &str, args: &Value) -> Value {
 pub(super) async fn forward_chat_events(
     mut inner_rx: mpsc::Receiver<ChatEvent>,
     tx: mpsc::Sender<ChatEvent>,
-    result_tx: mpsc::Sender<String>,
+    result_tx: mpsc::Sender<(String, Option<String>)>,
     session_id: Option<String>,
     user_snippet: String,
     citations: Option<Arc<dyn CitationChecker>>,
@@ -117,7 +117,7 @@ pub(super) async fn forward_chat_events(
     // TurnAbandonGuard — a cancelled turn runs none of the code below.
     let mut abandon_guard = TurnAbandonGuard::new(session_id.as_deref(), &user_snippet);
     let mut final_text = String::new();
-    let mut saw_error = false;
+    let mut first_error: Option<String> = None;
     while let Some(mut event) = inner_rx.recv().await {
         if let ChatEvent::Message { content } = event {
             event = ChatEvent::Message {
@@ -131,7 +131,9 @@ pub(super) async fn forward_chat_events(
         }
         match &event {
             ChatEvent::Message { content } => final_text = content.clone(),
-            ChatEvent::Error { .. } => saw_error = true,
+            ChatEvent::Error { message } => {
+                first_error.get_or_insert_with(|| message.clone());
+            }
             // Held back and re-emitted below. The client closes its reader on
             // `done`, so an error reported after it would never be displayed —
             // the turn has to be marked failed *before* it is marked finished.
@@ -144,27 +146,25 @@ pub(super) async fn forward_chat_events(
     // The stream drained, so the turn reached an end it can describe itself.
     abandon_guard.mark_completed();
 
-    // `saw_error` keeps this from double-reporting a turn that already failed
+    // `first_error` keeps this from double-reporting a turn that already failed
     // loudly (e.g. no provider configured): that turn has an explanation, and a
     // second, vaguer error would only obscure it.
-    if final_text.trim().is_empty() && !saw_error {
+    if final_text.trim().is_empty() && first_error.is_none() {
         warn!(
             session_id = session_id.as_deref().unwrap_or("-"),
             user_message = %user_snippet,
             "Chat turn produced no assistant message and no error — dropped turn"
         );
-        let _ = tx
-            .send(ChatEvent::Error {
-                message: "The assistant produced no response for this turn, and reported no \
-                          error explaining why. Nothing was saved. Please retry — and do not \
-                          assume any action you asked for was carried out."
-                    .into(),
-            })
-            .await;
+        let message = "The assistant produced no response for this turn, and reported no \
+                       error explaining why. Please retry — and do not assume any action you \
+                       asked for was carried out."
+            .to_string();
+        first_error = Some(message.clone());
+        let _ = tx.send(ChatEvent::Error { message }).await;
     }
 
     // Always terminate the stream, including when a provider loop returned
     // without sending one.
     let _ = tx.send(ChatEvent::Done).await;
-    let _ = result_tx.send(final_text).await;
+    let _ = result_tx.send((final_text, first_error)).await;
 }
