@@ -14,8 +14,10 @@
 //! - **The queue defers local-pinned jobs** (`provider_hint: local` with no
 //!   capability routing) instead of failing them or pushing a day of local work
 //!   onto Ollama Cloud's single free slot. They keep their place and attempts.
-//! - **Notes stored meanwhile** are kept without a vector and marked
-//!   `embedding_pending`. Search degrades to BM25.
+//! - **Embeddings** go to `GPU_LEASE_EMBEDDINGS` (the same model on a remote host)
+//!   when it is set. Otherwise, or when that refuses, search degrades to BM25.
+//! - **Notes stored meanwhile** are marked `embedding_pending`, with or without a
+//!   vector: the release embeds them locally and extracts their entities.
 //! - **On acquire** the brain unloads the engine's models once requests in flight finish, if the engine has an unload call (`engines:` in models.yaml). The llama.cpp
 //!   and whisper sidecars are separate containers it cannot stop; the holder
 //!   stops them from the host (`workspace/finetune/scripts/gpu_lease.sh`).

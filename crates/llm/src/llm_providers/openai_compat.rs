@@ -124,6 +124,17 @@ struct EmbedRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct EmbedResponse {
     data: Vec<EmbedData>,
+    #[serde(default)]
+    usage: Option<EmbedUsage>,
+}
+
+/// OpenRouter states what a call cost; the local engine does not, and nothing
+/// is charged for it.
+#[derive(Debug, Deserialize)]
+struct EmbedUsage {
+    #[serde(default)]
+    total_tokens: u64,
+    cost: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,6 +221,18 @@ impl LlmProvider for OpenAiCompatProvider {
                 }
 
                 let resp: EmbedResponse = response.json().await?;
+                if let Some(EmbedUsage {
+                    total_tokens,
+                    cost: Some(cost),
+                }) = resp.usage
+                {
+                    crate::budget::record_priced_call(
+                        &self.config.provider_name,
+                        &self.config.model,
+                        total_tokens,
+                        cost,
+                    );
+                }
                 resp.data
                     .into_iter()
                     .next()

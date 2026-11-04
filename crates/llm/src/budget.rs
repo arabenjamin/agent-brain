@@ -703,6 +703,23 @@ pub fn record_call(
     );
 }
 
+/// Count a call whose provider stated its cost, against the spend caps. For
+/// embeddings, which have no catalog price for the ledger to compute one from.
+pub fn record_priced_call(provider: &str, model: &str, tokens: u64, cost: f64) {
+    book().record(
+        &CallOutcome {
+            provider,
+            model,
+            success: true,
+            tokens,
+            cost,
+            error_kind: None,
+            error_text: None,
+        },
+        Utc::now(),
+    );
+}
+
 /// Feed a response's rate-limit headers into the budget. Called where the
 /// response arrives, before its body is read.
 pub fn observe_headers(

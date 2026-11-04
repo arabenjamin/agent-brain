@@ -30,15 +30,25 @@ from .packing import Store, from_floats
 RESTART_MAX_N = int(os.environ.get("ML_RESTART_MAX_N", "120"))
 RESTART_SHRINK = 1e-4  # a restart aims this far (relative) below the stored side
 SEARCH = os.environ.get("ML_SEARCH", "lp")
+# An attempt's from_L within this of the stored side counts as on that packing:
+# 263 of the 2026-11-04 blend's 543 gains were under 1e-9, the same packing with a
+# tighter contact gap, and all its real gain came from the others.
+SAME_L = 1e-9
 GRACE = 300  # seconds a job may run past the window before it is cut
 
 
-def _attempts(root: Path) -> dict[int, int]:
+def _attempts(root: Path, current_L=None) -> dict[int, int]:
+    """Attempts per puzzle. Given `current_L` (n -> stored side), only those made
+    on the packing stored now: one that replaced it, found here or blended in,
+    has not been tried, whatever its predecessors went through."""
     counts: dict[int, int] = {}
     try:
         with open(root / "attempts.jsonl") as f:
             for line in f:
-                n = json.loads(line)["n"]
+                a = json.loads(line)
+                n = a["n"]
+                if current_L is not None and abs(a.get("from_L", math.inf) - current_L(n)) > SAME_L:
+                    continue
                 counts[n] = counts.get(n, 0) + 1
     except OSError:
         pass
@@ -48,7 +58,7 @@ def _attempts(root: Path) -> dict[int, int]:
 def targets(store: Store, k: int) -> list[tuple[int, str]]:
     """The k most promising (n, strategy): a large score, few attempts so
     far, and cheap to search (cost grows with n)."""
-    tried = _attempts(store.root)
+    tried = _attempts(store.root, store.L)
     try:  # proven optimal (or trivial) on the record page: nothing to find
         proven = set(json.loads((store.root / "proven.json").read_text())["n"])
     except (OSError, ValueError, KeyError):

@@ -111,6 +111,7 @@ providers:
   # work may come here because every request requires a zero-data-retention host
   # (OpenRouter refuses when none qualifies); that is what `no_log` rests on. Groq is
   # excluded by the owner's rule. Qwen is not for private work (owner, 2026-11-02).
+  # Also serves bge-m3 during a GPU lease (GPU_LEASE_EMBEDDINGS, owner, 2026-11-04).
   openrouter-paid:
     kind: openai_compat
     billing: paid

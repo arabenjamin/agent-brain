@@ -66,6 +66,8 @@ services:
       - SECRETS_INDEX=/home/agent/vault/index.yaml
       - CHAT_ROUTER=${CHAT_ROUTER:-on}
       - CHAT_ROUTER_CHECKER=${CHAT_ROUTER_CHECKER:-off}
+      - GPU_LEASE_LOCAL_JOBS=${GPU_LEASE_LOCAL_JOBS:-free}
+      - GPU_LEASE_EMBEDDINGS=${GPU_LEASE_EMBEDDINGS:-openrouter-paid:baai/bge-m3}
       - WIKIMEDIA_CONTACT=${WIKIMEDIA_CONTACT-}
       # deploy/the-front-door-s-profile-is-set-twice-on-purpose
       - CHAT_DEFAULT_PROFILE=${CHAT_DEFAULT_PROFILE:-GeneralDefault-Orchrestator}

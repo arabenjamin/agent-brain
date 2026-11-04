@@ -149,6 +149,9 @@ gpt-oss (HARNESS2_PLAN.md); Rust stays hand-integrated.
   `POST /playground/rung` (checked again, at most 3 waiting) and run in the
   next window; `GET /playground/sources` lists the competition's top-voted
   notebooks and forum, `GET /playground/menu` what a proposal may use.
+  A slug not in `COMPETITIONS` (a new month's episode) takes its metric from
+  Kaggle's `evaluation_metric` (cached in `competition.json`); `cv` scores
+  AUC and RMSE, and any other metric fails the run by name.
 - `GET /status` and `GET /playground` (brain-internal; `HTTP_ALLOW_INTERNAL`
   lists `ml-runner:8000`). Each carries `kaggle`: our public score, rank,
   field size, median and top from Kaggle's leaderboard
@@ -322,6 +325,33 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
   5 minutes after the window. The reports now print the Kaggle standing
   (they held only local numbers and, for the Playground, the upload's
   progress bar) and warn when the last closed night is over 36 h old.
+- 2026-10-31, S6E10's last day (owner): seven rungs by hand, stacked.
+  `lgb-wide` (learning rate 0.02, 511 leaves, 60% of columns) was the best
+  single model, CV 0.960190. The original dataset cost each model
+  0.0001-0.0003 alone but drew the stack's largest weights, because its
+  errors differ. `stack3` CV 0.960497 → Kaggle 0.96014, rank 1865 → 1804 of
+  3729 (median 0.95998, top 0.96473); each stack round gained less
+  (+0.00021, then +0.00004). The best of those rungs joined `LADDER`, so a
+  new episode starts from them, and `ML_PLAYGROUND` moved to S6E11.
+- 2026-11-04, Squares blend (owner): `squares/blend.py` reads the CSV rows of
+  public notebook outputs, runs nothing from them, and offers each puzzle's best
+  through `Store.offer`, so only what Kaggle's metric accepts and beats ours
+  enters; each packing names its source. 18 notebooks tried, 554 puzzle
+  improvements: local 22.346285 to 22.250965 (build: 0 rejected). That reaches
+  the best public score, 22.2510, and no further; the top is 22.0544. Backup
+  `best.pre-blend-2026-11-04`. Kaggle 22.2509653656. Search record to that day:
+  `polish` 204 of 5,510, under 0.00004 a night on 11-01..03 (`restart` ran one
+  night, 10-24, 0 of 572, and has been off since `ML_SEARCH=lp`). 263 of the
+  blend's first 543 gains are under 1e-9 (the same packing, a tighter contact
+  gap), so about 280 puzzles really changed. `targets` now counts only attempts
+  on the stored packing (`from_L` within 1e-9), so those get a fresh turn.
+- 2026-11-04, S6E11 "Predicting Credit Card Fraud" (AUC, closes 11-30; owner
+  joined): 699,960 synthetic rows, 1.67% fraud, `is_fraud` stored as 0.0/1.0.
+  The original-data check accepted only bool or int targets, so it now also
+  takes binary floats. `COMPETITIONS` holds the original,
+  `uditjain13/credit-card-fraud-detection-2026` (CC0). A 60,000-row smoke run
+  with no submit passed all seven rungs and wrote a valid submission file; the
+  first full run is that night's window.
 
 ## 6. Open
 

@@ -409,6 +409,14 @@ impl LlmClient {
 
     /// Generate embeddings for a text.
     pub async fn embeddings(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        if crate::gpu_lease::held().is_some()
+            && let Some((provider, model)) = std::env::var("GPU_LEASE_EMBEDDINGS")
+                .ok()
+                .as_deref()
+                .and_then(parse_lease_embedder)
+        {
+            return self.lease_embeddings(&provider, &model, text).await;
+        }
         self.refuse_embeddings_if_gpu_leased()?;
         self.embed_provider
             .embed(text)
@@ -416,11 +424,67 @@ impl LlmClient {
             .map_err(LlmError::from)
     }
 
+    /// Embed through the provider named in `GPU_LEASE_EMBEDDINGS` while the GPU is
+    /// leased. It must serve the local model: the index holds one vector space
+    /// (bge-m3 through OpenRouter measured cosine 0.9999+ against local, 2026-11-04).
+    /// A provider that is unknown, over its cap or out of requests refuses, and
+    /// callers degrade as they do without embeddings.
+    async fn lease_embeddings(
+        &self,
+        provider: &str,
+        model: &str,
+        text: &str,
+    ) -> Result<Vec<f32>, LlmError> {
+        use crate::llm_providers::{
+            LlmProvider, ProviderConfig, openai_compat::OpenAiCompatProvider,
+        };
+        let entry = crate::provider_registry::get(provider).ok_or_else(|| {
+            LlmError::ServerNotReachable(format!("GPU_LEASE_EMBEDDINGS: no provider '{provider}'"))
+        })?;
+        crate::budget::verdict(provider, model, &entry).map_err(LlmError::ServerNotReachable)?;
+        let client = OpenAiCompatProvider::new(
+            ProviderConfig {
+                provider_name: provider.to_string(),
+                model: model.to_string(),
+                api_key: entry.api_key(),
+                base_url: entry.base_url(),
+                timeout: self.config.timeout,
+                temperature: 0.0,
+                max_tokens: None,
+            },
+            LlmProviderType::OpenAiCompat,
+        );
+        let _permit = crate::provider_gate::acquire(provider).await;
+        client.embed(text).await.map_err(LlmError::from)
+    }
+
     /// Chat with the model using message history.
     pub async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmError> {
         self.refuse_local_if_gpu_leased()?;
         let _permit = crate::provider_gate::acquire(&self.config.provider_label()).await;
         self.provider.chat(messages).await.map_err(LlmError::from)
+    }
+}
+
+/// `<provider>:<model>` from `GPU_LEASE_EMBEDDINGS`; empty or malformed means none.
+fn parse_lease_embedder(v: &str) -> Option<(String, String)> {
+    let (provider, model) = v.trim().split_once(':')?;
+    (!provider.is_empty() && !model.is_empty()).then(|| (provider.to_string(), model.to_string()))
+}
+
+#[cfg(test)]
+mod lease_embedder_tests {
+    use super::parse_lease_embedder;
+
+    #[test]
+    fn names_a_provider_and_a_model_or_nothing() {
+        assert_eq!(
+            parse_lease_embedder(" openrouter-paid:baai/bge-m3 "),
+            Some(("openrouter-paid".into(), "baai/bge-m3".into()))
+        );
+        for off in ["", "off", ":x", "y:"] {
+            assert_eq!(parse_lease_embedder(off), None);
+        }
     }
 }
 

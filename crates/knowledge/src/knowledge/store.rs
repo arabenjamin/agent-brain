@@ -124,10 +124,14 @@ impl KnowledgeService {
 
         self.neo4j.run(query).await?;
 
-        // Stored without a vector (a GPU lease, or the embedder down): mark it so
+        // Stored without a vector (the embedder down): mark it so
         // `backfill_pending_embeddings` embeds and links it later, rather than the
-        // note staying invisible to vector search for good.
-        if embedding.is_none() && self.llm.is_some() {
+        // note staying invisible to vector search for good. Also any note stored
+        // in a GPU lease, vector or not: entity extraction waits for the local
+        // model, and the backfill is what runs it.
+        if (embedding.is_none() || agent_brain_llm::gpu_lease::held().is_some())
+            && self.llm.is_some()
+        {
             let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.embedding_pending = true")
                 .param("id", note_id.clone());
             let _ = self.neo4j.run(q).await;

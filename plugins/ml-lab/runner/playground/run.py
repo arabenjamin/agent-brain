@@ -31,7 +31,7 @@ Every experiment goes to experiments.jsonl. The best by CV is written as
 submission.csv and submitted when it beats the CV of the last one sent
 (ML_SUBMIT=off stops it; one a day). Data lives in /playground/<slug>.
 
-    python -m playground.run playground-series-s6e10 [--no-submit]
+    python -m playground.run playground-series-s6e11 [--no-submit]
 """
 
 from __future__ import annotations
@@ -70,7 +70,17 @@ COMPETITIONS = {
         "original": {"dataset": "teejmahal20/airline-passenger-satisfaction",
                      "target": "satisfaction", "positive": "satisfied"},
     },
+    "playground-series-s6e11": {
+        "metric": "auc",
+        "original": {"dataset": "uditjain13/credit-card-fraud-detection-2026",
+                     "target": "is_fraud", "positive": 1},
+    },
 }
+# Kaggle's evaluation_metric names, for a competition not in COMPETITIONS
+# (a new month's episode runs before anyone writes its entry). `cv` scores
+# these two; any other metric is refused by name, never guessed.
+METRICS = {"roc auc score": "auc", "auc": "auc", "area under roc curve": "auc",
+           "root mean squared error": "rmse", "rmse": "rmse"}
 
 MENU = {
     "counts": "frequency encodings of categoricals and low-cardinality numerics",
@@ -132,6 +142,26 @@ LADDER = [
      "params": {"learning_rate": 0.03, "max_iter": 3000, "max_depth": 8, "max_leaf_nodes": 255,
                 "min_samples_leaf": 5, "l2_regularization": 5.0, "max_features": 0.9, "subsample": 0.9,
                 "n_iter_no_change": 100}},
+    # S6E10's last day (2026-10-31): a wider, slower LightGBM was the best
+    # single model (0.960190), and the stack gained most from members unlike
+    # the rest (other families, ratings as categories): 0.960242 -> 0.960497.
+    {"name": "lgb-wide", "model": "lightgbm",
+     "options": {"digits": True, "counts_all": True, "target_encoding_all": True},
+     "params": {"learning_rate": 0.02, "max_iter": 5000, "max_leaf_nodes": 511, "min_samples_leaf": 20,
+                "l2_regularization": 10.0, "max_features": 0.6, "subsample": 0.8, "n_iter_no_change": 150}},
+    {"name": "lgb-features-cat", "model": "lightgbm",
+     "options": {"digits": True, "counts_all": True, "target_encoding_all": True, "ratings_as_category": True},
+     "params": {"learning_rate": 0.03, "max_iter": 3000, "max_depth": 8, "max_leaf_nodes": 255,
+                "min_samples_leaf": 5, "l2_regularization": 5.0, "max_features": 0.9, "subsample": 0.9,
+                "n_iter_no_change": 100}},
+    {"name": "xgb-features", "model": "xgboost",
+     "options": {"digits": True, "counts_all": True, "target_encoding_all": True},
+     "params": {"learning_rate": 0.03, "max_iter": 3000, "max_depth": 8, "min_child_weight": 5.0,
+                "l2_regularization": 5.0, "max_features": 0.9, "subsample": 0.9, "n_iter_no_change": 100}},
+    {"name": "hgb-features", "model": "hgb",
+     "options": {"digits": True, "counts_all": True, "target_encoding_all": True},
+     "params": {"learning_rate": 0.03, "max_iter": 3000, "max_leaf_nodes": 255, "min_samples_leaf": 20,
+                "l2_regularization": 5.0, "max_features": 0.8, "n_iter_no_change": 100}},
     {"name": "stack", "model": "stack", "options": {}, "params": {"C": 1.0}},
 ]
 
@@ -182,12 +212,12 @@ def validate(spec) -> tuple[dict | None, str]:
 
 def queue(slug: str, spec) -> tuple[bool, str]:
     """Add a proposal to the competition's queue (POST /playground/rung)."""
-    if slug not in COMPETITIONS:
-        return False, f"unknown competition {slug!r}"
+    d = ROOT / slug
+    if slug not in COMPETITIONS and not (d / "competition.json").exists():
+        return False, f"unknown competition {slug!r} (not in COMPETITIONS, and no window has fetched it yet)"
     rung, why = validate(spec)
     if rung is None:
         return False, why
-    d = ROOT / slug
     d.mkdir(parents=True, exist_ok=True)
     names = {e["name"] for e in history(d, "experiments.jsonl")} | {r["name"] for r in LADDER}
     waiting = [r for r in history(d, "queue.jsonl") if r["name"] not in names]
@@ -224,6 +254,39 @@ def fetch(slug: str) -> Path:
     return d
 
 
+def competition(slug: str, d: Path) -> dict:
+    """Kaggle's own record of the competition (title, metric, deadline),
+    fetched once into competition.json."""
+    f = d / "competition.json"
+    try:
+        return json.loads(f.read_text())
+    except (OSError, ValueError):
+        pass
+    from kaggle.api.kaggle_api_extended import KaggleApi
+    api = KaggleApi()
+    api.authenticate()
+    res = api.competitions_list(search=slug)
+    found = [c for c in getattr(res, "competitions", res) if str(c.ref).rstrip("/").endswith("/" + slug)]
+    if not found:
+        raise RuntimeError(f"Kaggle lists no competition {slug!r} (not opened yet?)")
+    c = found[0]
+    info = {"slug": slug, "title": c.title, "evaluation_metric": c.evaluation_metric,
+            "deadline": str(c.deadline), "max_daily_submissions": c.max_daily_submissions}
+    f.write_text(json.dumps(info))
+    return info
+
+
+def metric_of(slug: str, d: Path) -> str:
+    """auc or rmse: COMPETITIONS' entry, else Kaggle's evaluation_metric."""
+    if "metric" in COMPETITIONS.get(slug, {}):
+        return COMPETITIONS[slug]["metric"]
+    name = competition(slug, d).get("evaluation_metric") or ""
+    m = METRICS.get(name.strip().lower())
+    if m is None:
+        raise RuntimeError(f"{slug}: metric {name!r} is not one cv() scores ({sorted(set(METRICS.values()))})")
+    return m
+
+
 def original(slug: str, d: Path) -> pd.DataFrame | None:
     """The original dataset (every CSV in it), downloaded once."""
     cfg = COMPETITIONS.get(slug, {}).get("original")
@@ -251,7 +314,9 @@ def load(slug: str, d: Path, with_original: bool):
         raw = original(slug, d)
         cfg = COMPETITIONS[slug]["original"]
         missing = [c for c in X.columns if c not in raw.columns]
-        if missing or not (pd.api.types.is_bool_dtype(y) or pd.api.types.is_integer_dtype(y)):
+        # A binary target may arrive as floats: S6E11's is_fraud is 0.0/1.0.
+        binary = pd.api.types.is_bool_dtype(y) or pd.api.types.is_integer_dtype(y) or set(y.unique()) <= {0.0, 1.0}
+        if missing or not binary:
             raise RuntimeError(f"original data does not match: missing {missing}, target {y.dtype}")
         O = raw[list(X.columns)].reset_index(drop=True)  # the competition's columns, in its order
         # The competition's target is True/1 for the original's positive label.
@@ -490,8 +555,8 @@ def _save(d: Path, name: str, oof, pred) -> None:
 
 
 def run(slug: str, send: bool = True) -> dict:
-    metric = COMPETITIONS.get(slug, {}).get("metric", "auc")
     d = fetch(slug)
+    metric = metric_of(slug, d)
     done = {e["name"]: e for e in history(d, "experiments.jsonl")}
     best = max((e for e in done.values() if "cv" in e), key=lambda e: e["cv"], default=None)
     rungs = LADDER + [r for r in history(d, "queue.jsonl") if validate(r)[0] is not None]
@@ -607,10 +672,14 @@ def status() -> dict:
     out = {}
     for d in sorted(p for p in ROOT.glob("*") if p.is_dir() and not p.name.startswith("_")):
         done = {e["name"] for e in history(d, "experiments.jsonl")}
+        try:
+            lower = metric_of(d.name, d) == "rmse"
+        except Exception:  # noqa: BLE001 - an unknown metric must not hide the rest
+            lower = False
         out[d.name] = {"experiments": history(d, "experiments.jsonl")[-15:],
                        "queued": [r for r in history(d, "queue.jsonl") if r["name"] not in done],
                        "submissions": history(d, "submissions.jsonl")[-5:],
-                       "kaggle": standing.standing(d.name, d / "standing.json")}
+                       "kaggle": standing.standing(d.name, d / "standing.json", lower)}
     return out
 
 

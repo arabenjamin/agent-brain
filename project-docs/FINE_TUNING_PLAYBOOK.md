@@ -317,6 +317,10 @@ What happened with adapter v1: validation loss fell 53%, then HumanEval-rs dropp
 9. [ ] Prompt parity by logprobs; tuned vs reconverted base; same quantization.
 10. [ ] Everything recorded: configs, hashes, negative results, corrections.
 
+## Results (confirmation on held-out problems, 2026-11-04)
+
+Same three adapters, one export pipeline, 274 MBPP-rs problems neither trained on nor used in Experiment 1, frozen plan in `workspace/gemma4-paper/PREREG.md`. Final pass: base 207, v1 177 (Holm p .0002), v2 188 (.022), v3 197 (.11). The repair hypothesis (adapters repair less after feedback) was not confirmed: 8-2, 6-2, 8-3 on the problems that split the models, Holm .33, .45, .45. Too few discordant problems to settle it either way. Seed 7 and seed 8 at temperature 0 replayed almost byte for byte, so a seed change does not measure noise on one server. Details: `workspace/gemma4-paper/CONFIRM_RESULTS.md`.
+
 ## Results (Experiment 1, gemma4:e4b → Rust)
 
 All scores are vs the untuned base exported through the same pipeline.

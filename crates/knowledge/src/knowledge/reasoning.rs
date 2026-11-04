@@ -54,11 +54,13 @@ impl KnowledgeService {
                 })
             });
 
-        let answer = parsed
-            .get("answer")
-            .and_then(|v| v.as_str())
-            .unwrap_or(text)
-            .to_string();
+        let answer = strip_outer_fence(
+            parsed
+                .get("answer")
+                .and_then(|v| v.as_str())
+                .unwrap_or(text),
+        )
+        .to_string();
         let inferences: Vec<String> = parsed
             .get("inferences")
             .and_then(|v| v.as_array())
@@ -266,11 +268,13 @@ impl KnowledgeService {
                 }
             };
 
-        let answer = parsed
-            .get("answer")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&text)
-            .to_string();
+        let answer = strip_outer_fence(
+            parsed
+                .get("answer")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&text),
+        )
+        .to_string();
         let inferences: Vec<String> = parsed
             .get("inferences")
             .and_then(|v| v.as_array())
@@ -535,5 +539,49 @@ impl KnowledgeService {
         }
 
         Ok(task_ids)
+    }
+}
+
+/// An answer wrapped whole in one code fence, without the fence: told "no code
+/// fences", Mistral still wrapped a daily-brief section on some runs
+/// (2026-11-04), and the reader then saw raw Markdown. A fence inside the
+/// answer is content and stays.
+fn strip_outer_fence(answer: &str) -> &str {
+    let t = answer.trim();
+    let Some((open, rest)) = t.split_once('\n') else {
+        return answer;
+    };
+    let lang = open.strip_prefix("```").unwrap_or("!");
+    if !lang.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return answer;
+    }
+    match rest.trim_end().strip_suffix("```") {
+        Some(body) if !body.contains("```") => body.trim(),
+        _ => answer,
+    }
+}
+
+#[cfg(test)]
+mod fence_tests {
+    use super::strip_outer_fence;
+
+    #[test]
+    fn a_whole_answer_in_one_fence_loses_it() {
+        assert_eq!(
+            strip_outer_fence("```markdown\n## A\n- b\n```\n"),
+            "## A\n- b"
+        );
+        assert_eq!(strip_outer_fence("```\n## A\n```"), "## A");
+    }
+
+    #[test]
+    fn a_fence_inside_the_answer_stays() {
+        for s in [
+            "## A\n```rust\nlet x = 1;\n```\nafter",
+            "```py\na\n```\ntext\n```py\nb\n```",
+            "no fence at all",
+        ] {
+            assert_eq!(strip_outer_fence(s), s);
+        }
     }
 }

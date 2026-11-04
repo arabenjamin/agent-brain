@@ -762,6 +762,7 @@ impl QueueService {
                         pjob.job.provider_hint.as_deref(),
                         pjob.job.arguments.as_ref(),
                     )
+                    && waits_in_lease_mode(lease_jobs_go_free(), &pjob.job.tool_name)
                 {
                     gpu_deferred += 1;
                     blocked.push(pjob);
@@ -1536,11 +1537,19 @@ fn select_step_model(
     handler: &ToolHandler,
     route_ctx: agent_brain_llm::routing::RouteContext,
 ) -> Option<agent_brain_llm::LlmConfig> {
-    let caps: Vec<String> = job_arg(job, "__required_capabilities")?
-        .as_array()?
-        .iter()
-        .filter_map(|c| c.as_str().map(String::from))
-        .collect();
+    // In a GPU lease a local-pinned job that runs (GPU_LEASE_LOCAL_JOBS=free)
+    // takes whichever model the policy admits for reasoning, not the stopped engine.
+    let leased_local = agent_brain_llm::gpu_lease::held().is_some()
+        && defers_during_gpu_lease(job.provider_hint.as_deref(), job.arguments.as_ref());
+    let caps: Vec<String> = if leased_local {
+        vec!["reasoning".to_string()]
+    } else {
+        job_arg(job, "__required_capabilities")?
+            .as_array()?
+            .iter()
+            .filter_map(|c| c.as_str().map(String::from))
+            .collect()
+    };
     if caps.is_empty() {
         return None;
     }
@@ -1573,6 +1582,21 @@ fn defers_during_gpu_lease(
         && arguments
             .and_then(|a| a.get("__required_capabilities"))
             .is_none()
+}
+
+/// `GPU_LEASE_LOCAL_JOBS`: `free` (default) runs local-pinned jobs on the policy's
+/// cloud models during a lease; `defer` makes them wait for its end.
+fn lease_jobs_go_free() -> bool {
+    std::env::var("GPU_LEASE_LOCAL_JOBS").map_or(true, |v| v.trim() != "defer")
+}
+
+/// Tools that need a sidecar the lease stops, whatever model the step gets:
+/// `ingest_media` may fall back to Whisper. They still wait.
+const WAIT_OUT_GPU_LEASE: &[&str] = &["ingest_media"];
+
+/// Whether a job that `defers_during_gpu_lease` really waits, in this mode.
+fn waits_in_lease_mode(free: bool, tool_name: &str) -> bool {
+    !free || WAIT_OUT_GPU_LEASE.contains(&tool_name)
 }
 
 fn is_transient_infra_error(error_text: &str) -> bool {
@@ -1792,8 +1816,16 @@ distill_focus: "keep every source URL"
 
 #[cfg(test)]
 mod gpu_lease_deferral_tests {
-    use super::defers_during_gpu_lease;
+    use super::{defers_during_gpu_lease, waits_in_lease_mode};
     use serde_json::json;
+
+    #[test]
+    fn free_mode_runs_local_jobs_in_a_lease_but_whisper_work_still_waits() {
+        assert!(!waits_in_lease_mode(true, "reason"));
+        assert!(!waits_in_lease_mode(true, "neo4j_query"));
+        assert!(waits_in_lease_mode(true, "ingest_media"));
+        assert!(waits_in_lease_mode(false, "reason"));
+    }
 
     #[test]
     fn only_local_pinned_jobs_without_capability_routing_wait_out_a_lease() {
