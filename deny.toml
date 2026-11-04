@@ -1,0 +1,16 @@
+# cargo-deny: run by .github/workflows/deps.yml. An advisory with a fix is
+# fixed in Cargo.lock, not listed here. Every entry below has no fixed release,
+# so each one says what would remove it.
+[advisories]
+version = 2
+ignore = [
+    { id = "RUSTSEC-2025-0012", reason = "backoff unmaintained; only through vendor/neo4rs" },
+    { id = "RUSTSEC-2024-0384", reason = "instant unmaintained; only through backoff" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; only through vendor/neo4rs" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; through vendor/neo4rs and rustls-native-certs" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; only through serde_yaml, which needs replacing first" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

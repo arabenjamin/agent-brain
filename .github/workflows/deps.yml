@@ -1,0 +1,30 @@
+name: Dependency audit
+
+# Separate from CI/CD on purpose: an advisory published today says nothing about
+# the commit being shipped, so it turns this workflow red without holding a
+# deploy. The daily run catches advisories published when nothing was pushed.
+on:
+  push:
+    branches: [dev]
+    paths: [Cargo.lock, deny.toml, .github/workflows/deps.yml]
+  pull_request:
+    branches: [master]
+    paths: [Cargo.lock, deny.toml, .github/workflows/deps.yml]
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --locked check advisories sources
