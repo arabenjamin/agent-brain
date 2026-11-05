@@ -212,6 +212,31 @@ fn order_engines(
 /// original ladder is returned so the caller still attempts a search and
 /// surfaces a real per-engine error rather than silently doing nothing. Pure so
 /// the rule is testable without env vars or a live graph.
+/// Engines whose `reserved_for` keeps them for other tools than this caller's,
+/// unless the caller named the engine.
+fn reserved_away(
+    engines: &[search_engines::EngineSpec],
+    tool: Option<&str>,
+    pinned: Option<&str>,
+) -> Vec<String> {
+    engines
+        .iter()
+        .filter(|e| !e.reserved_for.is_empty())
+        .filter(|e| tool.is_none_or(|t| !e.reserved_for.iter().any(|r| r == t)))
+        .filter(|e| pinned != Some(e.name.as_str()))
+        .map(|e| e.name.clone())
+        .collect()
+}
+
+/// The ladder with the engines kept for other tools moved to the back, in
+/// their order: still a last resort, so a search never fails for want of one.
+fn reserved_last(ladder: Vec<String>, kept_away: &[String]) -> Vec<String> {
+    let (back, mut front): (Vec<String>, Vec<String>) =
+        ladder.into_iter().partition(|e| kept_away.contains(e));
+    front.extend(back);
+    front
+}
+
 fn retain_configured(ladder: Vec<String>, keep: &[String]) -> Vec<String> {
     let filtered: Vec<String> = ladder
         .iter()
@@ -489,18 +514,29 @@ impl SearchSkill {
             .cloned()
             .collect();
         let ladder = retain_configured(ladder, &keep);
+        let pinned = requested
+            .map(|r| r.trim().to_lowercase())
+            .filter(|r| !r.is_empty());
+        let tool = caller().1;
+        let kept_away = reserved_away(engines, tool.as_deref(), pinned.as_deref());
+        let ladder = reserved_last(ladder, &kept_away);
         if !rotation_enabled() {
             return (ladder, Head::Ladder);
         }
         let rungs: Vec<Rung> = ladder
             .iter()
-            .map(|name| self.rung(name, &exhausted, spec, today))
+            .map(|name| {
+                let mut rung = self.rung(name, &exhausted, spec, today);
+                // Kept for another tool: outside the rotation, so it is never
+                // picked first; `reserved_last` already put it at the back.
+                if kept_away.contains(name) {
+                    rung.standing = None;
+                }
+                rung
+            })
             .collect();
-        let pinned = requested
-            .map(|r| r.trim().to_lowercase())
-            .filter(|r| !r.is_empty());
         if pinned.is_none()
-            && let Some(tool) = caller().1
+            && let Some(tool) = tool
         {
             let leads: Vec<String> = engines
                 .iter()
@@ -1498,6 +1534,37 @@ mod tests {
             retain_configured(ladder, &v(&["exa", "serpapi"])),
             v(&["exa", "serpapi"])
         );
+    }
+
+    fn reserved_engine(name: &str, reserved_for: &str) -> search_engines::EngineSpec {
+        search_engines::parse(&format!(
+            "name: {name}\nrank: 1\nreserved_for: [{reserved_for}]\nrequest:\n  method: get\n  url: https://x.test/s\n  query: {{ param: q, syntax: plain }}\nresponse:\n  items: results\n  link: url\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_reserved_engine_is_kept_for_its_tools_unless_named() {
+        let engines = vec![reserved_engine("exa", "claim")];
+        // Another tool, or no tool: kept away.
+        assert_eq!(
+            reserved_away(&engines, Some("search_web"), None),
+            v(&["exa"])
+        );
+        assert_eq!(reserved_away(&engines, None, None), v(&["exa"]));
+        // Its own tool, or a caller that names it: usable as usual.
+        assert!(reserved_away(&engines, Some("claim"), None).is_empty());
+        assert!(reserved_away(&engines, Some("search_web"), Some("exa")).is_empty());
+    }
+
+    #[test]
+    fn a_kept_away_engine_moves_last_and_stays_a_last_resort() {
+        let ladder = v(&["exa", "tavily", "tinyfish", "serper"]);
+        assert_eq!(
+            reserved_last(ladder.clone(), &v(&["exa"])),
+            v(&["tavily", "tinyfish", "serper", "exa"])
+        );
+        assert_eq!(reserved_last(ladder.clone(), &[]), ladder);
     }
 
     #[test]

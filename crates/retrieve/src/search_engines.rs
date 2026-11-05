@@ -60,6 +60,14 @@ pub struct EngineSpec {
     /// allowance early.
     #[serde(default)]
     pub lead_for: Vec<String>,
+    /// Tools this engine's allowance is kept for. Any other caller reaches it
+    /// only when it names the engine, or last, after every other engine:
+    /// outside the rotation, behind the ladder. Exa's credit covers ~47
+    /// searches a day and `search_web` spent ~40% of it, so claim checks got
+    /// Exa for 43% of their searches while Exa corroborated 52% of claims and
+    /// the rest 20-38% (2026-11-01..05; owner chose to keep Exa for claims).
+    #[serde(default)]
+    pub reserved_for: Vec<String>,
     pub request: RequestSpec,
     pub response: ResponseSpec,
 }

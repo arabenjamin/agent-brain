@@ -56,6 +56,18 @@ impl Neo4jClient {
             .await
     }
 
+    /// Record that `id` was created inside the run `parent`, so what a run
+    /// sets going (deep-dive-pick's deep-dive) is counted as its work.
+    pub async fn set_task_spawned_by(&self, id: &str, parent: &str) -> Result<(), RepositoryError> {
+        self.execute(
+            query("MATCH (t:Task {id: $id}) SET t.spawned_by = $parent")
+                .param("id", id)
+                .param("parent", parent),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Create a Task that is one run of `workflow` (by name) with `inputs`.
     /// `workflow: None` runs the default workflow. `status` is `created` for a
     /// run the next scheduler tick dispatches, `in_progress` for one the caller

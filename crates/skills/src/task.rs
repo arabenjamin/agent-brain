@@ -214,6 +214,15 @@ impl TaskSkill {
         {
             Ok((task_id, workflow)) => {
                 info!(task_id = %task_id, goal = %input.goal, workflow = %workflow, "Created new task in DB");
+                // Created inside a run: the run's scorecard counts this one's
+                // notes (deep-dive-pick read "11 runs, 0 notes" while its
+                // deep dives wrote 15, 2026-11-05).
+                if let Some(parent) =
+                    agent_brain_llm::ctx::current_owner_task().filter(|p| *p != task_id)
+                    && let Err(e) = neo4j.set_task_spawned_by(&task_id, &parent).await
+                {
+                    warn!(task_id = %task_id, error = %e, "create_task: spawned_by not recorded");
+                }
                 ToolCallResult::success_json(json!({
                     "id": task_id,
                     "status": "created",

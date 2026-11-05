@@ -25,6 +25,12 @@ pub trait TaskStore: Send + Sync {
         success_criteria: Option<&str>,
     ) -> anyhow::Result<(String, String)>;
 
+    /// Record that task `id` was created inside the run `parent`
+    /// (`Task.spawned_by`). A store that keeps no such link does nothing.
+    async fn set_task_spawned_by(&self, _id: &str, _parent: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn update_task_status(&self, id: &str, status: TaskStatus) -> anyhow::Result<()>;
 
     async fn store_reflection_note(
@@ -225,6 +231,12 @@ impl TaskStore for Neo4jClient {
         .await
         .map(|r| (r.task_id, r.workflow))
         .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    async fn set_task_spawned_by(&self, id: &str, parent: &str) -> anyhow::Result<()> {
+        Neo4jClient::set_task_spawned_by(self, id, parent)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     async fn update_task_status(&self, id: &str, status: TaskStatus) -> anyhow::Result<()> {

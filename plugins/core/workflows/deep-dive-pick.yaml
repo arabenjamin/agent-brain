@@ -6,14 +6,45 @@ kind: learning
 every: 2d
 data_class: private
 steps:
-  - tool_name: neo4j_query
+  - id: facts
+    tool_name: neo4j_query
     arguments:
       cypher: >-
         CALL { MATCH (t:Todo) WHERE NOT coalesce(t.status, '') IN ['done', 'completed', 'cancelled'] RETURN collect(t.title + CASE WHEN coalesce(t.description, '') = '' THEN '' ELSE ' — ' + left(t.description, 200) END) AS open_todos }
         CALL { MATCH (n:Note {note_type: 'semantic'}) WHERE n.created_at > datetime() - duration('P30D') AND NOT (n)-[:PART_OF]->() AND (n.content STARTS WITH '## Research:' OR n.content STARTS WITH '## Gap synthesis:') WITH n ORDER BY n.created_at DESC WITH collect(DISTINCT left(replace(replace(split(n.content, '\n')[0], '## Research: ', ''), '## Gap synthesis: ', ''), 160)) AS topics RETURN topics[0..30] AS recent_learning }
         CALL { MATCH (n:Note)-[:MENTIONS]->(e:Entity) WHERE n.created_at > datetime() - duration('P30D') AND e.entity_type IN ['technology', 'tool'] AND NOT (n)-[:PART_OF]->() WITH e.name AS tech, count(DISTINCT n) AS notes WHERE notes >= 3 WITH tech, notes ORDER BY notes DESC RETURN collect(tech + ' (' + toString(notes) + ')')[0..25] AS recent_technologies }
-        CALL { OPTIONAL MATCH (n:Note {source_context: 'deep_dive'}) WHERE NOT (n)-[:PART_OF]->() WITH n ORDER BY n.created_at DESC RETURN collect(left(replace(split(n.content, '\n')[0], '## Deep dive: ', ''), 200) + CASE WHEN n.content CONTAINS '## NEXT' THEN ' → NEXT: ' + left(trim(split(n.content, '## NEXT')[1]), 200) ELSE '' END)[0..15] AS prior_deep_dives }
+        CALL { OPTIONAL MATCH (n:Note {source_context: 'deep_dive'}) WHERE NOT (n)-[:PART_OF]->() WITH n ORDER BY n.created_at DESC RETURN collect(left(replace(split(n.content, '\n')[0], '## Deep dive: ', ''), 200) + CASE WHEN n.note_type = 'episodic' THEN ' (FOUND NOTHING: do not ask it again in other words)' WHEN n.content CONTAINS '## NEXT' THEN ' → NEXT: ' + left(trim(split(n.content, '## NEXT')[1]), 200) ELSE '' END)[0..15] AS prior_deep_dives }
         RETURN open_todos, recent_technologies, prior_deep_dives, recent_learning
+    priority: 1
+    max_attempts: 2
+    provider_hint: local
+
+  # A theme in 3 of the last 5 deep dives rests for one pick. "Prefer a prior
+  # deep dive's NEXT question" kept the picker on Reticulum for 15 of 16 dives
+  # (2026-10-09..11-04), path_table expiry asked four times; the prompt's
+  # "never repeat" did not stop it, so the count is made here, in code.
+  - id: rest
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 15000
+      code: |
+        import json, re, collections
+        rows = json.loads(r"""{{steps.facts.rows}}""")
+        dives = (rows[0].get("prior_deep_dives") or [])[:5] if rows else []
+        COMMON = {"how", "what", "which", "when", "where", "does", "do", "can", "is", "are", "the", "rust",
+                  "agent-brain", "agent", "brain", "std", "in", "and", "with", "for", "its", "why"}
+        count = collections.Counter()
+        for d in dives:
+            title = d.split(" → NEXT:")[0].split(" (FOUND NOTHING")[0]
+            words = {w.strip("`'’s").lower() for w in re.findall(r"[A-Z][\w’'-]{3,}", title)}
+            count.update(w for w in words if w not in COMMON)
+        rested = [w for w, n in count.most_common() if n >= 3]
+        if rested:
+            print("THEME REST: " + ", ".join(f"{w} ({count[w]} of the last {len(dives)} deep dives)" for w in rested)
+                  + ". Do not pick these themes or their NEXT questions this time.")
+        else:
+            print("THEME REST: none.")
     priority: 1
     max_attempts: 2
     provider_hint: local
@@ -29,7 +60,10 @@ steps:
         Pick ONE theme and narrow it to ONE specific question that a few
         searches, and for a technical theme a small Rust program, can answer.
         Prefer, in order: a prior deep dive's NEXT question; an open todo; a
-        recurring technology. For a technical theme, ask how it works or how
+        recurring technology. THEME REST, at the end of the CONTEXT, names
+        themes the last deep dives kept returning to: pick none of them, and
+        none of their NEXT questions, this time. A deep dive marked FOUND
+        NOTHING is not to be asked again in other words. For a technical theme, ask how it works or how
         to build it in Rust, as it would apply to agent-brain (a Rust MCP
         server on tokio and Neo4j).
 
@@ -46,19 +80,42 @@ steps:
 
         Never repeat a prior deep dive's question. No sports. Answer with the
         question alone, one line, at most 30 words, no prefix.
-      context: "{{_prev}}"
+      context: "{{steps.facts}}\n\n{{steps.rest.stdout}}"
       store_inference: false
+    id: pick
     priority: 1
     max_attempts: 3
     provider_hint: mistral
     required_capabilities: ["reasoning"]
 
+  # The rest holds even when the model ignores it: a resting theme in the
+  # pick fails the run, visibly, rather than starting the same dive again.
+  - id: gate
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 15000
+      code: |
+        import re, sys
+        rest = r"""{{steps.rest.stdout}} """
+        q = " ".join(r"""{{steps.pick}} """.split())
+        m = re.match(r"THEME REST: (.*?)\. Do not", rest)
+        themes = [t.split(" (")[0] for t in m.group(1).split(", ")] if m else []
+        hit = [t for t in themes if t in q.lower()]
+        if hit:
+            print(f"The pick names a resting theme ({', '.join(hit)}): {q}", file=sys.stderr)
+            sys.exit(1)
+        print(q, end="")
+    priority: 1
+    max_attempts: 1
+    provider_hint: local
+
   - tool_name: create_task
     arguments:
-      goal: "deep dive: {{_prev}}"
+      goal: "deep dive: {{steps.gate.stdout}}"
       workflow: deep-dive
       inputs:
-        question: "{{_prev}}"
+        question: "{{steps.gate.stdout}}"
       context: "Self-directed deep dive ({{date}}), narrowed from open todos, recent technologies and prior deep dives by workflows/deep-dive-pick.yaml."
     priority: 1
     max_attempts: 2

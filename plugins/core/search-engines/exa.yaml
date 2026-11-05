@@ -22,6 +22,12 @@ budget:
 # went 65% → 25% corroborated). Exa leads them while on pace, so the credit
 # still lasts the month.
 lead_for: [claim]
+# And the credit is kept for them (owner, 2026-11-05): since the 11-01 refill
+# search_web spent ~40% of it, so claims got Exa for 43% of their checks
+# (Exa corroborated 52%, the rotation 20-38%). Another tool reaches Exa only
+# by naming it (`engine: exa`, as daily-news business does) or as the last
+# resort after every other engine.
+reserved_for: [claim]
 request:
   method: post
   url: https://api.exa.ai/search

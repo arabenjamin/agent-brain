@@ -191,6 +191,7 @@ High-level goals tracked by the autonomous scheduler.
 | `context` | String? | Optional extra context |
 | `workflow` | String? | The `:Workflow` this task is a run of, by name; absent = the default workflow. Indexed (`task_workflow`). Runs created before 2026-10-10 were backfilled from their goal prefix or run-record context |
 | `inputs_json` | String? | The run's inputs, a JSON object; steps read them as `{{inputs.<name>}}` |
+| `spawned_by` | String? | The Task whose run created this one with `create_task` (from 2026-11-05). The workflow scorecard counts a spawned task's notes as its parent workflow's |
 | `status` | String | `created` \| `in_progress` \| `completed` \| `failed` \| `blocked` |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `updated_at` | DateTime | Native Neo4j `DATETIME`, UTC |

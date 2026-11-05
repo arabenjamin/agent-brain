@@ -42,8 +42,13 @@ cypher: |-
   OPTIONAL MATCH (t:Task {workflow: w.name})
     WHERE t.created_at > datetime() - duration({days: $days})
   WITH w, collect(t) AS runs
-  OPTIONAL MATCH (n:Note) WHERE n.produced_by_task IN [r IN runs | r.id]
-  WITH w, runs, collect(n) AS notes
+  // A run that starts other work with create_task (deep-dive-pick starts a
+  // deep-dive) is credited with that task's notes too: `spawned_by`, from
+  // 2026-11-05. Their cost stays with the workflow that ran them.
+  OPTIONAL MATCH (s:Task) WHERE s.spawned_by IN [r IN runs | r.id]
+  WITH w, runs, collect(s.id) AS spawned
+  OPTIONAL MATCH (n:Note) WHERE n.produced_by_task IN [r IN runs | r.id] + spawned
+  WITH w, runs, spawned, collect(n) AS notes
   RETURN w.name AS workflow, w.kind AS kind, w.topic AS topic, w.enabled AS enabled,
          toString(date(w.created_at)) AS created,
          duration.inDays(w.created_at, datetime()).days AS age_days,
@@ -51,6 +56,8 @@ cypher: |-
          size([r IN runs WHERE r.status IN ['completed', 'done']]) AS ok,
          size([r IN runs WHERE r.status IN ['failed', 'dead']]) AS failed,
          size(notes) AS notes,
+         size(spawned) AS spawned_tasks,
+         size([x IN notes WHERE x.produced_by_task IN spawned]) AS notes_via_spawned,
          reduce(s = 0, x IN notes | s + coalesce(x.access_count, 0)) AS reads,
          size([x IN notes WHERE EXISTS { (x)<-[:ASSERTED_IN|CORROBORATED_BY|CONTRADICTED_BY]-() }]) AS cited,
          CASE WHEN size(runs) = 0 THEN null
