@@ -429,7 +429,7 @@ impl ContextBuilderService {
                 p,
                 &registry,
                 &removed,
-                ext.get(&p.name).map(Vec::as_slice).unwrap_or(&[]),
+                ext.get(&p.name).map_or(&[], Vec::as_slice),
                 &plugin_off,
             );
             // The save-time validator over what is stored: a seeded file or a
@@ -619,60 +619,57 @@ impl ContextBuilderService {
         if !found.hard.is_empty() {
             anyhow::bail!("{}", found.hard.join("; "));
         }
-        match &self.neo4j {
-            Some(neo4j) => {
-                let meta = self
-                    .meta
-                    .read()
-                    .await
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_default();
-                let definition = crate::profiles::definition_of(&profile);
-                let changed = stored.as_ref().is_none_or(|s| {
-                    agent_brain_repository::canonical(&crate::profiles::definition_of(s))
-                        != agent_brain_repository::canonical(&definition)
-                });
-                let q = crate::profiles::write_query(
-                    &profile,
-                    "runtime",
-                    meta.plugin.as_deref(),
-                    meta.source.as_deref(),
-                )?;
-                if changed {
-                    let write = if stored.is_some() {
-                        crate::revisions::OwnerWrite::Update(q)
-                    } else {
-                        crate::revisions::OwnerWrite::Create(q)
-                    };
-                    crate::revisions::commit(
-                        neo4j,
-                        agent_brain_repository::RevisionKind::Profile,
-                        &name,
-                        &definition,
-                        &req,
-                        write,
-                    )
-                    .await
-                    .map_err(|e| match e {
-                        crate::revisions::CommitError::Refused(r) => anyhow::Error::new(r),
-                        crate::revisions::CommitError::Storage(m) => anyhow::anyhow!(m),
-                    })?;
+        if let Some(neo4j) = &self.neo4j {
+            let meta = self
+                .meta
+                .read()
+                .await
+                .get(&name)
+                .cloned()
+                .unwrap_or_default();
+            let definition = crate::profiles::definition_of(&profile);
+            let changed = stored.as_ref().is_none_or(|s| {
+                agent_brain_repository::canonical(&crate::profiles::definition_of(s))
+                    != agent_brain_repository::canonical(&definition)
+            });
+            let q = crate::profiles::write_query(
+                &profile,
+                "runtime",
+                meta.plugin.as_deref(),
+                meta.source.as_deref(),
+            )?;
+            if changed {
+                let write = if stored.is_some() {
+                    crate::revisions::OwnerWrite::Update(q)
                 } else {
-                    neo4j.run(q).await?;
-                }
-                self.meta.write().await.insert(
-                    name.clone(),
-                    ProfileMeta {
-                        managed_by: Some("runtime".into()),
-                        ..meta
-                    },
-                );
+                    crate::revisions::OwnerWrite::Create(q)
+                };
+                crate::revisions::commit(
+                    neo4j,
+                    agent_brain_repository::RevisionKind::Profile,
+                    &name,
+                    &definition,
+                    &req,
+                    write,
+                )
+                .await
+                .map_err(|e| match e {
+                    crate::revisions::CommitError::Refused(r) => anyhow::Error::new(r),
+                    crate::revisions::CommitError::Storage(m) => anyhow::anyhow!(m),
+                })?;
+            } else {
+                neo4j.run(q).await?;
             }
-            None => {
-                let path = self.contexts_dir.join(format!("{name}.yaml"));
-                std::fs::write(&path, serde_yaml::to_string(&profile)?)?;
-            }
+            self.meta.write().await.insert(
+                name.clone(),
+                ProfileMeta {
+                    managed_by: Some("runtime".into()),
+                    ..meta
+                },
+            );
+        } else {
+            let path = self.contexts_dir.join(format!("{name}.yaml"));
+            std::fs::write(&path, serde_yaml::to_string(&profile)?)?;
         }
         self.profiles.write().await.insert(name, profile.clone());
         // What the HBI shows on reopening is this profile now, not the boot audit.
@@ -724,26 +721,23 @@ impl ContextBuilderService {
                 meta.source.as_deref().unwrap_or("a plugin bundle")
             );
         }
-        match &self.neo4j {
-            Some(neo4j) => {
-                crate::revisions::record_delete(
-                    neo4j,
-                    agent_brain_repository::RevisionKind::Profile,
-                    name,
-                    None,
-                )
-                .await
-                .map_err(|e| match e {
-                    crate::revisions::CommitError::Refused(r) => anyhow::Error::new(r),
-                    crate::revisions::CommitError::Storage(m) => anyhow::anyhow!(m),
-                })?;
-                crate::profiles::delete(neo4j, name).await?
-            }
-            None => {
-                let path = self.contexts_dir.join(format!("{name}.yaml"));
-                if path.exists() {
-                    std::fs::remove_file(&path)?;
-                }
+        if let Some(neo4j) = &self.neo4j {
+            crate::revisions::record_delete(
+                neo4j,
+                agent_brain_repository::RevisionKind::Profile,
+                name,
+                None,
+            )
+            .await
+            .map_err(|e| match e {
+                crate::revisions::CommitError::Refused(r) => anyhow::Error::new(r),
+                crate::revisions::CommitError::Storage(m) => anyhow::anyhow!(m),
+            })?;
+            crate::profiles::delete(neo4j, name).await?
+        } else {
+            let path = self.contexts_dir.join(format!("{name}.yaml"));
+            if path.exists() {
+                std::fs::remove_file(&path)?;
             }
         }
         self.profiles.write().await.remove(name);
@@ -767,7 +761,7 @@ impl ContextBuilderService {
         let profile = self
             .get_profile(profile_name)
             .await
-            .ok_or_else(|| anyhow::anyhow!("Context profile '{}' not found", profile_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Context profile '{profile_name}' not found"))?;
 
         let mut pre_loaded_notes = Vec::new();
 
@@ -863,7 +857,7 @@ impl ContextBuilderService {
         // Clear winner: top score > 0 and strictly better than second-best.
         if let (Some((best_score, best_name)), second_score) = (
             scores.first().cloned(),
-            scores.get(1).map(|(s, _)| *s).unwrap_or(0),
+            scores.get(1).map_or(0, |(s, _)| *s),
         ) && best_score > 0
             && best_score > second_score
         {
@@ -887,11 +881,10 @@ impl ContextBuilderService {
             let prompt = format!(
                 "You are a goal router. Respond in English only.\n\
                  Given a goal, pick the single most relevant context profile.\n\
-                 Profiles:\n{}\n\n\
-                 Goal: {}\n\n\
+                 Profiles:\n{profile_list}\n\n\
+                 Goal: {goal}\n\n\
                  Reply with ONLY the profile name exactly as shown (e.g. \"researcher\"). \
-                 If none fit well, reply with \"none\".",
-                profile_list, goal
+                 If none fit well, reply with \"none\"."
             );
 
             if let Ok(response) = llm.generate(&prompt).await {
@@ -913,7 +906,7 @@ impl ContextBuilderService {
         text.to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect()
     }
 
@@ -932,7 +925,7 @@ impl ContextBuilderService {
         tool_handler: Arc<RwLock<Option<ToolHandler>>>,
         neo4j: Option<&Neo4jClient>,
     ) -> anyhow::Result<()> {
-        let path = self.contexts_dir.join(format!("{}.yaml", name));
+        let path = self.contexts_dir.join(format!("{name}.yaml"));
         if !path.exists() {
             debug!(protocol = name, "Protocol file not found — skipping");
             return Ok(());
@@ -1076,25 +1069,22 @@ impl ContextBuilderService {
     }
 
     async fn eval_condition(&self, condition: &str, neo4j: Option<&Neo4jClient>) -> bool {
-        match condition {
-            "graph_empty" => {
-                if let Some(db) = neo4j {
-                    let q = neo4rs::query("MATCH (n:Note) RETURN count(n) AS cnt");
-                    let count: i64 = db
-                        .execute(q)
-                        .await
-                        .ok()
-                        .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-                        .unwrap_or(1); // assume non-empty on error
-                    count == 0
-                } else {
-                    false
-                }
-            }
-            _ => {
-                warn!(condition = %condition, "Unknown protocol condition");
+        if condition == "graph_empty" {
+            if let Some(db) = neo4j {
+                let q = neo4rs::query("MATCH (n:Note) RETURN count(n) AS cnt");
+                let count: i64 = db
+                    .execute(q)
+                    .await
+                    .ok()
+                    .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
+                    .unwrap_or(1); // assume non-empty on error
+                count == 0
+            } else {
                 false
             }
+        } else {
+            warn!(condition = %condition, "Unknown protocol condition");
+            false
         }
     }
 }

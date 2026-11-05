@@ -334,8 +334,7 @@ pub fn standalone_problems(c: &ExtractedClaim) -> Vec<String> {
         let declared = named.iter().any(|a| {
             a.what
                 .as_deref()
-                .map(|w| singular(normalize(w).trim()) == singular(&noun))
-                .unwrap_or(false)
+                .is_some_and(|w| singular(normalize(w).trim()) == singular(&noun))
         });
         if !declared {
             out.push(format!(
@@ -364,7 +363,7 @@ pub fn rewrite_losses(old: &str, new: &str) -> Vec<String> {
                 cur.push(*c);
             } else if *c == ','
                 && !cur.is_empty()
-                && chars.get(i + 1).is_some_and(|n| n.is_ascii_digit())
+                && chars.get(i + 1).is_some_and(char::is_ascii_digit)
             {
                 continue;
             } else if !cur.is_empty() {
@@ -396,7 +395,7 @@ pub fn rewrite_losses(old: &str, new: &str) -> Vec<String> {
             if i == 0 || t.is_empty() || t.chars().any(|c| c.is_ascii_digit()) {
                 continue;
             }
-            if t.chars().next().is_some_and(|c| c.is_uppercase()) {
+            if t.chars().next().is_some_and(char::is_uppercase) {
                 let name = t.to_lowercase();
                 let name = name.strip_suffix("'s").unwrap_or(&name);
                 if !new_n.contains(name) && !lost.iter().any(|l| l == t) {
@@ -783,15 +782,12 @@ pub async fn recompute_status(neo4j: &Db, claim_id: &str) -> Result<ClaimStatus>
         )
         .await?;
 
-    let (cor, con) = rows
-        .first()
-        .map(|r| {
-            (
-                r.get::<i64>("corroborating").unwrap_or(0) as usize,
-                r.get::<i64>("contradicting").unwrap_or(0) as usize,
-            )
-        })
-        .unwrap_or((0, 0));
+    let (cor, con) = rows.first().map_or((0, 0), |r| {
+        (
+            r.get::<i64>("corroborating").unwrap_or(0) as usize,
+            r.get::<i64>("contradicting").unwrap_or(0) as usize,
+        )
+    });
 
     let status = ClaimStatus::from_evidence(cor, con);
 
@@ -854,7 +850,7 @@ pub const MIN_INDEPENDENT_DOMAINS: usize = 2;
 
 /// The host of a link, lowercased, without a leading `www.`.
 fn link_host(link: &str) -> String {
-    let rest = link.split_once("://").map(|x| x.1).unwrap_or(link);
+    let rest = link.split_once("://").map_or(link, |x| x.1);
     rest.split(['/', '?', '#', ':'])
         .next()
         .unwrap_or("")
@@ -984,7 +980,7 @@ pub fn resolve_cited_links(cited: &[String], evidence: &str) -> Vec<String> {
     let links = evidence_links(evidence);
     let norm = |s: &str| -> String {
         s.chars()
-            .filter(|c| c.is_ascii_alphanumeric())
+            .filter(char::is_ascii_alphanumeric)
             .collect::<String>()
             .to_lowercase()
     };
@@ -1407,7 +1403,10 @@ pub async fn confirm_contradiction(
             .to_string()
     };
     let (quote, conflict) = (field("evidence_quote"), field("conflict"));
-    let says = value.get("contradicts").and_then(|v| v.as_bool()) == Some(true);
+    let says = value
+        .get("contradicts")
+        .and_then(agent_brain_plugin_api::Value::as_bool)
+        == Some(true);
     Ok((says && quote_in(document, &quote)).then_some(Contradiction { quote, conflict }))
 }
 
@@ -1451,7 +1450,7 @@ pub async fn attach_evidence(
             query(&cypher)
                 .param("cid", claim_id)
                 .param("eid", evidence_note_id)
-                .param("source", sources.first().map(String::as_str).unwrap_or(""))
+                .param("source", sources.first().map_or("", String::as_str))
                 .param("sources", sources.to_vec())
                 .param("domains", domains.to_vec())
                 .param("grounding", grounding.map(String::from))

@@ -26,13 +26,14 @@ pub async fn resolve(
     inputs: &Map<String, Value>,
 ) -> Result<Workflow, String> {
     let wf = match name.map(str::trim).filter(|n| !n.is_empty()) {
-        Some(n) => match neo4j
-            .get_workflow_by_name(n)
-            .await
-            .map_err(|e| e.to_string())?
-        {
-            Some(wf) => wf,
-            None => {
+        Some(n) => {
+            if let Some(wf) = neo4j
+                .get_workflow_by_name(n)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                wf
+            } else {
                 let names: Vec<String> = neo4j
                     .list_workflows(true)
                     .await
@@ -45,7 +46,7 @@ pub async fn resolve(
                     names.join(", ")
                 ));
             }
-        },
+        }
         None => neo4j
             .get_default_workflow()
             .await
@@ -562,8 +563,7 @@ async fn prepare(
     // The candidate: the stored workflow with the body laid over it.
     let mut cand = current
         .as_ref()
-        .map(to_body)
-        .unwrap_or_else(|| serde_json::json!({}));
+        .map_or_else(|| serde_json::json!({}), to_body);
     if let Some(obj) = body.as_object() {
         for (k, v) in obj {
             if !matches!(
@@ -727,8 +727,9 @@ async fn prepare(
             cur.paused_reason
                 .as_deref()
                 .and_then(|r| r.strip_prefix(crate::programs::PROGRAM_PAUSE))
-                .map(|r| r.trim_start_matches(':').trim())
-                .unwrap_or("its program is paused")
+                .map_or("its program is paused", |r| r
+                    .trim_start_matches(':')
+                    .trim())
         )));
     }
 

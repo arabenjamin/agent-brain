@@ -563,7 +563,7 @@ pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> imp
             "enabled": r.get::<bool>("enabled").unwrap_or(true),
             "auth_scheme": r.get::<String>("auth_scheme").ok(),
             // Whether its secret is present — never the secret.
-            "auth_configured": env.as_ref().map(|e| std::env::var(e).map(|v| !v.is_empty()).unwrap_or(false)),
+            "auth_configured": env.as_ref().map(|e| std::env::var(e).is_ok_and(|v| !v.is_empty())),
             "auth_env_var": env,
         })
     })

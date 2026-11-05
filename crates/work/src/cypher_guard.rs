@@ -229,13 +229,13 @@ mod tests {
             &schema(),
             true,
         );
-        assert!(v.is_empty(), "clean query flagged: {:?}", v);
+        assert!(v.is_empty(), "clean query flagged: {v:?}");
     }
 
     #[test]
     fn unknown_label_is_hard_in_readonly() {
         let v = check("MATCH (t:Taskk) RETURN t", &schema(), true);
-        assert!(has_hard(&v), "must reject unknown label: {:?}", v);
+        assert!(has_hard(&v), "must reject unknown label: {v:?}");
         assert!(render_hard(&v).contains("Taskk"));
     }
 
@@ -243,7 +243,7 @@ mod tests {
     fn unknown_label_is_allowed_in_write_mode() {
         // Creating a new label is legal — the guard must not block it.
         let v = check("CREATE (n:BrandNewThing {id:'1'})", &schema(), false);
-        assert!(!has_hard(&v), "write of a new label must pass: {:?}", v);
+        assert!(!has_hard(&v), "write of a new label must pass: {v:?}");
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
             &schema(),
             true,
         );
-        assert!(!has_hard(&v), "known rel flagged: {:?}", v);
+        assert!(!has_hard(&v), "known rel flagged: {v:?}");
     }
 
     #[test]
@@ -273,8 +273,7 @@ mod tests {
         let v = check("MATCH (t:Task) RETURN t.completed_at", &schema(), true);
         assert!(
             !has_hard(&v),
-            "unknown prop must be advisory, not hard: {:?}",
-            v
+            "unknown prop must be advisory, not hard: {v:?}"
         );
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].severity, Severity::Soft);
@@ -292,7 +291,7 @@ mod tests {
             &schema(),
             true,
         );
-        assert!(v.is_empty(), "known props flagged: {:?}", v);
+        assert!(v.is_empty(), "known props flagged: {v:?}");
     }
 
     #[test]
@@ -303,7 +302,7 @@ mod tests {
             &schema(),
             true,
         );
-        assert!(v.is_empty(), "rel-var prop should be skipped: {:?}", v);
+        assert!(v.is_empty(), "rel-var prop should be skipped: {v:?}");
     }
 
     #[test]
@@ -328,8 +327,7 @@ mod tests {
         );
         assert!(
             !v.iter().any(|x| x.message.contains("null")),
-            "wrapped datetime flagged: {:?}",
-            v
+            "wrapped datetime flagged: {v:?}"
         );
     }
 

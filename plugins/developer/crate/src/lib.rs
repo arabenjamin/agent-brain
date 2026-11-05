@@ -37,7 +37,7 @@ impl Plugin for Developer {
     fn tools(&self, ctx: &PluginContext) -> Vec<Arc<dyn Skill>> {
         arch::init(
             ctx.introspection.clone(),
-            ctx.root().map(|r| r.to_path_buf()),
+            ctx.root().map(std::path::Path::to_path_buf),
         );
         let mut skills: Vec<Arc<dyn Skill>> = vec![Arc::new(codebase::CodebaseSkill::new(ctx))];
         if let Some(g) = ctx.graph.clone() {

@@ -81,6 +81,7 @@ function ConnectionSection() {
     }
   };
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- asks the server on open: the "checking" state starts here.
   useEffect(() => { check(); }, []);
 
   const save = async () => {

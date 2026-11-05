@@ -152,8 +152,7 @@ impl LlmProvider for AnthropicProvider {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(LlmProviderError::GenerationFailed(format!(
-                "Anthropic API Error (Status {}): {}",
-                status, body
+                "Anthropic API Error (Status {status}): {body}"
             )));
         }
 
@@ -230,8 +229,7 @@ impl LlmProvider for AnthropicProvider {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(LlmProviderError::GenerationFailed(format!(
-                "Anthropic API Error (Status {}): {}",
-                status, body
+                "Anthropic API Error (Status {status}): {body}"
             )));
         }
 

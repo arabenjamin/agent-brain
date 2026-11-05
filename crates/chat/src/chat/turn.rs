@@ -285,11 +285,8 @@ impl ChatService {
         error: Option<&str>,
     ) {
         let label = usage_tool_label();
-        let kind = (!success).then(|| {
-            error
-                .map(agent_brain_llm::shared_llm::failure_kind_of)
-                .unwrap_or("other")
-        });
+        let kind =
+            (!success).then(|| error.map_or("other", agent_brain_llm::shared_llm::failure_kind_of));
         // The ledger keeps only the kind; this is the one lasting copy of the text.
         if let Some(kind) = kind {
             warn!(
@@ -382,17 +379,18 @@ impl ChatService {
             // `provider_hint` is not consulted (it is routinely stale, e.g. a
             // profile naming `haiku` with a leftover `provider_hint: ollama`).
             Some(pm) => pm,
-            None => match provider_hint.map(str::trim).filter(|s| !s.is_empty()) {
-                Some(ph) => (ph.to_string(), model_pref.to_string()),
-                None => {
+            None => {
+                if let Some(ph) = provider_hint.map(str::trim).filter(|s| !s.is_empty()) {
+                    (ph.to_string(), model_pref.to_string())
+                } else {
                     warn!(
                         model_preference = model_pref,
                         "chat: profile model_preference not in catalog and no provider_hint — \
-                         using the default chat model for this turn"
+                     using the default chat model for this turn"
                     );
                     return None;
                 }
-            },
+            }
         };
 
         Some(agent_brain_llm::model_router::config_for_catalog_entry(
@@ -430,11 +428,7 @@ impl ChatService {
         let user_message = request.message.clone();
 
         // Apply context profile when set and no explicit tool allowlist is given.
-        let has_explicit_tools = request
-            .tools
-            .as_ref()
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
+        let has_explicit_tools = request.tools.as_ref().is_some_and(|v| !v.is_empty());
         let cb_opt = self.context_builder.read().await.clone();
 
         // The fallback profile when neither the request nor auto-assign picks one.
@@ -554,13 +548,14 @@ impl ChatService {
                     .filter(|n| !n.is_empty())
                 {
                     let base = config.clone().unwrap_or_default();
-                    match self.resolve_profile_model(&base, name, None).await {
-                        Some(c) => profile_fallbacks.push(c),
-                        None => warn!(
+                    if let Some(c) = self.resolve_profile_model(&base, name, None).await {
+                        profile_fallbacks.push(c)
+                    } else {
+                        warn!(
                             profile = %bundle.profile.name,
                             model = %name,
                             "profile fallback_models entry is not in the catalog — skipped"
-                        ),
+                        )
                     }
                 }
                 (filtered, prompt, notes)
@@ -817,10 +812,9 @@ impl ChatService {
         {
             let provider_str = config
                 .as_ref()
-                .map(|c| c.provider.to_string())
-                .unwrap_or_else(|| "none".into());
+                .map_or_else(|| "none".into(), |c| c.provider.to_string());
             let mode = if let Some(p) = &request.synthesis_provider {
-                format!("research → synthesize({})", p)
+                format!("research → synthesize({p})")
             } else {
                 "direct".into()
             };
@@ -831,8 +825,7 @@ impl ChatService {
                         provider_str,
                         config
                             .as_ref()
-                            .map(|c| c.model.as_str())
-                            .unwrap_or("unknown"),
+                            .map_or("unknown", |c| c.model.as_str()),
                         resolved_profile.as_deref().unwrap_or(&default_profile),
                         tools.len(),
                         if profile_system_prompt.is_some() {

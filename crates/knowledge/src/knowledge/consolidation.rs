@@ -65,7 +65,7 @@ impl KnowledgeService {
             })?;
             llm.embed(topic)
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to embed consolidation topic: {}", e))?
+                .map_err(|e| anyhow::anyhow!("Failed to embed consolidation topic: {e}"))?
         };
 
         // Cluster first, then summarise. The old selection took the top-K due
@@ -185,16 +185,15 @@ impl KnowledgeService {
 
         let prompt = format!(
             "You are a memory consolidation system. Respond in English only.\n\
-             The following {} memory records were grouped because they are about the \
+             The following {source_count} memory records were grouped because they are about the \
              same subject as [Memory 1]. Write a factual, plain-prose summary of what \
-             they say about that subject (context: '{}'). If a record turns out not to \
+             they say about that subject (context: '{topic}'). If a record turns out not to \
              be about the subject of [Memory 1], leave it out entirely. \
              Report only what is directly stated in the source records: what happened, \
              what was built or changed, what errors occurred, what was learned. \
              Do NOT add recommendations, analogies, frameworks, or analysis that is not in \
              the source material. Do NOT use headers, bullet points, emoji, or section labels. \
-             Do NOT echo the [Memory N] input labels. Write 2-4 concise paragraphs.\n\n{}",
-            source_count, topic, notes_block
+             Do NOT echo the [Memory N] input labels. Write 2-4 concise paragraphs.\n\n{notes_block}"
         );
 
         // 4. Auto-snapshot before LLM call (best-effort, never fails the operation).
@@ -213,7 +212,7 @@ impl KnowledgeService {
         let consolidated_content = llm
             .generate(&prompt, None)
             .await
-            .map_err(|e| anyhow::anyhow!("LLM generation failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("LLM generation failed: {e}"))?;
 
         // 6. Persist via store_note_raw (skip chunking + entity extraction for consolidated notes)
         let (consolidated_id, _) = self
@@ -228,11 +227,11 @@ impl KnowledgeService {
 
         // 7. Create SUMMARIZED_BY relationships from source notes to consolidated note
         if !source_ids.is_empty() {
-            let link_cypher = r#"
+            let link_cypher = r"
             MATCH (src:Note) WHERE src.id IN $source_ids
             MATCH (dst:Note {id: $consolidated_id})
             MERGE (src)-[:SUMMARIZED_BY]->(dst)
-            "#;
+            ";
 
             let link_query = neo4rs::query(link_cypher)
                 .param("source_ids", source_ids.clone())

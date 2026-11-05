@@ -391,7 +391,9 @@ pub fn install(entries: &BTreeMap<String, EngineEntry>) {
     } else {
         entries.clone()
     };
-    let mut slot = slot().write().unwrap_or_else(|p| p.into_inner());
+    let mut slot = slot()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match chosen(&table) {
         Ok(engine) => {
             slot.engine = Arc::new(engine);
@@ -408,7 +410,7 @@ pub fn install(entries: &BTreeMap<String, EngineEntry>) {
 pub fn current() -> Arc<Engine> {
     slot()
         .read()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .engine
         .clone()
 }
@@ -421,7 +423,11 @@ pub fn model(role: Role) -> Option<String> {
 /// `Err` when the brain must not start: the engine did not resolve, or it lacks
 /// chat or embeddings. Logs every feature that is off.
 pub fn require() -> Result<Arc<Engine>, String> {
-    if let Some(e) = &slot().read().unwrap_or_else(|p| p.into_inner()).error {
+    if let Some(e) = &slot()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .error
+    {
         return Err(e.clone());
     }
     let engine = current();

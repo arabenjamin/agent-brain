@@ -8,9 +8,7 @@ pub const DELEGATE_TOOL: &str = "delegate";
 
 /// Whether in-chat sub-agent delegation is enabled (default OFF for the spike).
 pub(super) fn subagent_enabled() -> bool {
-    std::env::var("SUBAGENT_ENABLED")
-        .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
-        .unwrap_or(false)
+    std::env::var("SUBAGENT_ENABLED").is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes"))
 }
 
 /// Build the `delegate` roster text from the spawnable profiles — one

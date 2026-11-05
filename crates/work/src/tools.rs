@@ -143,7 +143,7 @@ impl ToolHandler {
                         name,
                         arguments
                             .as_ref()
-                            .map(|a| a.to_string())
+                            .map(std::string::ToString::to_string)
                             .unwrap_or_default()
                     );
                     let response = result
@@ -172,7 +172,7 @@ impl ToolHandler {
             }
         }
 
-        ToolCallResult::error(format!("Unknown tool: {}", name))
+        ToolCallResult::error(format!("Unknown tool: {name}"))
     }
 }
 
@@ -292,13 +292,15 @@ fn retrieval_cell() -> &'static std::sync::RwLock<Vec<&'static str>> {
 pub fn plugin_retrieval_tools() -> Vec<&'static str> {
     retrieval_cell()
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 
 /// Set once plugins are accepted (`services::plugins::plugin_skills`).
 pub fn set_plugin_retrieval_tools(tools: Vec<&'static str>) {
-    *retrieval_cell().write().unwrap_or_else(|e| e.into_inner()) = tools;
+    *retrieval_cell()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = tools;
 }
 
 #[cfg(test)]

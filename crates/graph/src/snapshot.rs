@@ -196,8 +196,8 @@ impl SnapshotService {
         let now = Utc::now();
         let ts = now.format("%Y%m%d_%H%M%S").to_string();
         let file_name = match label {
-            Some(l) => format!("snapshot_{}_{}.json.gz", l, ts),
-            None => format!("snapshot_{}.json.gz", ts),
+            Some(l) => format!("snapshot_{l}_{ts}.json.gz"),
+            None => format!("snapshot_{ts}.json.gz"),
         };
         let file_path = self.snapshot_dir.join(&file_name);
 

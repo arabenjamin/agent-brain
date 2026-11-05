@@ -25,3 +25,6 @@ tracing-subscriber = { workspace = true }
 async-trait = { workspace = true }
 sentry = { version = "0.49", default-features = false, features = ["test"] }
 tempfile = "3"
+
+[lints]
+workspace = true

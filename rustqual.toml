@@ -1,0 +1,3 @@
+# rustqual: structural checks, compared against rustqual-baseline.json by
+# .github/workflows/quality.yml. Report-only until reviewed on 2026-11-18.
+exclude_files = ["vendor/**", "target/**", "workspace/**", "plugins/sandbox/rust/**"]

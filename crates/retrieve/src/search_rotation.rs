@@ -34,11 +34,10 @@ pub enum Standing {
 
 /// When the engine's budget period began.
 pub fn period_start(per: BudgetPeriod, now: DateTime<Utc>) -> DateTime<Utc> {
-    let midnight =
-        |d: chrono::NaiveDate| d.and_hms_opt(0, 0, 0).map(|t| t.and_utc()).unwrap_or(now);
+    let midnight = |d: chrono::NaiveDate| d.and_hms_opt(0, 0, 0).map_or(now, |t| t.and_utc());
     match per {
         BudgetPeriod::Day => midnight(now.date_naive()),
-        BudgetPeriod::Month => now.date_naive().with_day(1).map(midnight).unwrap_or(now),
+        BudgetPeriod::Month => now.date_naive().with_day(1).map_or(now, midnight),
         BudgetPeriod::Once => DateTime::<Utc>::UNIX_EPOCH,
     }
 }

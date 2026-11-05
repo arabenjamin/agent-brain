@@ -146,7 +146,7 @@ impl KnowledgeSkill {
                 };
                 ToolCallResult::success_json(response)
             }
-            Err(e) => ToolCallResult::error(format!("Failed to prune notes: {}", e)),
+            Err(e) => ToolCallResult::error(format!("Failed to prune notes: {e}")),
         }
     }
 
@@ -171,7 +171,7 @@ impl KnowledgeSkill {
                 });
                 ToolCallResult::success_json(response)
             }
-            Err(e) => ToolCallResult::error(format!("Consolidation failed: {}", e)),
+            Err(e) => ToolCallResult::error(format!("Consolidation failed: {e}")),
         }
     }
 }

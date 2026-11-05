@@ -74,7 +74,7 @@ fn validate_doc_rewrite(old: &str, new: &str) -> Result<(), String> {
             let missing: Vec<&str> = old_headings
                 .iter()
                 .filter(|h| !new_headings.contains(*h))
-                .map(|s| s.as_str())
+                .map(std::string::String::as_str)
                 .take(5)
                 .collect();
             return Err(format!(
@@ -143,32 +143,32 @@ fn upsert_doc_section(old: &str, section_heading: &str, content: &str) -> String
     let lines: Vec<&str> = old.lines().collect();
     let start = lines.iter().position(|l| l.trim() == heading);
 
-    let new_text = match start {
-        Some(i) => {
-            let mut j = i + 1;
-            while j < lines.len() {
-                let t = lines[j].trim_start();
-                if t.starts_with('#') && t.chars().take_while(|c| *c == '#').count() <= level {
-                    break;
-                }
-                j += 1;
+    let new_text = if let Some(i) = start {
+        let mut j = i + 1;
+        while j < lines.len() {
+            let t = lines[j].trim_start();
+            if t.starts_with('#') && t.chars().take_while(|c| *c == '#').count() <= level {
+                break;
             }
-            let mut parts: Vec<String> = lines[..i].iter().map(|s| s.to_string()).collect();
-            parts.push(block);
-            if j < lines.len() {
-                // Blank line between the new section and the next heading.
-                parts.push(String::new());
-                parts.extend(lines[j..].iter().map(|s| s.to_string()));
-            }
-            parts.join("\n")
+            j += 1;
         }
-        None => {
-            let trimmed = old.trim_end();
-            if trimmed.is_empty() {
-                block
-            } else {
-                format!("{}\n\n{}", trimmed, block)
-            }
+        let mut parts: Vec<String> = lines[..i]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        parts.push(block);
+        if j < lines.len() {
+            // Blank line between the new section and the next heading.
+            parts.push(String::new());
+            parts.extend(lines[j..].iter().map(std::string::ToString::to_string));
+        }
+        parts.join("\n")
+    } else {
+        let trimmed = old.trim_end();
+        if trimmed.is_empty() {
+            block
+        } else {
+            format!("{trimmed}\n\n{block}")
         }
     };
 
@@ -200,7 +200,7 @@ fn format_git_digest(raw: &str) -> String {
             if !out.is_empty() {
                 out.push(String::new());
             }
-            out.push(format!("### {}", date));
+            out.push(format!("### {date}"));
             out.push(String::new());
             current_date = date;
         }
@@ -522,8 +522,7 @@ impl CodebaseSkill {
 
         if !canonical_target.starts_with(&canonical_root) {
             return Err(ToolCallResult::error(format!(
-                "Path '{}' is outside the codebase root",
-                relative
+                "Path '{relative}' is outside the codebase root"
             )));
         }
 
@@ -694,7 +693,7 @@ impl CodebaseSkill {
             lines,
             args.section
                 .as_deref()
-                .map(|s| format!(", section '{}'", s))
+                .map(|s| format!(", section '{s}'"))
                 .unwrap_or_default(),
             full_path.display()
         ))
@@ -918,7 +917,7 @@ impl CodebaseSkill {
             proposed_fix = args.proposed_fix,
         );
         if let Some(ref snippet) = args.code_snippet {
-            body.push_str(&format!("\n## Code\n\n```\n{}\n```\n", snippet));
+            body.push_str(&format!("\n## Code\n\n```\n{snippet}\n```\n"));
         }
         // Reviewing a proposal is work for the user: it lives in their Feed,
         // whole — there is no proposal file (CORE_AND_PLUGINS_PLAN.md §4).
@@ -961,8 +960,7 @@ impl CodebaseSkill {
         // Enforce no traversal outside workspace root.
         if !normalized.starts_with(&root) {
             return Err(ToolCallResult::error(format!(
-                "Path '{}' is outside the workspace root",
-                relative
+                "Path '{relative}' is outside the workspace root"
             )));
         }
         Ok(normalized)
@@ -1196,8 +1194,7 @@ impl CodebaseSkill {
         {
             let preview = content.lines().take(40).collect::<Vec<_>>().join("\n");
             sections.push(format!(
-                "## Cargo.toml (workspace root)\n```toml\n{}\n```",
-                preview
+                "## Cargo.toml (workspace root)\n```toml\n{preview}\n```"
             ));
         }
 
@@ -1233,10 +1230,10 @@ impl CodebaseSkill {
             if !workflows.is_empty() {
                 dyn_lines.push("### Workflows (graph-stored job chains)".into());
                 for w in &workflows {
-                    let when = w
-                        .get::<i64>("every")
-                        .map(|s| format!("every {}", format_every(s)))
-                        .unwrap_or_else(|_| "by name".into());
+                    let when = w.get::<i64>("every").map_or_else(
+                        |_| "by name".into(),
+                        |s| format!("every {}", format_every(s)),
+                    );
                     let name = w.get::<String>("name").unwrap_or_default();
                     let desc = w.get::<String>("description").unwrap_or_default();
                     dyn_lines.push(format!("- {name} ({when}): {desc}"));
@@ -1437,7 +1434,7 @@ fn collect_files(
         Ok(e) => e.flatten().collect(),
         Err(_) => return,
     };
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
         if results.len() >= max {
@@ -1483,7 +1480,7 @@ fn search_in_dir(
         Ok(e) => e.flatten().collect(),
         Err(_) => return,
     };
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
         if results.len() >= max {
@@ -1516,10 +1513,10 @@ fn search_in_dir(
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let rel = path
-                .strip_prefix(root)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| path.to_string_lossy().to_string());
+            let rel = path.strip_prefix(root).map_or_else(
+                |_| path.to_string_lossy().to_string(),
+                |p| p.to_string_lossy().to_string(),
+            );
             let lines: Vec<&str> = content.lines().collect();
 
             for (i, line) in lines.iter().enumerate() {
@@ -1571,11 +1568,11 @@ fn build_tree(dir: &Path, prefix: &str, max_depth: usize, depth: usize, out: &mu
         } else {
             name.to_string_lossy().to_string()
         };
-        out.push_str(&format!("{}{}{}\n", prefix, connector, display));
+        out.push_str(&format!("{prefix}{connector}{display}\n"));
         if is_dir {
             build_tree(
                 &entry.path(),
-                &format!("{}{}", prefix, child_prefix),
+                &format!("{prefix}{child_prefix}"),
                 max_depth,
                 depth + 1,
                 out,

@@ -141,7 +141,7 @@ impl KnowledgeService {
             .unwrap_or(30.0);
 
         let ids: Vec<String> = hits.iter().map(|(id, _, _)| id.clone()).collect();
-        let cypher = r#"
+        let cypher = r"
         MATCH (n:Note) WHERE n.id IN $ids
         RETURN n.id AS id,
                COALESCE(n.access_count, 0) AS access_count,
@@ -149,7 +149,7 @@ impl KnowledgeService {
                    duration.between(datetime(n.last_accessed_at), datetime()).days,
                    30
                ) AS days_since_access
-        "#;
+        ";
 
         let freshness: HashMap<String, (i64, i64)> = self
             .neo4j
@@ -206,7 +206,7 @@ impl KnowledgeService {
 
         let hops = hop_limit.min(3);
         let cypher = format!(
-            r#"
+            r"
             MATCH (n:Note) WHERE n.id IN $primary_ids
             MATCH (n)-[r:RELATES_TO*1..{hops}]->(nb:Note)
             WHERE NOT nb.id IN $primary_ids
@@ -214,8 +214,7 @@ impl KnowledgeService {
                  min(reduce(s = 1.0, rel IN r | s * COALESCE(rel.similarity, 1.0))) AS path_score
             ORDER BY path_score DESC LIMIT $per_hop_limit
             RETURN id, content, path_score
-            "#,
-            hops = hops
+            "
         );
 
         let query = neo4rs::query(&cypher)
@@ -397,11 +396,11 @@ impl KnowledgeService {
             None => None,
         };
         if let Some(query_embedding) = query_embedding {
-            let cypher = r#"
+            let cypher = r"
                 CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
                 YIELD node, score
                 RETURN node.id AS id, node.content AS content, score
-                "#;
+                ";
 
             let q = neo4rs::query(cypher)
                 .param("embedding", query_embedding)
@@ -431,11 +430,11 @@ impl KnowledgeService {
         // 2. BM25 full-text search
         let mut bm25_hits: Vec<(String, String)> = Vec::new();
         {
-            let cypher = r#"
+            let cypher = r"
             CALL db.index.fulltext.queryNodes('note_content_fulltext', $query, {limit: $limit})
             YIELD node, score
             RETURN node.id AS id, node.content AS content, score
-            "#;
+            ";
 
             // Sanitize: raw query text with Lucene special chars (URLs, colons, brackets)
             // would throw and silently drop BM25 from the hybrid merge.
@@ -465,12 +464,12 @@ impl KnowledgeService {
         // 3. Merge or fall back to keyword search, then apply freshness boost.
         let mut merged: Vec<(String, String)> = if vec_hits.is_empty() && bm25_hits.is_empty() {
             // Fallback: CONTAINS keyword search (no freshness boost needed — already fast-path)
-            let cypher = r#"
+            let cypher = r"
             MATCH (n:Note)
             WHERE toLower(n.content) CONTAINS toLower($query)
             RETURN n.id AS id, n.content AS content
             LIMIT $limit
-            "#;
+            ";
 
             let q = neo4rs::query(cypher)
                 .param("query", query_text)
@@ -530,11 +529,11 @@ impl KnowledgeService {
         // 3.5 Hybrid Retrieval: Resolve child chunks to parents (Small-to-Big)
         if !merged.is_empty() {
             let hit_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
-            let parent_cypher = r#"
+            let parent_cypher = r"
             MATCH (n:Note) WHERE n.id IN $hit_ids
             OPTIONAL MATCH (n)-[:PART_OF]->(p:Note)
             RETURN n.id AS hit_id, n.content AS hit_content, p.id AS parent_id, p.content AS parent_content
-            "#;
+            ";
 
             if let Ok(rows) = self
                 .neo4j
@@ -615,12 +614,12 @@ impl KnowledgeService {
         // 4.5 Entity-bridge expansion: find other notes that mention the same entities.
         if entity_expansion && !merged.is_empty() {
             let primary_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
-            let entity_cypher = r#"
+            let entity_cypher = r"
             MATCH (n:Note)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(m:Note)
             WHERE n.id IN $primary_ids AND NOT m.id IN $primary_ids
             RETURN DISTINCT m.id AS id, m.content AS content
             LIMIT $limit
-            "#;
+            ";
             let extra_limit = (limit / 2).max(3) as i64;
             if let Ok(rows) = self
                 .neo4j
@@ -753,7 +752,7 @@ impl KnowledgeService {
         let hit_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
         if track_access && !hit_ids.is_empty() {
             let now = Utc::now().to_rfc3339();
-            let update_cypher = r#"
+            let update_cypher = r"
             MATCH (n:Note) WHERE n.id IN $ids
             WITH n,
                  CASE WHEN n.review_interval_days IS NULL THEN 1
@@ -762,7 +761,7 @@ impl KnowledgeService {
                 n.last_accessed_at = datetime($now),
                 n.review_interval_days = new_interval,
                 n.next_review_at = datetime($now) + duration({days: new_interval})
-            "#;
+            ";
             let _ = self
                 .neo4j
                 .run(
@@ -792,11 +791,11 @@ impl KnowledgeService {
         if let Some(llm) = &self.llm
             && let Ok(query_embedding) = llm.embed(query_text).await
         {
-            let cypher = r#"
+            let cypher = r"
                 CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
                 YIELD node, score
                 RETURN node.id AS id, node.content AS content
-                "#;
+                ";
             let q = neo4rs::query(cypher)
                 .param("embedding", query_embedding)
                 .param("limit", fetch_limit as i64);
@@ -816,11 +815,11 @@ impl KnowledgeService {
 
         let mut bm25_hits: Vec<(String, String)> = Vec::new();
         {
-            let cypher = r#"
+            let cypher = r"
             CALL db.index.fulltext.queryNodes('note_content_fulltext', $query, {limit: $limit})
             YIELD node, score
             RETURN node.id AS id, node.content AS content
-            "#;
+            ";
             let q = neo4rs::query(cypher)
                 .param("query", sanitize_lucene_query(query_text))
                 .param("limit", fetch_limit as i64);
@@ -839,12 +838,12 @@ impl KnowledgeService {
         }
 
         let mut merged: Vec<(String, String)> = if vec_hits.is_empty() && bm25_hits.is_empty() {
-            let cypher = r#"
+            let cypher = r"
             MATCH (n:Note)
             WHERE toLower(n.content) CONTAINS toLower($query)
             RETURN n.id AS id, n.content AS content
             LIMIT $limit
-            "#;
+            ";
             let q = neo4rs::query(cypher)
                 .param("query", query_text)
                 .param("limit", limit as i64);

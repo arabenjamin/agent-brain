@@ -1320,7 +1320,7 @@ fn tokenize(text: &str) -> std::collections::HashSet<String> {
     ];
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= 3)
-        .map(|w| w.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .filter(|w| !STOPWORDS.contains(&w.as_str()))
         .collect()
 }

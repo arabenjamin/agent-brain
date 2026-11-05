@@ -33,15 +33,14 @@ impl KnowledgeService {
              IMPORTANT: Respond in English only. All text fields in the JSON must be in English.\n\
              Output ONLY valid JSON (no markdown, no code fences): \
              {{\"answer\":\"...\",\"inferences\":[\"...\"],\"confidence\":0.0,\"gaps\":[\"...\"]}}\n\n\
-             QUESTION: {}\n\
-             KNOWLEDGE:\n{}",
-            question, notes_block
+             QUESTION: {question}\n\
+             KNOWLEDGE:\n{notes_block}"
         );
 
         let response = llm
             .generate(&prompt, None)
             .await
-            .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {e}"))?;
 
         let text = response.trim();
         let parsed: serde_json::Value = agent_brain_llm::llm::first_json_object(text, &["answer"])
@@ -72,7 +71,7 @@ impl KnowledgeService {
             .unwrap_or_default();
         let confidence = parsed
             .get("confidence")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.5);
         let gaps: Vec<String> = parsed
             .get("gaps")
@@ -116,11 +115,11 @@ impl KnowledgeService {
                     // Create DERIVED_FROM edges to source notes
                     let source_ids: Vec<String> = notes.iter().map(|(id, _)| id.clone()).collect();
                     if !source_ids.is_empty() {
-                        let link_cypher = r#"
+                        let link_cypher = r"
                         MATCH (inf:Note {id: $inf_id})
                         MATCH (src:Note) WHERE src.id IN $source_ids
                         MERGE (inf)-[:DERIVED_FROM]->(src)
-                        "#;
+                        ";
                         let _ = self
                             .neo4j
                             .run(
@@ -215,9 +214,8 @@ impl KnowledgeService {
              Output ONLY valid JSON (no markdown, no code fences):\n\
              {{\"answer\":\"...\",\"inferences\":[\"...\"],\"confidence\":0.0,\
              \"gaps\":[\"...\"],\"caveats\":[\"...\"],\"follow_up_questions\":[\"...\"]}}\n\n\
-             QUESTION: {}\n\
-             KNOWLEDGE:\n{}",
-            question, notes_block
+             QUESTION: {question}\n\
+             KNOWLEDGE:\n{notes_block}"
         );
 
         // Strict-JSON structured output with self-correcting retries. If the
@@ -247,7 +245,7 @@ impl KnowledgeService {
                     let raw = llm
                         .generate(&prompt, None)
                         .await
-                        .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {}", e))?
+                        .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {e}"))?
                         .trim()
                         .to_string();
                     // confidence 0.0, not 0.5. The old 0.5 was a fabricated number
@@ -286,7 +284,7 @@ impl KnowledgeService {
             .unwrap_or_default();
         let mut confidence = parsed
             .get("confidence")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.5);
         let gaps: Vec<String> = parsed
             .get("gaps")
@@ -376,11 +374,11 @@ impl KnowledgeService {
                 Ok((inf_id, _)) => {
                     let source_ids: Vec<String> = notes.iter().map(|(id, _)| id.clone()).collect();
                     if !source_ids.is_empty() {
-                        let link_cypher = r#"
+                        let link_cypher = r"
                         MATCH (inf:Note {id: $inf_id})
                         MATCH (src:Note) WHERE src.id IN $source_ids
                         MERGE (inf)-[:DERIVED_FROM]->(src)
-                        "#;
+                        ";
                         let _ = self
                             .neo4j
                             .run(
@@ -434,8 +432,7 @@ impl KnowledgeService {
              Output ONLY valid JSON: \
              {{\"counter_arguments\":[\"...\"],\"confidence_adjustment\":-0.1}}\n\
              (confidence_adjustment must be between -0.5 and 0.0)\n\n\
-             QUESTION: {}\nANSWER: {}",
-            question, initial_answer
+             QUESTION: {question}\nANSWER: {initial_answer}"
         );
 
         let response = match llm.generate(&prompt, None).await {
@@ -464,7 +461,7 @@ impl KnowledgeService {
 
         let raw_adj = parsed
             .get("confidence_adjustment")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0)
             .clamp(-0.5, 0.0);
 
@@ -506,8 +503,8 @@ impl KnowledgeService {
             }
 
             let task_id = Uuid::new_v4().to_string();
-            let goal = format!("Fill knowledge gap: {}", gap);
-            let context = format!("Triggered by note: {}", triggering_note_id);
+            let goal = format!("Fill knowledge gap: {gap}");
+            let context = format!("Triggered by note: {triggering_note_id}");
 
             let create_q = neo4rs::query(
                 "CREATE (t:Task {id: $id, goal: $goal, context: $ctx, \

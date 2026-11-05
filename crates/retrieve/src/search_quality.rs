@@ -145,11 +145,10 @@ pub fn assess(items: &[Value], q: &QuerySpec, known: &[String], now: DateTime<Ut
 /// no fragment, no trailing slash, host lowercased.
 pub fn link_key(link: &str) -> Option<String> {
     let h = host(link)?;
-    let rest = link.split_once("://").map(|x| x.1).unwrap_or(link);
+    let rest = link.split_once("://").map_or(link, |x| x.1);
     let path = rest
         .split_once('/')
-        .map(|(_, p)| p)
-        .unwrap_or("")
+        .map_or("", |(_, p)| p)
         .split('#')
         .next()
         .unwrap_or("")

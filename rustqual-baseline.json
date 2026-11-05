@@ -1,0 +1,1619 @@
+{
+  "version": 2,
+  "quality_score": 0.3848999759166615,
+  "iosp_score": 0.891771935814271,
+  "violations": 317,
+  "total": 4277,
+  "complexity_warnings": 136,
+  "magic_number_warnings": 593,
+  "nesting_depth_warnings": 29,
+  "function_length_warnings": 242,
+  "unsafe_warnings": 1,
+  "error_handling_warnings": 39,
+  "duplicate_groups": 30,
+  "dead_code_warnings": 9,
+  "dead_type_warnings": 0,
+  "fragment_groups": 146,
+  "boilerplate_warnings": 59,
+  "srp_struct_warnings": 9,
+  "srp_module_warnings": 96,
+  "wildcard_import_warnings": 39,
+  "sdp_violations": 0,
+  "coupling_warnings": 0,
+  "coupling_cycles": 0,
+  "tq_no_assertion_warnings": 0,
+  "tq_no_sut_warnings": 4,
+  "tq_untested_warnings": 123,
+  "tq_uncovered_warnings": 0,
+  "tq_untested_logic_warnings": 0,
+  "structural_srp_warnings": 35,
+  "structural_coupling_warnings": 11,
+  "total_findings": 1985,
+  "violation_details": [
+    {
+      "name": "parse",
+      "file": "crates/api/src/refs.rs",
+      "line": 68
+    },
+    {
+      "name": "handle_suggest",
+      "file": "crates/api/src/refs.rs",
+      "line": 419
+    },
+    {
+      "name": "handle_list_models",
+      "file": "crates/api/src/rest/models.rs",
+      "line": 12
+    },
+    {
+      "name": "handle_update_note",
+      "file": "crates/api/src/rest/notes.rs",
+      "line": 180
+    },
+    {
+      "name": "body_def",
+      "file": "crates/api/src/topics.rs",
+      "line": 467
+    },
+    {
+      "name": "handle_update",
+      "file": "crates/api/src/topics.rs",
+      "line": 574
+    },
+    {
+      "name": "handle_run_workflow_now",
+      "file": "crates/api/src/work.rs",
+      "line": 637
+    },
+    {
+      "name": "step_source_contexts",
+      "file": "crates/api/src/work.rs",
+      "line": 802
+    },
+    {
+      "name": "handle_workflow_topic_mix",
+      "file": "crates/api/src/work.rs",
+      "line": 848
+    },
+    {
+      "name": "BrainCore::initialize",
+      "file": "crates/app/src/brain_core.rs",
+      "line": 346
+    },
+    {
+      "name": "BrainCore::build_skills",
+      "file": "crates/app/src/brain_core.rs",
+      "line": 364
+    },
+    {
+      "name": "main",
+      "file": "crates/app/src/main.rs",
+      "line": 20
+    },
+    {
+      "name": "run_repair_notes",
+      "file": "crates/app/src/main.rs",
+      "line": 215
+    },
+    {
+      "name": "run_eval_retrieval",
+      "file": "crates/app/src/main.rs",
+      "line": 258
+    },
+    {
+      "name": "run_init_db",
+      "file": "crates/app/src/main.rs",
+      "line": 311
+    },
+    {
+      "name": "run_resolve_entities",
+      "file": "crates/app/src/main.rs",
+      "line": 357
+    },
+    {
+      "name": "resolve_entities",
+      "file": "crates/app/src/main.rs",
+      "line": 369
+    },
+    {
+      "name": "run_serve",
+      "file": "crates/app/src/main.rs",
+      "line": 522
+    },
+    {
+      "name": "HttpTransport::start",
+      "file": "crates/app/src/mcp/http_transport.rs",
+      "line": 637
+    },
+    {
+      "name": "McpServerCore::chat_service",
+      "file": "crates/app/src/mcp/server.rs",
+      "line": 212
+    },
+    {
+      "name": "StdioTransport::start",
+      "file": "crates/app/src/mcp/transport.rs",
+      "line": 245
+    },
+    {
+      "name": "missing_cited_paths",
+      "file": "crates/chat/src/agent_runner.rs",
+      "line": 373
+    },
+    {
+      "name": "verification_failures",
+      "file": "crates/chat/src/agent_runner.rs",
+      "line": 470
+    },
+    {
+      "name": "AgentRunner::run_with",
+      "file": "crates/chat/src/agent_runner.rs",
+      "line": 761
+    },
+    {
+      "name": "extract_sources",
+      "file": "crates/chat/src/agent_runner.rs",
+      "line": 1335
+    },
+    {
+      "name": "format_subagent_findings",
+      "file": "crates/chat/src/agent_runner.rs",
+      "line": 1360
+    },
+    {
+      "name": "AnthropicTurn::call",
+      "file": "crates/chat/src/chat/anthropic_loop.rs",
+      "line": 133
+    },
+    {
+      "name": "cited_ids",
+      "file": "crates/chat/src/chat/citations.rs",
+      "line": 11
+    },
+    {
+      "name": "check_citations",
+      "file": "crates/chat/src/chat/citations.rs",
+      "line": 106
+    },
+    {
+      "name": "forward_chat_events",
+      "file": "crates/chat/src/chat/events.rs",
+      "line": 107
+    },
+    {
+      "name": "probe_may_run",
+      "file": "crates/chat/src/chat/handover.rs",
+      "line": 72
+    },
+    {
+      "name": "call_is_read_only",
+      "file": "crates/chat/src/chat/handover.rs",
+      "line": 92
+    },
+    {
+      "name": "ChatService::dispatch_tool_call",
+      "file": "crates/chat/src/chat/mod.rs",
+      "line": 330
+    },
+    {
+      "name": "ChatService::run_round_loop",
+      "file": "crates/chat/src/chat/round_loop.rs",
+      "line": 130
+    },
+    {
+      "name": "pick",
+      "file": "crates/chat/src/chat/route.rs",
+      "line": 261
+    },
+    {
+      "name": "run_behavior",
+      "file": "crates/chat/src/chat/route.rs",
+      "line": 437
+    },
+    {
+      "name": "route",
+      "file": "crates/chat/src/chat/route.rs",
+      "line": 551
+    },
+    {
+      "name": "annotate_tool_result",
+      "file": "crates/chat/src/chat/tool_results.rs",
+      "line": 160
+    },
+    {
+      "name": "search_sources_marker",
+      "file": "crates/chat/src/chat/tool_results.rs",
+      "line": 195
+    },
+    {
+      "name": "reason_limits_marker",
+      "file": "crates/chat/src/chat/tool_results.rs",
+      "line": 253
+    },
+    {
+      "name": "ChatService::run",
+      "file": "crates/chat/src/chat/turn.rs",
+      "line": 405
+    },
+    {
+      "name": "TurnWriteGuard::screen",
+      "file": "crates/chat/src/chat/write_guard.rs",
+      "line": 136
+    },
+    {
+      "name": "TurnWriteGuard::observe",
+      "file": "crates/chat/src/chat/write_guard.rs",
+      "line": 165
+    },
+    {
+      "name": "execute_guarded",
+      "file": "crates/chat/src/chat/write_guard.rs",
+      "line": 204
+    },
+    {
+      "name": "install",
+      "file": "crates/engine/src/lib.rs",
+      "line": 388
+    },
+    {
+      "name": "Rules::from_files",
+      "file": "crates/graph/src/entity_resolution.rs",
+      "line": 105
+    },
+    {
+      "name": "Rules::load_dir",
+      "file": "crates/graph/src/entity_resolution.rs",
+      "line": 143
+    },
+    {
+      "name": "Rules::key",
+      "file": "crates/graph/src/entity_resolution.rs",
+      "line": 180
+    },
+    {
+      "name": "plan_merges",
+      "file": "crates/graph/src/entity_resolution.rs",
+      "line": 436
+    },
+    {
+      "name": "merge",
+      "file": "crates/graph/src/entity_resolution.rs",
+      "line": 551
+    },
+    {
+      "name": "sync",
+      "file": "crates/graph/src/entity_resolution.rs",
+      "line": 828
+    },
+    {
+      "name": "find_candidates",
+      "file": "crates/graph/src/entity_resolution.rs",
+      "line": 1083
+    },
+    {
+      "name": "candidates",
+      "file": "crates/graph/src/entity_resolution.rs",
+      "line": 1211
+    },
+    {
+      "name": "LogFilter::matches",
+      "file": "crates/graph/src/logging.rs",
+      "line": 151
+    },
+    {
+      "name": "SnapshotService::take_snapshot",
+      "file": "crates/graph/src/snapshot.rs",
+      "line": 191
+    },
+    {
+      "name": "SnapshotService::apply_retention",
+      "file": "crates/graph/src/snapshot.rs",
+      "line": 279
+    },
+    {
+      "name": "SnapshotService::restore_snapshot",
+      "file": "crates/graph/src/snapshot.rs",
+      "line": 342
+    },
+    {
+      "name": "Topics::load_dir",
+      "file": "crates/graph/src/topics.rs",
+      "line": 269
+    },
+    {
+      "name": "Topics::parse",
+      "file": "crates/graph/src/topics.rs",
+      "line": 369
+    },
+    {
+      "name": "Topics::load_bundles",
+      "file": "crates/graph/src/topics.rs",
+      "line": 414
+    },
+    {
+      "name": "sync",
+      "file": "crates/graph/src/topics.rs",
+      "line": 454
+    },
+    {
+      "name": "reload",
+      "file": "crates/graph/src/topics.rs",
+      "line": 552
+    },
+    {
+      "name": "check_def",
+      "file": "crates/graph/src/topics.rs",
+      "line": 668
+    },
+    {
+      "name": "save",
+      "file": "crates/graph/src/topics.rs",
+      "line": 769
+    },
+    {
+      "name": "delete",
+      "file": "crates/graph/src/topics.rs",
+      "line": 809
+    },
+    {
+      "name": "classify_note",
+      "file": "crates/graph/src/topics.rs",
+      "line": 1011
+    },
+    {
+      "name": "ToolFile::check",
+      "file": "crates/host/src/bundle_tools.rs",
+      "line": 59
+    },
+    {
+      "name": "check_query",
+      "file": "crates/host/src/bundle_tools.rs",
+      "line": 103
+    },
+    {
+      "name": "cypher_params",
+      "file": "crates/host/src/bundle_tools.rs",
+      "line": 166
+    },
+    {
+      "name": "BundleToolSkill::load",
+      "file": "crates/host/src/bundle_tools.rs",
+      "line": 201
+    },
+    {
+      "name": "Host::context",
+      "file": "crates/host/src/plugin_host.rs",
+      "line": 34
+    },
+    {
+      "name": "PluginManagerSkill::write",
+      "file": "crates/host/src/plugin_manager.rs",
+      "line": 143
+    },
+    {
+      "name": "PluginManagerSkill::check_bundle",
+      "file": "crates/host/src/plugin_manager.rs",
+      "line": 236
+    },
+    {
+      "name": "stage",
+      "file": "crates/host/src/plugin_manager.rs",
+      "line": 374
+    },
+    {
+      "name": "file_path_ok",
+      "file": "crates/host/src/plugin_manager.rs",
+      "line": 415
+    },
+    {
+      "name": "plugin_skills",
+      "file": "crates/host/src/plugins.rs",
+      "line": 108
+    },
+    {
+      "name": "check_seed_file",
+      "file": "crates/host/src/plugins.rs",
+      "line": 331
+    },
+    {
+      "name": "seed_on_create",
+      "file": "crates/host/src/plugins.rs",
+      "line": 391
+    },
+    {
+      "name": "seed_api_kinds",
+      "file": "crates/host/src/plugins.rs",
+      "line": 524
+    },
+    {
+      "name": "git",
+      "file": "crates/host/src/self_model.rs",
+      "line": 48
+    },
+    {
+      "name": "sync_code_version",
+      "file": "crates/host/src/self_model.rs",
+      "line": 118
+    },
+    {
+      "name": "NoteSpec::compile",
+      "file": "crates/host/src/views.rs",
+      "line": 315
+    },
+    {
+      "name": "join_rows",
+      "file": "crates/host/src/views.rs",
+      "line": 548
+    },
+    {
+      "name": "ViewFile::check",
+      "file": "crates/host/src/views.rs",
+      "line": 680
+    },
+    {
+      "name": "LookupSkill::catalog",
+      "file": "crates/host/src/views.rs",
+      "line": 980
+    },
+    {
+      "name": "LookupSkill::count",
+      "file": "crates/host/src/views.rs",
+      "line": 1068
+    },
+    {
+      "name": "LookupSkill::run_notes",
+      "file": "crates/host/src/views.rs",
+      "line": 1077
+    },
+    {
+      "name": "LookupSkill::thin",
+      "file": "crates/host/src/views.rs",
+      "line": 1218
+    },
+    {
+      "name": "LookupSkill::run_cypher",
+      "file": "crates/host/src/views.rs",
+      "line": 1329
+    },
+    {
+      "name": "LookupSkill::execute",
+      "file": "crates/host/src/views.rs",
+      "line": 1441
+    },
+    {
+      "name": "KnowledgeService::fetch_similar_notes",
+      "file": "crates/knowledge/src/knowledge/analysis.rs",
+      "line": 20
+    },
+    {
+      "name": "KnowledgeService::synthesize_knowledge",
+      "file": "crates/knowledge/src/knowledge/analysis.rs",
+      "line": 115
+    },
+    {
+      "name": "KnowledgeService::explain_reasoning",
+      "file": "crates/knowledge/src/knowledge/analysis.rs",
+      "line": 294
+    },
+    {
+      "name": "KnowledgeService::consolidate_memories",
+      "file": "crates/knowledge/src/knowledge/consolidation.rs",
+      "line": 49
+    },
+    {
+      "name": "KnowledgeService::extract_entities_with",
+      "file": "crates/knowledge/src/knowledge/entities.rs",
+      "line": 160
+    },
+    {
+      "name": "ExactPatterns::check_links",
+      "file": "crates/knowledge/src/knowledge/exact.rs",
+      "line": 374
+    },
+    {
+      "name": "KnowledgeService::prune_old_notes",
+      "file": "crates/knowledge/src/knowledge/maintenance.rs",
+      "line": 11
+    },
+    {
+      "name": "KnowledgeService::reason",
+      "file": "crates/knowledge/src/knowledge/reasoning.rs",
+      "line": 8
+    },
+    {
+      "name": "KnowledgeService::reason_structured",
+      "file": "crates/knowledge/src/knowledge/reasoning.rs",
+      "line": 187
+    },
+    {
+      "name": "strip_outer_fence",
+      "file": "crates/knowledge/src/knowledge/reasoning.rs",
+      "line": 546
+    },
+    {
+      "name": "KnowledgeService::window_buckets",
+      "file": "crates/knowledge/src/knowledge/recall.rs",
+      "line": 166
+    },
+    {
+      "name": "KnowledgeService::recall_window",
+      "file": "crates/knowledge/src/knowledge/recall.rs",
+      "line": 288
+    },
+    {
+      "name": "sanitize_lucene_query",
+      "file": "crates/knowledge/src/knowledge/retrieval.rs",
+      "line": 9
+    },
+    {
+      "name": "MatchTrace::credit_parent",
+      "file": "crates/knowledge/src/knowledge/retrieval.rs",
+      "line": 53
+    },
+    {
+      "name": "KnowledgeService::search_notes_inner",
+      "file": "crates/knowledge/src/knowledge/retrieval.rs",
+      "line": 345
+    },
+    {
+      "name": "KnowledgeService::search_notes_with_ids",
+      "file": "crates/knowledge/src/knowledge/retrieval.rs",
+      "line": 782
+    },
+    {
+      "name": "KnowledgeService::rewrite_note_in_place",
+      "file": "crates/knowledge/src/knowledge/store.rs",
+      "line": 183
+    },
+    {
+      "name": "KnowledgeService::store_note",
+      "file": "crates/knowledge/src/knowledge/store.rs",
+      "line": 502
+    },
+    {
+      "name": "bootstrap",
+      "file": "crates/knowledge/src/retrieval_eval.rs",
+      "line": 253
+    },
+    {
+      "name": "BudgetBook::observe",
+      "file": "crates/llm/src/budget.rs",
+      "line": 236
+    },
+    {
+      "name": "parse_reset",
+      "file": "crates/llm/src/budget.rs",
+      "line": 629
+    },
+    {
+      "name": "verdict",
+      "file": "crates/llm/src/budget.rs",
+      "line": 742
+    },
+    {
+      "name": "init",
+      "file": "crates/llm/src/gpu_lease.rs",
+      "line": 226
+    },
+    {
+      "name": "embed_with_backoff",
+      "file": "crates/llm/src/llm_providers/mod.rs",
+      "line": 92
+    },
+    {
+      "name": "ModelCatalog::load_or_default",
+      "file": "crates/llm/src/model_config.rs",
+      "line": 100
+    },
+    {
+      "name": "RoutingPolicy::from_values",
+      "file": "crates/llm/src/routing.rs",
+      "line": 243
+    },
+    {
+      "name": "RoutingPolicy::check_entry",
+      "file": "crates/llm/src/routing.rs",
+      "line": 292
+    },
+    {
+      "name": "classify_unavailable",
+      "file": "crates/llm/src/shared_llm.rs",
+      "line": 353
+    },
+    {
+      "name": "is_rate_limited",
+      "file": "crates/llm/src/shared_llm.rs",
+      "line": 393
+    },
+    {
+      "name": "is_subscription_required",
+      "file": "crates/llm/src/shared_llm.rs",
+      "line": 400
+    },
+    {
+      "name": "is_transport_failure",
+      "file": "crates/llm/src/shared_llm.rs",
+      "line": 415
+    },
+    {
+      "name": "is_server_error",
+      "file": "crates/llm/src/shared_llm.rs",
+      "line": 431
+    },
+    {
+      "name": "registrable_domain",
+      "file": "crates/plugin-api/src/web.rs",
+      "line": 18
+    },
+    {
+      "name": "Neo4jClient::init_schema",
+      "file": "crates/repository/src/client.rs",
+      "line": 34
+    },
+    {
+      "name": "is_schema_already_exists_error",
+      "file": "crates/repository/src/client.rs",
+      "line": 293
+    },
+    {
+      "name": "Neo4jClient::append_revision",
+      "file": "crates/repository/src/revision.rs",
+      "line": 285
+    },
+    {
+      "name": "TelemetryClient::new",
+      "file": "crates/repository/src/telemetry.rs",
+      "line": 64
+    },
+    {
+      "name": "TelemetryClient::query_raw",
+      "file": "crates/repository/src/telemetry.rs",
+      "line": 1423
+    },
+    {
+      "name": "check_single_select",
+      "file": "crates/repository/src/telemetry.rs",
+      "line": 1704
+    },
+    {
+      "name": "Neo4jClient::create_workflow",
+      "file": "crates/repository/src/workflow.rs",
+      "line": 196
+    },
+    {
+      "name": "Neo4jClient::sync_yaml_workflow",
+      "file": "crates/repository/src/workflow.rs",
+      "line": 277
+    },
+    {
+      "name": "Neo4jClient::update_workflow",
+      "file": "crates/repository/src/workflow.rs",
+      "line": 354
+    },
+    {
+      "name": "check",
+      "file": "crates/retrieve/src/api_tags.rs",
+      "line": 88
+    },
+    {
+      "name": "body_sample",
+      "file": "crates/retrieve/src/http/api_context.rs",
+      "line": 56
+    },
+    {
+      "name": "HttpSkill::handle_define_api_context",
+      "file": "crates/retrieve/src/http/api_context.rs",
+      "line": 175
+    },
+    {
+      "name": "HttpSkill::store_probed_endpoints",
+      "file": "crates/retrieve/src/http/api_context.rs",
+      "line": 294
+    },
+    {
+      "name": "parse_api_spec",
+      "file": "crates/retrieve/src/http/ingest.rs",
+      "line": 40
+    },
+    {
+      "name": "extract_security",
+      "file": "crates/retrieve/src/http/ingest.rs",
+      "line": 151
+    },
+    {
+      "name": "detect_spec_url_in_html",
+      "file": "crates/retrieve/src/http/ingest.rs",
+      "line": 437
+    },
+    {
+      "name": "find_js_refs",
+      "file": "crates/retrieve/src/http/ingest.rs",
+      "line": 500
+    },
+    {
+      "name": "find_route_files",
+      "file": "crates/retrieve/src/http/ingest.rs",
+      "line": 644
+    },
+    {
+      "name": "HttpSkill::find_linked_spec",
+      "file": "crates/retrieve/src/http/ingest.rs",
+      "line": 801
+    },
+    {
+      "name": "HttpSkill::handle_ingest_api",
+      "file": "crates/retrieve/src/http/ingest.rs",
+      "line": 817
+    },
+    {
+      "name": "HttpSkill::ingest_api_untagged",
+      "file": "crates/retrieve/src/http/ingest.rs",
+      "line": 866
+    },
+    {
+      "name": "HttpSkill::ingest_codebase_via_llm",
+      "file": "crates/retrieve/src/http/ingest.rs",
+      "line": 1300
+    },
+    {
+      "name": "set_path",
+      "file": "crates/retrieve/src/http.rs",
+      "line": 50
+    },
+    {
+      "name": "project_body",
+      "file": "crates/retrieve/src/http.rs",
+      "line": 68
+    },
+    {
+      "name": "HttpSkill::handle_http_request",
+      "file": "crates/retrieve/src/http.rs",
+      "line": 266
+    },
+    {
+      "name": "HttpSkill::tools",
+      "file": "crates/retrieve/src/http.rs",
+      "line": 466
+    },
+    {
+      "name": "McpClientSkill::check_remote_arguments",
+      "file": "crates/retrieve/src/mcp_client.rs",
+      "line": 84
+    },
+    {
+      "name": "McpClientSkill::handle_call",
+      "file": "crates/retrieve/src/mcp_client.rs",
+      "line": 295
+    },
+    {
+      "name": "remote_problems",
+      "file": "crates/retrieve/src/mcp_client.rs",
+      "line": 354
+    },
+    {
+      "name": "read",
+      "file": "crates/retrieve/src/page_readers.rs",
+      "line": 227
+    },
+    {
+      "name": "read_direct",
+      "file": "crates/retrieve/src/page_readers.rs",
+      "line": 324
+    },
+    {
+      "name": "QuerySkill::schema",
+      "file": "crates/retrieve/src/query.rs",
+      "line": 192
+    },
+    {
+      "name": "QuerySkill::handle_recent_tasks",
+      "file": "crates/retrieve/src/query.rs",
+      "line": 432
+    },
+    {
+      "name": "QuerySkill::handle_list_apis",
+      "file": "crates/retrieve/src/query.rs",
+      "line": 478
+    },
+    {
+      "name": "QuerySkill::handle_list_endpoints",
+      "file": "crates/retrieve/src/query.rs",
+      "line": 521
+    },
+    {
+      "name": "QuerySkill::handle_list_capabilities",
+      "file": "crates/retrieve/src/query.rs",
+      "line": 574
+    },
+    {
+      "name": "QuerySkill::handle_duckdb_query",
+      "file": "crates/retrieve/src/query.rs",
+      "line": 955
+    },
+    {
+      "name": "QuerySkill::tools",
+      "file": "crates/retrieve/src/query.rs",
+      "line": 997
+    },
+    {
+      "name": "classify",
+      "file": "crates/retrieve/src/read.rs",
+      "line": 54
+    },
+    {
+      "name": "ReadSkill::read",
+      "file": "crates/retrieve/src/read.rs",
+      "line": 200
+    },
+    {
+      "name": "classify_search_error",
+      "file": "crates/retrieve/src/search.rs",
+      "line": 87
+    },
+    {
+      "name": "SearchSkill::drop_search_pages",
+      "file": "crates/retrieve/src/search.rs",
+      "line": 596
+    },
+    {
+      "name": "SearchSkill::prior_knowledge",
+      "file": "crates/retrieve/src/search.rs",
+      "line": 657
+    },
+    {
+      "name": "SearchSkill::with_prior_knowledge",
+      "file": "crates/retrieve/src/search.rs",
+      "line": 920
+    },
+    {
+      "name": "SearchSkill::handle_search_web",
+      "file": "crates/retrieve/src/search.rs",
+      "line": 937
+    },
+    {
+      "name": "SearchSkill::finish_search",
+      "file": "crates/retrieve/src/search.rs",
+      "line": 1163
+    },
+    {
+      "name": "quota_siblings",
+      "file": "crates/retrieve/src/search_engines.rs",
+      "line": 394
+    },
+    {
+      "name": "render",
+      "file": "crates/retrieve/src/search_engines.rs",
+      "line": 453
+    },
+    {
+      "name": "params",
+      "file": "crates/retrieve/src/search_engines.rs",
+      "line": 474
+    },
+    {
+      "name": "dialect_params",
+      "file": "crates/retrieve/src/search_engines.rs",
+      "line": 514
+    },
+    {
+      "name": "run",
+      "file": "crates/retrieve/src/search_engines.rs",
+      "line": 690
+    },
+    {
+      "name": "QuerySpec::add_sites",
+      "file": "crates/retrieve/src/search_query.rs",
+      "line": 195
+    },
+    {
+      "name": "QuerySpec::google_syntax",
+      "file": "crates/retrieve/src/search_query.rs",
+      "line": 249
+    },
+    {
+      "name": "QuerySpec::google_news_when",
+      "file": "crates/retrieve/src/search_query.rs",
+      "line": 332
+    },
+    {
+      "name": "QuerySpec::brave_freshness",
+      "file": "crates/retrieve/src/search_query.rs",
+      "line": 339
+    },
+    {
+      "name": "QuerySpec::display",
+      "file": "crates/retrieve/src/search_query.rs",
+      "line": 374
+    },
+    {
+      "name": "order",
+      "file": "crates/retrieve/src/search_rotation.rs",
+      "line": 134
+    },
+    {
+      "name": "deserialize_flex_bool",
+      "file": "crates/retrieve/src/serde_flex.rs",
+      "line": 16
+    },
+    {
+      "name": "Dispatcher::start_run",
+      "file": "crates/scheduler/src/item_dispatch.rs",
+      "line": 385
+    },
+    {
+      "name": "validate",
+      "file": "crates/scheduler/src/items.rs",
+      "line": 168
+    },
+    {
+      "name": "repair_envelope_notes",
+      "file": "crates/scheduler/src/repair.rs",
+      "line": 80
+    },
+    {
+      "name": "SchedulerService::run_loop",
+      "file": "crates/scheduler/src/scheduler.rs",
+      "line": 185
+    },
+    {
+      "name": "SchedulerService::do_tick",
+      "file": "crates/scheduler/src/scheduler.rs",
+      "line": 262
+    },
+    {
+      "name": "SchedulerService::dispatch_due_workflows",
+      "file": "crates/scheduler/src/scheduler.rs",
+      "line": 389
+    },
+    {
+      "name": "SchedulerService::run_workflow_now",
+      "file": "crates/scheduler/src/scheduler.rs",
+      "line": 440
+    },
+    {
+      "name": "SchedulerService::fire_workflow",
+      "file": "crates/scheduler/src/scheduler.rs",
+      "line": 468
+    },
+    {
+      "name": "SchedulerService::dispatch_run",
+      "file": "crates/scheduler/src/scheduler.rs",
+      "line": 509
+    },
+    {
+      "name": "SchedulerService::run_tick",
+      "file": "crates/scheduler/src/scheduler.rs",
+      "line": 1485
+    },
+    {
+      "name": "AgentRunnerSkill::handle_run_agent",
+      "file": "crates/skills/src/agent_runner.rs",
+      "line": 255
+    },
+    {
+      "name": "AgentRunnerSkill::verify",
+      "file": "crates/skills/src/agent_runner.rs",
+      "line": 425
+    },
+    {
+      "name": "harness_leak",
+      "file": "crates/skills/src/agent_runner.rs",
+      "line": 617
+    },
+    {
+      "name": "KnowledgeSkill::handle_recall_recent",
+      "file": "crates/skills/src/knowledge/recall.rs",
+      "line": 371
+    },
+    {
+      "name": "KnowledgeSkill::lift_bulk_rows",
+      "file": "crates/skills/src/knowledge/recall.rs",
+      "line": 472
+    },
+    {
+      "name": "note_point",
+      "file": "crates/skills/src/knowledge/store.rs",
+      "line": 115
+    },
+    {
+      "name": "KnowledgeSkill::handle_store_note",
+      "file": "crates/skills/src/knowledge/store.rs",
+      "line": 178
+    },
+    {
+      "name": "ProgramSkill::handle",
+      "file": "crates/skills/src/program.rs",
+      "line": 79
+    },
+    {
+      "name": "ProgramSkill::record_review",
+      "file": "crates/skills/src/program.rs",
+      "line": 231
+    },
+    {
+      "name": "SchedulerSkill::handle_manage_workflow",
+      "file": "crates/skills/src/scheduler.rs",
+      "line": 377
+    },
+    {
+      "name": "SchedulerSkill::audit_workflows",
+      "file": "crates/skills/src/scheduler.rs",
+      "line": 658
+    },
+    {
+      "name": "SchedulerSkill::tools",
+      "file": "crates/skills/src/scheduler.rs",
+      "line": 812
+    },
+    {
+      "name": "TodoSkill::list",
+      "file": "crates/skills/src/todo.rs",
+      "line": 173
+    },
+    {
+      "name": "TodoSkill::tools",
+      "file": "crates/skills/src/todo.rs",
+      "line": 346
+    },
+    {
+      "name": "WorkingMemorySkill::tools",
+      "file": "crates/skills/src/working_memory.rs",
+      "line": 291
+    },
+    {
+      "name": "ContextBuilderService::load_profiles",
+      "file": "crates/work/src/context_builder.rs",
+      "line": 357
+    },
+    {
+      "name": "ContextBuilderService::auto_assign",
+      "file": "crates/work/src/context_builder.rs",
+      "line": 826
+    },
+    {
+      "name": "check",
+      "file": "crates/work/src/cypher_guard.rs",
+      "line": 55
+    },
+    {
+      "name": "is_temporal_type",
+      "file": "crates/work/src/graph_schema.rs",
+      "line": 114
+    },
+    {
+      "name": "validate",
+      "file": "crates/work/src/profiles.rs",
+      "line": 536
+    },
+    {
+      "name": "check",
+      "file": "crates/work/src/programs.rs",
+      "line": 149
+    },
+    {
+      "name": "seed_programs",
+      "file": "crates/work/src/programs.rs",
+      "line": 763
+    },
+    {
+      "name": "check_status_change",
+      "file": "crates/work/src/programs.rs",
+      "line": 934
+    },
+    {
+      "name": "prepare",
+      "file": "crates/work/src/programs.rs",
+      "line": 1052
+    },
+    {
+      "name": "tree",
+      "file": "crates/work/src/programs.rs",
+      "line": 1258
+    },
+    {
+      "name": "parse_review",
+      "file": "crates/work/src/programs.rs",
+      "line": 1427
+    },
+    {
+      "name": "parse_evaluator_score",
+      "file": "crates/work/src/queue/gates.rs",
+      "line": 17
+    },
+    {
+      "name": "QueueService::evaluator_gate",
+      "file": "crates/work/src/queue/gates.rs",
+      "line": 175
+    },
+    {
+      "name": "QueueService::enqueue_chain_owned",
+      "file": "crates/work/src/queue.rs",
+      "line": 401
+    },
+    {
+      "name": "QueueService::run_coordinator",
+      "file": "crates/work/src/queue.rs",
+      "line": 716
+    },
+    {
+      "name": "QueueService::reload_from_neo4j",
+      "file": "crates/work/src/queue.rs",
+      "line": 819
+    },
+    {
+      "name": "QueueService::execute_job",
+      "file": "crates/work/src/queue.rs",
+      "line": 1061
+    },
+    {
+      "name": "QueueService::on_job_succeeded",
+      "file": "crates/work/src/queue.rs",
+      "line": 1284
+    },
+    {
+      "name": "waits_in_lease_mode",
+      "file": "crates/work/src/queue.rs",
+      "line": 1595
+    },
+    {
+      "name": "commit",
+      "file": "crates/work/src/revisions.rs",
+      "line": 276
+    },
+    {
+      "name": "record_seed",
+      "file": "crates/work/src/revisions.rs",
+      "line": 357
+    },
+    {
+      "name": "reconcile",
+      "file": "crates/work/src/revisions.rs",
+      "line": 420
+    },
+    {
+      "name": "validate_step_array",
+      "file": "crates/work/src/validation.rs",
+      "line": 247
+    },
+    {
+      "name": "step_ref_violations",
+      "file": "crates/work/src/validation.rs",
+      "line": 283
+    },
+    {
+      "name": "validate_input_refs",
+      "file": "crates/work/src/validation.rs",
+      "line": 355
+    },
+    {
+      "name": "lint_chain_steps",
+      "file": "crates/work/src/validation.rs",
+      "line": 620
+    },
+    {
+      "name": "coerce_scalar_strings",
+      "file": "crates/work/src/validation.rs",
+      "line": 877
+    },
+    {
+      "name": "check_tool_arguments",
+      "file": "crates/work/src/validation.rs",
+      "line": 977
+    },
+    {
+      "name": "check_labels",
+      "file": "crates/work/src/workflow_seeder.rs",
+      "line": 142
+    },
+    {
+      "name": "load_file",
+      "file": "crates/work/src/workflow_seeder.rs",
+      "line": 191
+    },
+    {
+      "name": "seed_workflows",
+      "file": "crates/work/src/workflow_seeder.rs",
+      "line": 232
+    },
+    {
+      "name": "save",
+      "file": "crates/work/src/workflows.rs",
+      "line": 396
+    },
+    {
+      "name": "CodebaseSkill::handle_search_codebase",
+      "file": "plugins/developer/crate/src/codebase.rs",
+      "line": 702
+    },
+    {
+      "name": "CodebaseSkill::handle_get_git_log",
+      "file": "plugins/developer/crate/src/codebase.rs",
+      "line": 830
+    },
+    {
+      "name": "CodebaseSkill::handle_list_workspace_files",
+      "file": "plugins/developer/crate/src/codebase.rs",
+      "line": 1021
+    },
+    {
+      "name": "CodebaseSkill::handle_analyze_own_structure",
+      "file": "plugins/developer/crate/src/codebase.rs",
+      "line": 1072
+    },
+    {
+      "name": "CodebaseSkill::tools",
+      "file": "plugins/developer/crate/src/codebase.rs",
+      "line": 1346
+    },
+    {
+      "name": "collect_files",
+      "file": "plugins/developer/crate/src/codebase.rs",
+      "line": 1423
+    },
+    {
+      "name": "search_in_dir",
+      "file": "plugins/developer/crate/src/codebase.rs",
+      "line": 1467
+    },
+    {
+      "name": "build_tree",
+      "file": "plugins/developer/crate/src/codebase.rs",
+      "line": 1542
+    },
+    {
+      "name": "DevDocsSkill::run",
+      "file": "plugins/developer/crate/src/dev_docs.rs",
+      "line": 59
+    },
+    {
+      "name": "DevNotes::search",
+      "file": "plugins/developer/crate/src/dev_notes.rs",
+      "line": 247
+    },
+    {
+      "name": "sanitize_lucene_query",
+      "file": "plugins/developer/crate/src/dev_notes.rs",
+      "line": 406
+    },
+    {
+      "name": "Developer::tools",
+      "file": "plugins/developer/crate/src/lib.rs",
+      "line": 37
+    },
+    {
+      "name": "names",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 250
+    },
+    {
+      "name": "standalone_problems",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 300
+    },
+    {
+      "name": "rewrite_losses",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 353
+    },
+    {
+      "name": "extract_claims",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 428
+    },
+    {
+      "name": "repair_claim",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 550
+    },
+    {
+      "name": "evidence_domains",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 961
+    },
+    {
+      "name": "resolve_cited_links",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 979
+    },
+    {
+      "name": "link_domains",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 1019
+    },
+    {
+      "name": "DomainRoles::is_platform_link",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 1049
+    },
+    {
+      "name": "is_self_referential",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 1088
+    },
+    {
+      "name": "check_independence_titled",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 1174
+    },
+    {
+      "name": "quote_in",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 1354
+    },
+    {
+      "name": "confirm_contradiction",
+      "file": "plugins/epistemics/crate/src/claims.rs",
+      "line": 1367
+    },
+    {
+      "name": "is_grounded",
+      "file": "plugins/epistemics/crate/src/grounding.rs",
+      "line": 131
+    },
+    {
+      "name": "Layer::load",
+      "file": "plugins/maps/crate/src/layers.rs",
+      "line": 94
+    },
+    {
+      "name": "Layer::check",
+      "file": "plugins/maps/crate/src/layers.rs",
+      "line": 111
+    },
+    {
+      "name": "scan",
+      "file": "plugins/maps/crate/src/layers.rs",
+      "line": 200
+    },
+    {
+      "name": "collect",
+      "file": "plugins/maps/crate/src/layers.rs",
+      "line": 307
+    },
+    {
+      "name": "load_all",
+      "file": "plugins/maps/crate/src/routes.rs",
+      "line": 87
+    },
+    {
+      "name": "check_place",
+      "file": "plugins/maps/crate/src/routes.rs",
+      "line": 218
+    },
+    {
+      "name": "handle_positions",
+      "file": "plugins/maps/crate/src/routes.rs",
+      "line": 569
+    },
+    {
+      "name": "parse",
+      "file": "plugins/maps/crate/src/tracks/ais.rs",
+      "line": 85
+    },
+    {
+      "name": "Area::load",
+      "file": "plugins/maps/crate/src/tracks/areas.rs",
+      "line": 41
+    },
+    {
+      "name": "Area::check",
+      "file": "plugins/maps/crate/src/tracks/areas.rs",
+      "line": 54
+    },
+    {
+      "name": "Area::contains",
+      "file": "plugins/maps/crate/src/tracks/areas.rs",
+      "line": 109
+    },
+    {
+      "name": "load_all",
+      "file": "plugins/maps/crate/src/tracks/areas.rs",
+      "line": 116
+    },
+    {
+      "name": "Tracks::open",
+      "file": "plugins/maps/crate/src/tracks/mod.rs",
+      "line": 105
+    },
+    {
+      "name": "AreaTrafficSkill::handle",
+      "file": "plugins/maps/crate/src/tracks/tool.rs",
+      "line": 113
+    },
+    {
+      "name": "Media::tools",
+      "file": "plugins/media/crate/src/lib.rs",
+      "line": 100
+    },
+    {
+      "name": "MediaService::classify_input",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 215
+    },
+    {
+      "name": "MediaService::yt_dlp",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 275
+    },
+    {
+      "name": "MediaService::run_yt_dlp_json",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 342
+    },
+    {
+      "name": "MediaService::resolve_youtube_channel_id",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 371
+    },
+    {
+      "name": "MediaService::download_captions",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 478
+    },
+    {
+      "name": "MediaService::fetch_transcript",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 551
+    },
+    {
+      "name": "MediaService::fetch_via_ytdlp",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 564
+    },
+    {
+      "name": "MediaService::download_audio",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 699
+    },
+    {
+      "name": "MediaService::list_feed_videos",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 882
+    },
+    {
+      "name": "MediaService::fetch_article",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 954
+    },
+    {
+      "name": "extract_article_text",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 1197
+    },
+    {
+      "name": "keep_article_lines",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 1251
+    },
+    {
+      "name": "markdown_article_text",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 1272
+    },
+    {
+      "name": "caption_tries",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 1422
+    },
+    {
+      "name": "is_bot_check",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 1745
+    },
+    {
+      "name": "is_not_yet_available",
+      "file": "plugins/media/crate/src/service.rs",
+      "line": 1791
+    },
+    {
+      "name": "MediaSkill::handle_ingest_media",
+      "file": "plugins/media/crate/src/skill.rs",
+      "line": 195
+    },
+    {
+      "name": "MediaSkill::handle_ingest_article",
+      "file": "plugins/media/crate/src/skill.rs",
+      "line": 338
+    },
+    {
+      "name": "MediaSkill::handle_poll_media_sources",
+      "file": "plugins/media/crate/src/skill.rs",
+      "line": 445
+    },
+    {
+      "name": "MediaSkill::handle_discover_media_sources",
+      "file": "plugins/media/crate/src/skill.rs",
+      "line": 632
+    },
+    {
+      "name": "MediaSkill::handle_spawn_gap_tasks",
+      "file": "plugins/media/crate/src/skill.rs",
+      "line": 880
+    },
+    {
+      "name": "unique_slug",
+      "file": "plugins/media/crate/src/skill.rs",
+      "line": 986
+    },
+    {
+      "name": "extract_follow_up",
+      "file": "plugins/media/crate/src/skill.rs",
+      "line": 1042
+    },
+    {
+      "name": "AcledClient::events",
+      "file": "plugins/osint-data/crate/src/client.rs",
+      "line": 237
+    },
+    {
+      "name": "AcledSkill::handle_events",
+      "file": "plugins/osint-data/crate/src/skill.rs",
+      "line": 114
+    },
+    {
+      "name": "KindTable::from_yaml",
+      "file": "plugins/reference/crate/src/kinds.rs",
+      "line": 110
+    },
+    {
+      "name": "set_type",
+      "file": "plugins/reference/crate/src/kinds.rs",
+      "line": 542
+    },
+    {
+      "name": "get",
+      "file": "plugins/reference/crate/src/wiki.rs",
+      "line": 103
+    },
+    {
+      "name": "name_variants",
+      "file": "plugins/reference/crate/src/wiki.rs",
+      "line": 429
+    },
+    {
+      "name": "candidates_for",
+      "file": "plugins/reference/crate/src/wiki.rs",
+      "line": 447
+    },
+    {
+      "name": "link_one",
+      "file": "plugins/reference/crate/src/wiki.rs",
+      "line": 662
+    },
+    {
+      "name": "link_entities",
+      "file": "plugins/reference/crate/src/wiki.rs",
+      "line": 817
+    },
+    {
+      "name": "coverage",
+      "file": "plugins/reference/crate/src/wiki.rs",
+      "line": 1303
+    },
+    {
+      "name": "ExecSkill::from_env",
+      "file": "plugins/sandbox/crate/src/skill.rs",
+      "line": 59
+    },
+    {
+      "name": "ExecSkill::build_request",
+      "file": "plugins/sandbox/crate/src/skill.rs",
+      "line": 188
+    },
+    {
+      "name": "ExecSkill::handle_execute_code",
+      "file": "plugins/sandbox/crate/src/skill.rs",
+      "line": 259
+    },
+    {
+      "name": "WsSkill::get",
+      "file": "plugins/websocket/crate/src/skill.rs",
+      "line": 111
+    },
+    {
+      "name": "WsSkill::handle_ws_connect",
+      "file": "plugins/websocket/crate/src/skill.rs",
+      "line": 221
+    }
+  ]
+}

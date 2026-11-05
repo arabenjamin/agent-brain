@@ -53,9 +53,7 @@ const BRAIN_EVENT_CAPACITY: usize = 256;
 /// sub-agents are the mechanism, and the runner shares the chat loop engine.
 /// Default OFF, like the chat spike, until it is measured (plan §7).
 fn agent_runner_enabled() -> bool {
-    std::env::var("SUBAGENT_ENABLED")
-        .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
-        .unwrap_or(false)
+    std::env::var("SUBAGENT_ENABLED").is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes"))
 }
 
 // ============================================================================
@@ -79,8 +77,7 @@ impl Default for StorageConfig {
             telemetry: None,
             contexts_dir: crate::services::plugins::Plugins::global().core_dir("contexts"),
             snapshot_dir: std::env::var("KNOWLEDGE_SNAPSHOT_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("./snapshots")),
+                .map_or_else(|_| PathBuf::from("./snapshots"), PathBuf::from),
         }
     }
 }
@@ -195,8 +192,7 @@ impl BrainCore {
             jobs: JobServices::default(),
             system_prompt: String::new(),
             catalog_path: std::env::var("MODEL_CATALOG_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("models.yaml")),
+                .map_or_else(|_| PathBuf::from("models.yaml"), PathBuf::from),
             context_builder_svc: Arc::new(RwLock::new(None)),
             agent_runner: Arc::new(RwLock::new(None)),
             event_tx,
@@ -875,7 +871,8 @@ pub(crate) fn filter_tools_by_names(
     if names.is_empty() {
         return all;
     }
-    let allowed: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
+    let allowed: std::collections::HashSet<&str> =
+        names.iter().map(std::string::String::as_str).collect();
     all.into_iter()
         .filter(|t| allowed.contains(t.name.as_str()))
         .collect()

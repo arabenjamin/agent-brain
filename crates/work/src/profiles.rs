@@ -198,9 +198,10 @@ impl BundleProfiles {
 /// `path` relative to `PLUGINS_DIR`, for showing where a profile is defined.
 pub fn source_of(path: &Path) -> String {
     let base = agent_brain_graph::bundles::Plugins::global().dir.clone();
-    path.strip_prefix(&base)
-        .map(|p| format!("plugins/{}", p.display()))
-        .unwrap_or_else(|_| path.display().to_string())
+    path.strip_prefix(&base).map_or_else(
+        |_| path.display().to_string(),
+        |p| format!("plugins/{}", p.display()),
+    )
 }
 
 /// Write the bundles' profiles into the graph (see the module doc). Returns
@@ -373,7 +374,7 @@ pub fn available_tools(profile: &ContextProfile, registry: &[(String, String)]) 
 /// The first sentence of a tool description, at most `max` chars.
 fn gist(description: &str, max: usize) -> String {
     let d = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    let end = d.find(". ").map(|i| i + 1).unwrap_or(d.len());
+    let end = d.find(". ").map_or(d.len(), |i| i + 1);
     let first = &d[..end];
     if first.chars().count() <= max {
         first.to_string()
@@ -539,7 +540,7 @@ pub fn validate(body: Option<&Value>, p: &ContextProfile, c: &ProfileChecks) -> 
     if let Some(obj) = body.and_then(Value::as_object) {
         let known: Vec<String> = struct_fields::<ContextProfile>()
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         for k in obj.keys().filter(|k| !known.contains(k)) {
             let hint = crate::validation::closest(k, &known)

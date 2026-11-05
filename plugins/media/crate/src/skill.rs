@@ -1157,7 +1157,7 @@ fn is_standalone_gap(concept: &str) -> bool {
 fn strip_bullet(line: &str) -> &str {
     let s = line.trim_start_matches(['-', '*', '•']).trim_start();
     // Numbered: drop a leading run of digits followed by '.' or ')'.
-    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
     if !digits.is_empty() {
         let rest = &s[digits.len()..];
         if let Some(after) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(')')) {

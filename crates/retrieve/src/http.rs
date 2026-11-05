@@ -284,7 +284,7 @@ impl HttpSkill {
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
 
         let timeout = Duration::from_millis(input.timeout_ms.unwrap_or(10_000));
@@ -349,7 +349,7 @@ impl HttpSkill {
             "PATCH" => reqwest::Method::PATCH,
             "DELETE" => reqwest::Method::DELETE,
             "HEAD" => reqwest::Method::HEAD,
-            other => return ToolCallResult::error(format!("Unknown method: {}", other)),
+            other => return ToolCallResult::error(format!("Unknown method: {other}")),
         };
 
         let mut req = client.request(method, &url);
@@ -379,7 +379,7 @@ impl HttpSkill {
         {
             match c.auth_scheme.as_str() {
                 "bearer" => {
-                    req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", secret));
+                    req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {secret}"));
                 }
                 "header" => {
                     if let Some(ref param) = c.auth_param {

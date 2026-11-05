@@ -209,16 +209,15 @@ impl BudgetBook {
         if o.success {
             m.backoff_step = 0;
         } else if o.error_kind == Some("rate_limited") {
-            let (secs, reason) = match o.error_text.and_then(retry_hint_secs) {
-                Some(s) => (
+            let (secs, reason) = if let Some(s) = o.error_text.and_then(retry_hint_secs) {
+                (
                     s,
                     format!("rate limited; the provider asked to retry in {s}s"),
-                ),
-                None => {
-                    let s = BACKOFF_STEPS_SECS[m.backoff_step.min(BACKOFF_STEPS_SECS.len() - 1)];
-                    m.backoff_step += 1;
-                    (s, format!("rate limited; backing off {s}s"))
-                }
+                )
+            } else {
+                let s = BACKOFF_STEPS_SECS[m.backoff_step.min(BACKOFF_STEPS_SECS.len() - 1)];
+                m.backoff_step += 1;
+                (s, format!("rate limited; backing off {s}s"))
             };
             m.extend_cooldown(now + Duration::seconds(secs), reason);
         } else if o.error_kind == Some("server_error") {
@@ -653,7 +652,7 @@ fn book() -> MutexGuard<'static, BudgetBook> {
     static BOOK: OnceLock<Mutex<BudgetBook>> = OnceLock::new();
     BOOK.get_or_init(|| Mutex::new(BudgetBook::default()))
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Record one model call in the usage ledger (when telemetry is available) and

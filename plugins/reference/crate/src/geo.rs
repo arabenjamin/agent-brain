@@ -76,8 +76,8 @@ pub async fn refresh(neo4j: &Db, qid: Option<&str>, budget: usize) -> Result<Loc
                 let (p, n) = found.get(q).copied().unwrap_or((None, 0));
                 let mut m = serde_json::Map::new();
                 m.insert("qid".into(), q.clone().into());
-                m.insert("lat".into(), p.map(|p| p.lat.into()).unwrap_or(Value::Null));
-                m.insert("lon".into(), p.map(|p| p.lon.into()).unwrap_or(Value::Null));
+                m.insert("lat".into(), p.map_or(Value::Null, |p| p.lat.into()));
+                m.insert("lon".into(), p.map_or(Value::Null, |p| p.lon.into()));
                 m.insert("n".into(), n.into());
                 Value::Object(m)
             })

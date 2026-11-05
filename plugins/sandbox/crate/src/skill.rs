@@ -312,16 +312,27 @@ impl ExecSkill {
 /// whereas a traceback or compiler error handed back to the model is exactly
 /// the signal it needs to fix the code and call again.
 fn summarize_run(body: &Value, timeout_ms: u64) -> Value {
-    let exit_code = body.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1);
+    let exit_code = body
+        .get("exit_code")
+        .and_then(agent_brain_plugin_api::Value::as_i64)
+        .unwrap_or(-1);
     let timed_out = body
         .get("timed_out")
-        .and_then(|v| v.as_bool())
+        .and_then(agent_brain_plugin_api::Value::as_bool)
         .unwrap_or(false);
-    let compile_failed = body.get("compile_failed").and_then(|v| v.as_bool());
-    let tests_passed = body.get("tests_passed").and_then(|v| v.as_i64());
-    let tests_failed = body.get("tests_failed").and_then(|v| v.as_i64());
+    let compile_failed = body
+        .get("compile_failed")
+        .and_then(agent_brain_plugin_api::Value::as_bool);
+    let tests_passed = body
+        .get("tests_passed")
+        .and_then(agent_brain_plugin_api::Value::as_i64);
+    let tests_failed = body
+        .get("tests_failed")
+        .and_then(agent_brain_plugin_api::Value::as_i64);
     let command = body.get("command").and_then(|v| v.as_str());
-    let lint_findings = body.get("lint_findings").and_then(|v| v.as_i64());
+    let lint_findings = body
+        .get("lint_findings")
+        .and_then(agent_brain_plugin_api::Value::as_i64);
 
     let summary = if timed_out {
         format!("Execution timed out after {timeout_ms}ms.")
@@ -362,8 +373,8 @@ fn summarize_run(body: &Value, timeout_ms: u64) -> Value {
         "stderr": body.get("stderr").and_then(|v| v.as_str()).unwrap_or(""),
         "exit_code": exit_code,
         "timed_out": timed_out,
-        "truncated": body.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false),
-        "duration_ms": body.get("duration_ms").and_then(|v| v.as_i64()).unwrap_or(0),
+        "truncated": body.get("truncated").and_then(agent_brain_plugin_api::Value::as_bool).unwrap_or(false),
+        "duration_ms": body.get("duration_ms").and_then(agent_brain_plugin_api::Value::as_i64).unwrap_or(0),
     });
     // Rust-only fields: present only when the sandbox reported them, so a
     // Python result is unchanged.

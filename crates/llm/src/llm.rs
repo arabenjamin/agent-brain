@@ -519,7 +519,7 @@ pub fn extract_json(text: &str) -> &str {
         let content_start = start + 3;
         // Skip the optional language identifier on the first line
         let content = &trimmed[content_start..];
-        let actual_start = content.find('\n').map(|i| i + 1).unwrap_or(0);
+        let actual_start = content.find('\n').map_or(0, |i| i + 1);
         if let Some(end) = content[actual_start..].find("```") {
             return content[actual_start..actual_start + end].trim();
         }

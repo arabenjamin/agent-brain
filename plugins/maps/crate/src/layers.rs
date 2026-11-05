@@ -294,7 +294,7 @@ pub async fn features(
         params.insert("until".into(), json!(until));
     }
     if layer.view {
-        let v = view.map(|v| v.map(Some)).unwrap_or([None; 4]);
+        let v = view.map_or([None; 4], |v| v.map(Some));
         for (k, x) in ["west", "south", "east", "north"].into_iter().zip(v) {
             params.insert(k.into(), json!(x));
         }

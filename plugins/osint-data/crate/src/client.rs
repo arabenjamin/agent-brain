@@ -215,19 +215,18 @@ impl AcledClient {
                 .ok(),
             _ => None,
         };
-        let token = match refreshed {
-            Some(t) => t,
-            None => {
-                info!("ACLED: requesting access token");
-                self.request_token(&[
-                    ("username", self.email.as_str()),
-                    ("password", self.password.as_str()),
-                    ("grant_type", "password"),
-                    ("client_id", "acled"),
-                    ("scope", "authenticated"),
-                ])
-                .await?
-            }
+        let token = if let Some(t) = refreshed {
+            t
+        } else {
+            info!("ACLED: requesting access token");
+            self.request_token(&[
+                ("username", self.email.as_str()),
+                ("password", self.password.as_str()),
+                ("grant_type", "password"),
+                ("client_id", "acled"),
+                ("scope", "authenticated"),
+            ])
+            .await?
         };
         let access = token.access.clone();
         *guard = Some(token);
@@ -302,7 +301,11 @@ fn error_text(body: &Value) -> String {
 /// The rows of a read response: `{"data": [...]}`, or a bare array. A body
 /// that reports failure (`"success": false`) is an error, not zero rows.
 pub fn rows_of(body: &Value) -> Result<Vec<Value>> {
-    if body.get("success").and_then(|v| v.as_bool()) == Some(false) {
+    if body
+        .get("success")
+        .and_then(agent_brain_plugin_api::Value::as_bool)
+        == Some(false)
+    {
         return Err(anyhow!("ACLED reported failure: {}", error_text(body)));
     }
     match body {

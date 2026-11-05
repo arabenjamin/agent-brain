@@ -19,8 +19,7 @@ pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> 
                 let cfg = a.read().await;
                 (
                     cfg.as_ref()
-                        .map(|c| c.provider.to_string())
-                        .unwrap_or_else(|| "None".to_string()),
+                        .map_or_else(|| "None".to_string(), |c| c.provider.to_string()),
                     cfg.as_ref().map(|c| c.model.clone()).unwrap_or_default(),
                 )
             }
@@ -99,7 +98,7 @@ fn model_admission(provider: &str, model: &str) -> Value {
             let verdict = policy.admit(&cfg, ctx);
             by_class.insert(
                 class.as_str().to_string(),
-                verdict.err().map(Value::String).unwrap_or(Value::Null),
+                verdict.err().map_or(Value::Null, Value::String),
             );
         }
         out.insert(purpose.as_str().to_string(), Value::Object(by_class));

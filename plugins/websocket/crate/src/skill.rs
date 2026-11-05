@@ -265,7 +265,7 @@ impl WsSkill {
 
         info!(conn_id = %conn_id, url = %url, "Connecting WebSocket");
         let opened = timeout(CONNECT_TIMEOUT, async {
-            let mut last = format!("{} resolved to no address", url);
+            let mut last = format!("{url} resolved to no address");
             for addr in &addrs {
                 match TcpStream::connect(addr).await {
                     Ok(tcp) => {

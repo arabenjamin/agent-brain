@@ -142,8 +142,7 @@ impl ParallelClient {
 fn error_message(body: &Value) -> String {
     body["error"]["message"]
         .as_str()
-        .map(String::from)
-        .unwrap_or_else(|| body.to_string())
+        .map_or_else(|| body.to_string(), String::from)
 }
 
 fn run_errors(run: &Value) -> String {
@@ -154,8 +153,7 @@ fn run_errors(run: &Value) -> String {
         .map(|e| {
             e["message"]
                 .as_str()
-                .map(String::from)
-                .unwrap_or_else(|| e.to_string())
+                .map_or_else(|| e.to_string(), String::from)
         })
         .collect();
     if msgs.is_empty() {

@@ -93,7 +93,9 @@ impl Drop for GatePermit {
 
 impl ProviderGate {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|p| p.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Size the gates from a provider table. A provider with no declared

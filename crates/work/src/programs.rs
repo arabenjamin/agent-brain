@@ -553,10 +553,7 @@ fn write_query(
              p.plugin = $plugin, p.source = $source, p.updated_at = datetime()"
     );
     let null = || neo4rs::BoltType::Null(neo4rs::BoltNull);
-    let opt = |v: Option<&str>| {
-        v.map(|s| neo4rs::BoltType::from(s.to_string()))
-            .unwrap_or_else(null)
-    };
+    let opt = |v: Option<&str>| v.map_or_else(null, |s| neo4rs::BoltType::from(s.to_string()));
     Ok(neo4rs::query(&cypher)
         .param("name", def.name.clone())
         .param("status", def.status.clone())
@@ -573,8 +570,7 @@ fn write_query(
             "budget",
             def.budget
                 .as_ref()
-                .map(|b| neo4rs::BoltType::from(b.monthly_usd))
-                .unwrap_or_else(null),
+                .map_or_else(null, |b| neo4rs::BoltType::from(b.monthly_usd)),
         )
         .param("managed_by", managed_by.to_string())
         .param("plugin", opt(plugin))
@@ -1073,10 +1069,10 @@ async fn prepare(
         )));
     }
 
-    let mut cand = current
-        .as_ref()
-        .map(|s| serde_json::to_value(&s.def).unwrap_or_default())
-        .unwrap_or_else(|| json!({}));
+    let mut cand = current.as_ref().map_or_else(
+        || json!({}),
+        |s| serde_json::to_value(&s.def).unwrap_or_default(),
+    );
     if let Some(obj) = body.as_object() {
         for (k, v) in obj {
             if matches!(
@@ -1762,7 +1758,10 @@ mod tests {
             charter: String::new(),
             success: String::new(),
             topics: vec![],
-            workflows: workflows.iter().map(|s| s.to_string()).collect(),
+            workflows: workflows
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             keep_running: vec![],
             agents: vec![],
             apis: vec![],
@@ -1774,10 +1773,22 @@ mod tests {
 
     fn inv(programs: Vec<ProgramDef>) -> Inventory {
         Inventory {
-            workflows: ["a", "b", "c"].iter().map(|s| s.to_string()).collect(),
-            topics: ["nia"].iter().map(|s| s.to_string()).collect(),
-            agents: ["researcher"].iter().map(|s| s.to_string()).collect(),
-            apis: ["github"].iter().map(|s| s.to_string()).collect(),
+            workflows: ["a", "b", "c"]
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+            topics: ["nia"]
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+            agents: ["researcher"]
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+            apis: ["github"]
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             programs,
         }
     }
@@ -2039,7 +2050,10 @@ mod tests {
                 fits(&v).is_empty(),
                 "{}: {:?}",
                 f.path().display(),
-                fits(&v).iter().map(|x| x.render()).collect::<Vec<_>>()
+                fits(&v)
+                    .iter()
+                    .map(super::super::validation::Violation::render)
+                    .collect::<Vec<_>>()
             );
         }
         for bad in [

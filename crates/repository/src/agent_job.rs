@@ -28,7 +28,9 @@ impl Neo4jClient {
     ) -> Result<AgentJob, RepositoryError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let args_json = arguments.map(|a| a.to_string()).unwrap_or_default();
+        let args_json = arguments
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default();
 
         // Calculate expiration time if TTL is provided
         let expires_at = ttl_secs
@@ -68,7 +70,7 @@ impl Neo4jClient {
         .param("provider_hint", provider_hint.unwrap_or(""))
         .param("context_profile", context_profile.unwrap_or(""))
         .param("description", description.unwrap_or(""))
-        .param("ttl_secs", ttl_secs.map(|v| v as i64).unwrap_or(0i64))
+        .param("ttl_secs", ttl_secs.map_or(0i64, |v| v as i64))
         .param("expires_at", expires_at.unwrap_or_default());
 
         let rows = self.execute(q).await?;
@@ -356,7 +358,9 @@ impl Neo4jClient {
     ) -> Result<String, RepositoryError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let args_json = arguments.map(|a| a.to_string()).unwrap_or_default();
+        let args_json = arguments
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default();
 
         // Calculate expiration time if TTL is provided
         let expires_at = ttl_secs
@@ -396,7 +400,7 @@ impl Neo4jClient {
         .param("provider_hint", provider_hint.unwrap_or(""))
         .param("context_profile", context_profile.unwrap_or(""))
         .param("description", description.unwrap_or(""))
-        .param("ttl_secs", ttl_secs.map(|v| v as i64).unwrap_or(0i64))
+        .param("ttl_secs", ttl_secs.map_or(0i64, |v| v as i64))
         .param("expires_at", expires_at.unwrap_or_default());
 
         self.run(q).await?;

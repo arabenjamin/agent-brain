@@ -139,14 +139,11 @@ impl TaskSkill {
             Err(e) => return e,
         };
 
-        let neo4j = match &self.neo4j {
-            Some(n) => n,
-            None => {
-                info!(goal = %input.goal, "Neo4j not available, skipping persistence");
-                return ToolCallResult::error(
-                    "Persistence layer (Neo4j) not available.".to_string(),
-                );
-            }
+        let neo4j = if let Some(n) = &self.neo4j {
+            n
+        } else {
+            info!(goal = %input.goal, "Neo4j not available, skipping persistence");
+            return ToolCallResult::error("Persistence layer (Neo4j) not available.".to_string());
         };
 
         // Duplicate detection: scan tasks from the last 7 days for overlap.
@@ -294,7 +291,7 @@ impl TaskSkill {
 
                     ToolCallResult::success_json(response_json)
                 }
-                Err(e) => ToolCallResult::error(format!("LLM reflection failed: {}", e)),
+                Err(e) => ToolCallResult::error(format!("LLM reflection failed: {e}")),
             }
         }
     }
@@ -317,14 +314,13 @@ impl TaskSkill {
             "blocked" => TaskStatus::Blocked,
             other => {
                 return ToolCallResult::error(format!(
-                    "Unknown status '{}'. Use: in_progress, completed, failed, blocked",
-                    other
+                    "Unknown status '{other}'. Use: in_progress, completed, failed, blocked"
                 ));
             }
         };
 
         if let Err(e) = neo4j.update_task_status(&input.task_id, status).await {
-            return ToolCallResult::error(format!("Failed to update task status: {}", e));
+            return ToolCallResult::error(format!("Failed to update task status: {e}"));
         }
 
         info!(task_id = %input.task_id, status = %input.status, "Updated task status");

@@ -95,9 +95,7 @@ impl LogBuffer {
             "DEBUG" => 1,
             _ => 0,
         };
-        let min_rank = min_level
-            .map(|l| level_rank(&l.to_uppercase()))
-            .unwrap_or(0);
+        let min_rank = min_level.map_or(0, |l| level_rank(&l.to_uppercase()));
         entries
             .iter()
             .rev()
@@ -154,8 +152,7 @@ impl LogFilter {
         let min = self
             .min_level
             .as_deref()
-            .map(|l| level_rank(&l.to_uppercase()))
-            .unwrap_or(0);
+            .map_or(0, |l| level_rank(&l.to_uppercase()));
         if level_rank(&e.level) < min {
             return false;
         }

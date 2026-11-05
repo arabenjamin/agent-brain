@@ -465,8 +465,8 @@ async fn reclassify_status(neo4j: &Neo4jClient) -> Value {
 
 /// A topic definition from a request body; `name` comes from the path on update.
 fn body_def(body: &Value, name: Option<&str>) -> Result<TopicDef, String> {
-    let text = |k: &str| body[k].as_str().map(str::trim).unwrap_or("").to_string();
-    let name = name.map(String::from).unwrap_or_else(|| text("name"));
+    let text = |k: &str| body[k].as_str().map_or("", str::trim).to_string();
+    let name = name.map_or_else(|| text("name"), String::from);
     let current = Topics::global();
     let old = current.get(&name);
     let pick = |k: &str, prev: Option<&String>| -> String {

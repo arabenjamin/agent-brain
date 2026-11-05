@@ -255,9 +255,8 @@ impl TodoSkill {
             }
             _ => None,
         };
-        let saved = match text("id").or(merged_into.as_deref()) {
-            Some(id) => self
-                .neo4j
+        let saved = if let Some(id) = text("id").or(merged_into.as_deref()) {
+            self.neo4j
                 .update_todo(
                     id,
                     text("title"),
@@ -268,40 +267,39 @@ impl TodoSkill {
                     opt("due_at"),
                 )
                 .await
-                .map(|t| t.map(|t| (t, false))),
-            None => {
-                let Some(title) = text("title") else {
-                    return ToolCallResult::error("`title` is required to create an item");
-                };
-                if text("ask").is_none() {
-                    return ToolCallResult::error(
-                        "`ask` is required to create an item: say what the user must do or \
-                         decide, and what is blocked until they do. Nothing was saved.",
-                    );
-                }
-                items::stamp_source(&self.neo4j, &mut patch).await;
-                // What the brain creates is the user's to act on, and says so.
-                patch.assignee = patch.assignee.or(Some(Some("user".to_string())));
-                patch.origin_kind = Some(Some(
-                    if items::written_by_brain() {
-                        "agent"
-                    } else {
-                        "user"
-                    }
-                    .to_string(),
-                ));
-                self.neo4j
-                    .create_todo(
-                        title,
-                        text("description"),
-                        text("status"),
-                        args["priority"].as_i64(),
-                        None,
-                        text("due_at"),
-                    )
-                    .await
-                    .map(|t| Some((t, true)))
+                .map(|t| t.map(|t| (t, false)))
+        } else {
+            let Some(title) = text("title") else {
+                return ToolCallResult::error("`title` is required to create an item");
+            };
+            if text("ask").is_none() {
+                return ToolCallResult::error(
+                    "`ask` is required to create an item: say what the user must do or \
+                     decide, and what is blocked until they do. Nothing was saved.",
+                );
             }
+            items::stamp_source(&self.neo4j, &mut patch).await;
+            // What the brain creates is the user's to act on, and says so.
+            patch.assignee = patch.assignee.or(Some(Some("user".to_string())));
+            patch.origin_kind = Some(Some(
+                if items::written_by_brain() {
+                    "agent"
+                } else {
+                    "user"
+                }
+                .to_string(),
+            ));
+            self.neo4j
+                .create_todo(
+                    title,
+                    text("description"),
+                    text("status"),
+                    args["priority"].as_i64(),
+                    None,
+                    text("due_at"),
+                )
+                .await
+                .map(|t| Some((t, true)))
         };
         match saved {
             Ok(Some((t, created))) => match self.neo4j.patch_todo_item(&t.id, &patch).await {

@@ -193,8 +193,7 @@ impl Neo4jClient {
                     node.get::<String>("item_id")
                         .ok()
                         .filter(|s| !s.is_empty())
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null),
+                        .map_or(serde_json::Value::Null, serde_json::Value::String),
                 );
                 out.push(serde_json::Value::Object(obj));
             }

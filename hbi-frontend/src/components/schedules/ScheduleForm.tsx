@@ -9,6 +9,15 @@ import { buildDraftTask, checkWorkflow, useToolSchemas, type CheckResult } from 
 import StepCard from "./StepCard";
 import { useMergedToolGroups } from "./useToolGroups";
 
+type IntervalUnit = "minutes" | "hours" | "days" | "weeks";
+
+function intervalParts(secs: number): { unit: IntervalUnit; value: number } {
+  if (secs % 604800 === 0) return { unit: "weeks", value: secs / 604800 };
+  if (secs % 86400 === 0) return { unit: "days", value: secs / 86400 };
+  if (secs % 3600 === 0) return { unit: "hours", value: secs / 3600 };
+  return { unit: "minutes", value: Math.max(1, Math.round(secs / 60)) };
+}
+
 // ─── WorkflowForm ────────────────────────────────────────────────────────
 
 export default function ScheduledTaskForm({
@@ -30,8 +39,9 @@ export default function ScheduledTaskForm({
   const [topic, setTopic] = useState(existing?.topic ?? "");
   const [kind, setKind] = useState(existing?.kind ?? "");
   const topics = useTopics().data?.topics ?? [];
-  const [intervalUnit, setIntervalUnit] = useState<"minutes" | "hours" | "days" | "weeks">("days");
-  const [intervalValue, setIntervalValue] = useState<number>(1);
+  const [interval] = useState(() => intervalParts(existing?.interval_seconds ?? 86400));
+  const [intervalUnit, setIntervalUnit] = useState(interval.unit);
+  const [intervalValue, setIntervalValue] = useState(interval.value);
   // A workflow with no schedule runs only when started by name.
   const [scheduled, setScheduled] = useState(existing ? existing.interval_seconds != null : true);
   const toolGroups = useMergedToolGroups();
@@ -53,26 +63,6 @@ export default function ScheduledTaskForm({
     }
     return [makeDefaultStep()];
   });
-
-  const setFromSeconds = (secs: number) => {
-    if (secs % 604800 === 0) { setIntervalUnit("weeks"); setIntervalValue(secs / 604800); }
-    else if (secs % 86400 === 0) { setIntervalUnit("days"); setIntervalValue(secs / 86400); }
-    else if (secs % 3600 === 0) { setIntervalUnit("hours"); setIntervalValue(secs / 3600); }
-    else { setIntervalUnit("minutes"); setIntervalValue(Math.max(1, Math.round(secs / 60))); }
-  };
-
-  // Sync interval_seconds ↔ unit/value
-  useEffect(() => {
-    setFromSeconds(existing?.interval_seconds ?? 86400);
-  }, [existing?.interval_seconds]);
-
-  // Sync raw JSON when toggling to raw view
-  useEffect(() => {
-    if (showRaw) {
-      setRawJson(stepDraftsToJson(steps));
-      setRawJsonError(null);
-    }
-  }, [showRaw]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
@@ -96,6 +86,8 @@ export default function ScheduledTaskForm({
       if (!applyRawJson()) return;
       setShowRaw(false);
     } else {
+      setRawJson(stepDraftsToJson(steps));
+      setRawJsonError(null);
       setShowRaw(true);
     }
   };
@@ -208,7 +200,9 @@ export default function ScheduledTaskForm({
     const m = draft.every ? /^(\d+)([mhdw])$/.exec(draft.every) : null;
     if (!existing && m) {
       setScheduled(true);
-      setFromSeconds(Number(m[1]) * { m: 60, h: 3600, d: 86400, w: 604800 }[m[2] as "m" | "h" | "d" | "w"]);
+      const parts = intervalParts(Number(m[1]) * { m: 60, h: 3600, d: 86400, w: 604800 }[m[2] as "m" | "h" | "d" | "w"]);
+      setIntervalUnit(parts.unit);
+      setIntervalValue(parts.value);
     }
     if (!check.ok) {
       return check.refused

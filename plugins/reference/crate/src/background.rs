@@ -213,7 +213,7 @@ fn clip(s: &str, n: usize) -> String {
         return s.to_string();
     }
     let cut: String = s.chars().take(n).collect();
-    let at = cut.rfind(". ").map(|i| i + 1).unwrap_or(cut.len());
+    let at = cut.rfind(". ").map_or(cut.len(), |i| i + 1);
     format!("{} […]", &cut[..at])
 }
 
@@ -537,7 +537,7 @@ mod tests {
             "https://www.eia.gov/z",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
         assert_eq!(top_domains(&links), vec!["reuters.com", "eia.gov"]);
     }

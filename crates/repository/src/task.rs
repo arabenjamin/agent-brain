@@ -77,7 +77,7 @@ impl Neo4jClient {
         };
         let inputs_json = inputs
             .filter(|v| v.as_object().is_some_and(|m| !m.is_empty()))
-            .map(|v| v.to_string());
+            .map(std::string::ToString::to_string);
 
         let mut q = query(
             "CREATE (t:Task {id: $id, goal: $goal, status: $status, \

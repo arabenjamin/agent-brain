@@ -84,7 +84,7 @@ mod tests {
         assert_eq!(parse_opt(r#"{"filter": ""}"#), None);
         assert_eq!(parse_opt(r#"{"filter": "   "}"#), None);
         assert_eq!(parse_opt(r#"{"filter": null}"#), None);
-        assert_eq!(parse_opt(r#"{}"#), None);
+        assert_eq!(parse_opt(r"{}"), None);
     }
 
     #[test]
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn default_when_absent() {
-        assert!(!parse(r#"{}"#));
+        assert!(!parse(r"{}"));
     }
 
     #[test]

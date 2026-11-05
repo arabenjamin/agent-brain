@@ -365,8 +365,7 @@ impl ClaimSkill {
             warn!(claim_id = %claim_id, sources = ?verdict.sources, "Support rejected — cited source is not a search result");
             let status = claims::recompute_status(&self.neo4j, claim_id)
                 .await
-                .map(|s| s.as_str().to_string())
-                .unwrap_or_else(|_| "unverified".to_string());
+                .map_or_else(|_| "unverified".to_string(), |s| s.as_str().to_string());
             return json!({
                 "claim_id": claim_id,
                 "claim": claim_text,
@@ -403,8 +402,7 @@ impl ClaimSkill {
                     warn!(claim_id = %claim_id, reason = %reason, "Support rejected — evidence not independent");
                     let status = claims::recompute_status(&self.neo4j, claim_id)
                         .await
-                        .map(|s| s.as_str().to_string())
-                        .unwrap_or_else(|_| "unverified".to_string());
+                        .map_or_else(|_| "unverified".to_string(), |s| s.as_str().to_string());
                     return json!({
                         "claim_id": claim_id,
                         "claim": claim_text,
@@ -436,8 +434,7 @@ impl ClaimSkill {
                     warn!(claim_id = %claim_id, model = %model, "Support rejected — the cited results do not ground the claim");
                     let status = claims::recompute_status(&self.neo4j, claim_id)
                         .await
-                        .map(|s| s.as_str().to_string())
-                        .unwrap_or_else(|_| "unverified".to_string());
+                        .map_or_else(|_| "unverified".to_string(), |s| s.as_str().to_string());
                     return json!({
                         "claim_id": claim_id,
                         "claim": claim_text,
@@ -476,29 +473,26 @@ impl ClaimSkill {
             } else {
                 match claims::confirm_contradiction(self.llm.as_ref(), claim_text, &document).await
                 {
-                    Ok(Some(c)) => match grounding::model() {
-                        Some(model) => {
-                            match grounding::is_grounded(&model, &document, claim_text).await {
-                                Ok(true) => Some(format!(
-                                    "{model} found the claim grounded in the cited results, so they do not refute it"
-                                )),
-                                Ok(false) => {
-                                    grounding_status = Some("not grounded".to_string());
-                                    contradiction = Some(c);
-                                    None
-                                }
-                                Err(e) => {
-                                    warn!(claim_id = %claim_id, error = %e, "Grounding veto could not run; contradiction counted unchecked");
-                                    grounding_status = Some(format!("unchecked: {e}"));
-                                    contradiction = Some(c);
-                                    None
-                                }
+                    Ok(Some(c)) => if let Some(model) = grounding::model() {
+                        match grounding::is_grounded(&model, &document, claim_text).await {
+                            Ok(true) => Some(format!(
+                                "{model} found the claim grounded in the cited results, so they do not refute it"
+                            )),
+                            Ok(false) => {
+                                grounding_status = Some("not grounded".to_string());
+                                contradiction = Some(c);
+                                None
+                            }
+                            Err(e) => {
+                                warn!(claim_id = %claim_id, error = %e, "Grounding veto could not run; contradiction counted unchecked");
+                                grounding_status = Some(format!("unchecked: {e}"));
+                                contradiction = Some(c);
+                                None
                             }
                         }
-                        None => {
-                            contradiction = Some(c);
-                            None
-                        }
+                    } else {
+                        contradiction = Some(c);
+                        None
                     },
                     Ok(None) => Some(
                         "a second look found no words in the cited results that conflict with the claim"
@@ -511,8 +505,7 @@ impl ClaimSkill {
                 warn!(claim_id = %claim_id, reason = %why, "Contradiction rejected");
                 let status = claims::recompute_status(&self.neo4j, claim_id)
                     .await
-                    .map(|s| s.as_str().to_string())
-                    .unwrap_or_else(|_| "unverified".to_string());
+                    .map_or_else(|_| "unverified".to_string(), |s| s.as_str().to_string());
                 return json!({
                     "claim_id": claim_id,
                     "claim": claim_text,
@@ -543,8 +536,7 @@ impl ClaimSkill {
 
         let status = claims::recompute_status(&self.neo4j, claim_id)
             .await
-            .map(|s| s.as_str().to_string())
-            .unwrap_or_else(|_| "unverified".to_string());
+            .map_or_else(|_| "unverified".to_string(), |s| s.as_str().to_string());
 
         json!({
             "claim_id": claim_id,

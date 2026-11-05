@@ -195,7 +195,7 @@ mod tests {
             "**Your Items**",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
         let (text, removed) = strip_sections(brief, &prefixes);
         assert_eq!(removed.len(), 4);

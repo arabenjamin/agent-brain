@@ -55,8 +55,7 @@ async fn local_engine_up() -> bool {
         .get(format!("{}/v1/models", local_url()))
         .send()
         .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
+        .is_ok_and(|r| r.status().is_success())
 }
 
 fn base_config(provider: LlmProviderType, base_url: &str, model: &str) -> LlmConfig {

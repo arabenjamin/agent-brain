@@ -1,0 +1,30 @@
+name: Code quality
+
+# Report-only: the comparison against the committed baseline appears on the run
+# page and fails nothing. Review on 2026-11-18, then move it to the pre-commit
+# hook with --fail-on-regression if the findings have earned it.
+on:
+  push:
+    branches: [dev]
+    paths: ["crates/**", "plugins/**", rustqual.toml, rustqual-baseline.json, .github/workflows/quality.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rustqual:
+    name: rustqual
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install rustqual --version 1.8.3 --locked
+      - name: Compare with the baseline
+        run: |
+          {
+            echo '```'
+            rustqual . --compare rustqual-baseline.json --no-fail --format text | tail -n 12
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

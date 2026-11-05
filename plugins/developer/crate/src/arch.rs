@@ -221,7 +221,7 @@ fn module_of(handler: &str, aliases: &HashMap<String, String>, mods: &HashSet<St
     }
     let mut path: Vec<String> = segs[..segs.len() - 1]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     if path[0] == "crate" {
         path.remove(0);
@@ -311,7 +311,7 @@ impl Inventory {
 
 /// The live provider registry, from the host.
 pub fn providers() -> Value {
-    INTRO.get().map(|i| i.providers()).unwrap_or(Value::Null)
+    INTRO.get().map_or(Value::Null, |i| i.providers())
 }
 
 /// Provider names from the live provider registry.
@@ -978,7 +978,10 @@ mod tests { fn t() { Router::new().route("/test-only", get(h)); } }
                 .or_default()
                 .insert(t.to_string());
         }
-        i.workflows = schedules.iter().map(|s| s.to_string()).collect();
+        i.workflows = schedules
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         i
     }
 

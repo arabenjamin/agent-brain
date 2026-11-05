@@ -157,9 +157,7 @@ impl PluginManagerSkill {
         }
         let runtime = plugins::runtime_dir();
         let target = runtime.join(&name);
-        let version = plugins::read_manifest(&target, &name)
-            .map(|m| m.version + 1)
-            .unwrap_or(1);
+        let version = plugins::read_manifest(&target, &name).map_or(1, |m| m.version + 1);
         let manifest = Manifest {
             name: name.clone(),
             version,

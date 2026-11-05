@@ -34,7 +34,7 @@ impl KnowledgeService {
         let candidates: usize = if use_adaptive {
             let threshold = score_threshold.unwrap_or(0.1);
             let lam = lambda.unwrap_or(0.1);
-            let cypher = r#"
+            let cypher = r"
             MATCH (n:Note)
             WHERE NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news']
             OPTIONAL MATCH (other:Note)-[:RELATES_TO]->(n)
@@ -45,7 +45,7 @@ impl KnowledgeService {
                      * exp(-$lambda * toFloat(days_idle)) AS decay_score
             WHERE decay_score < $threshold
             RETURN count(n) AS total
-            "#;
+            ";
             let rows = self
                 .neo4j
                 .execute(
@@ -58,13 +58,13 @@ impl KnowledgeService {
                 .and_then(|r| r.get::<i64>("total").ok())
                 .unwrap_or(0) as usize
         } else {
-            let cypher = r#"
+            let cypher = r"
             MATCH (n:Note)
             WHERE n.last_accessed_at < datetime() - duration({days: $days})
               AND n.access_count < $min_accesses
               AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news']
             RETURN count(n) AS total
-            "#;
+            ";
             let rows = self
                 .neo4j
                 .execute(
@@ -113,7 +113,7 @@ impl KnowledgeService {
         if use_adaptive {
             let threshold = score_threshold.unwrap_or(0.1);
             let lam = lambda.unwrap_or(0.1);
-            let cypher = r#"
+            let cypher = r"
             MATCH (n:Note)
             WHERE NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection']
             OPTIONAL MATCH (other:Note)-[:RELATES_TO]->(n)
@@ -127,7 +127,7 @@ impl KnowledgeService {
             WITH collect(n)[0..$safe_limit] AS stale
             FOREACH (n IN stale | DETACH DELETE n)
             RETURN size(stale) AS total
-            "#;
+            ";
             let rows = self
                 .neo4j
                 .execute(
@@ -146,7 +146,7 @@ impl KnowledgeService {
         }
 
         // Legacy path: days_stale / min_accesses
-        let cypher = r#"
+        let cypher = r"
         MATCH (n:Note)
         WHERE n.last_accessed_at < datetime() - duration({days: $days})
           AND n.access_count < $min_accesses
@@ -155,7 +155,7 @@ impl KnowledgeService {
         WITH collect(n)[0..$safe_limit] AS stale
         FOREACH (n IN stale | DETACH DELETE n)
         RETURN size(stale) AS total
-        "#;
+        ";
         let rows = self
             .neo4j
             .execute(
@@ -189,7 +189,7 @@ impl KnowledgeService {
                 "MATCH (a:EntityAlias) WHERE NOT (a)-[:ALIAS_OF]->(:Entity) DETACH DELETE a",
             ))
             .await;
-        let cypher = r#"
+        let cypher = r"
         MATCH (e:Entity)
         WHERE coalesce(e.type_source, '') <> 'seed' AND NOT ()-[:ALIAS_OF]->(e)
         OPTIONAL MATCH (n:Note)-[:MENTIONS]->(e)
@@ -200,7 +200,7 @@ impl KnowledgeService {
                     OR e.created_at < datetime() - duration({days: 30})))
         DETACH DELETE e
         RETURN count(e) AS n
-        "#;
+        ";
         match self.neo4j.execute(neo4rs::query(cypher)).await {
             Ok(rows) => {
                 let n = rows

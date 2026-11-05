@@ -513,9 +513,10 @@ pub async fn reconcile(
                     .param("hash", hash.as_str())
                     .param(
                         "drift",
-                        drift
-                            .map(neo4rs::BoltType::from)
-                            .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
+                        drift.map_or(
+                            neo4rs::BoltType::Null(neo4rs::BoltNull),
+                            neo4rs::BoltType::from,
+                        ),
                     )
                     .param("caught_up", caught_up),
             )

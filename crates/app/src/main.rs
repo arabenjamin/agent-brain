@@ -429,7 +429,7 @@ async fn run_todo(url: &str, action: TodoAction) -> Result<()> {
             if status.is_success() {
                 println!("{}", serde_json::to_string_pretty(&json)?);
             } else {
-                anyhow::bail!("Server error {}: {}", status, json);
+                anyhow::bail!("Server error {status}: {json}");
             }
         }
 
@@ -462,7 +462,7 @@ async fn run_todo(url: &str, action: TodoAction) -> Result<()> {
                     }
                 }
             } else {
-                anyhow::bail!("Server error {}: {}", status_code, json);
+                anyhow::bail!("Server error {status_code}: {json}");
             }
         }
 
@@ -478,7 +478,7 @@ async fn run_todo(url: &str, action: TodoAction) -> Result<()> {
             if status_code.is_success() {
                 println!("Done: {}", json["title"].as_str().unwrap_or(&id));
             } else {
-                anyhow::bail!("Server error {}: {}", status_code, json);
+                anyhow::bail!("Server error {status_code}: {json}");
             }
         }
 
@@ -498,7 +498,7 @@ async fn run_todo(url: &str, action: TodoAction) -> Result<()> {
                     json["status"].as_str().unwrap_or("?")
                 );
             } else {
-                anyhow::bail!("Server error {}: {}", status_code, json);
+                anyhow::bail!("Server error {status_code}: {json}");
             }
         }
 
@@ -509,7 +509,7 @@ async fn run_todo(url: &str, action: TodoAction) -> Result<()> {
                 println!("Deleted: {id}");
             } else {
                 let json: serde_json::Value = resp.json().await.unwrap_or_default();
-                anyhow::bail!("Server error {}: {}", status_code, json);
+                anyhow::bail!("Server error {status_code}: {json}");
             }
         }
     }
@@ -651,7 +651,7 @@ async fn run_serve(
             // Parse bind address
             let bind_addr: SocketAddr = bind
                 .parse()
-                .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", bind, e))?;
+                .map_err(|e| anyhow::anyhow!("Invalid bind address '{bind}': {e}"))?;
 
             info!(addr = %bind_addr, "Starting MCP server on HTTP...");
 

@@ -199,7 +199,7 @@ pub fn first_for(spec: &ReaderSpec, url: &str) -> bool {
     let Some(f) = &spec.first_for else {
         return false;
     };
-    let rest = url.split_once("://").map(|x| x.1).unwrap_or(url);
+    let rest = url.split_once("://").map_or(url, |x| x.1);
     let host = rest
         .split(['/', '?', '#'])
         .next()
@@ -207,8 +207,7 @@ pub fn first_for(spec: &ReaderSpec, url: &str) -> bool {
         .to_lowercase();
     let path = rest
         .split_once('/')
-        .map(|(_, p)| p)
-        .unwrap_or("")
+        .map_or("", |(_, p)| p)
         .split(['?', '#'])
         .next()
         .unwrap_or("");
@@ -294,10 +293,7 @@ pub async fn read(client: &Client, spec: &ReaderSpec, url: &str) -> Result<Page,
         .find_map(|p| path_get(&json, p))
         .filter(|v| !v.is_null())
     {
-        let e = err
-            .as_str()
-            .map(String::from)
-            .unwrap_or_else(|| err.to_string());
+        let e = err.as_str().map_or_else(|| err.to_string(), String::from);
         return Err(format!("{name}: {}", redact(&e, secret)));
     }
     let page_text = rs

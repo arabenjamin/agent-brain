@@ -94,7 +94,7 @@ pub async fn handle_create_todo(
         .get("status")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let priority = body.get("priority").and_then(|v| v.as_i64());
+    let priority = body.get("priority").and_then(serde_json::Value::as_i64);
     let tags: Vec<String> = body
         .get("tags")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -173,8 +173,7 @@ pub async fn handle_update_todo(
     // `None` key = not in body (leave unchanged); `Some(null)` = clear the field
     let description: Option<Option<String>> = if body
         .as_object()
-        .map(|o| o.contains_key("description"))
-        .unwrap_or(false)
+        .is_some_and(|o| o.contains_key("description"))
     {
         Some(
             body.get("description")
@@ -189,13 +188,9 @@ pub async fn handle_update_todo(
         .get("status")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let priority = body.get("priority").and_then(|v| v.as_i64());
+    let priority = body.get("priority").and_then(serde_json::Value::as_i64);
 
-    let tags: Option<Vec<String>> = if body
-        .as_object()
-        .map(|o| o.contains_key("tags"))
-        .unwrap_or(false)
-    {
+    let tags: Option<Vec<String>> = if body.as_object().is_some_and(|o| o.contains_key("tags")) {
         Some(
             body.get("tags")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -219,19 +214,16 @@ pub async fn handle_update_todo(
         None => None,
     };
 
-    let due_at: Option<Option<String>> = if body
-        .as_object()
-        .map(|o| o.contains_key("due_at"))
-        .unwrap_or(false)
-    {
-        Some(
-            body.get("due_at")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        )
-    } else {
-        None
-    };
+    let due_at: Option<Option<String>> =
+        if body.as_object().is_some_and(|o| o.contains_key("due_at")) {
+            Some(
+                body.get("due_at")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            )
+        } else {
+            None
+        };
 
     let description_ref = description.as_ref().map(|d| d.as_deref());
     let due_at_ref = due_at.as_ref().map(|d| d.as_deref());

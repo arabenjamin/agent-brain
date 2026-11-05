@@ -521,8 +521,7 @@ impl PluginContext {
             None => Utc::now()
                 .date_naive()
                 .and_hms_opt(0, 0, 0)
-                .map(|d| d.and_utc())
-                .unwrap_or_else(Utc::now),
+                .map_or_else(Utc::now, |d| d.and_utc()),
         }
     }
 }

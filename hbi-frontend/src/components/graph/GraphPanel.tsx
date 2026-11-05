@@ -241,7 +241,6 @@ export default function GraphPanel({
   const [focusDepth, setFocusDepth]   = useState(2);
 
   // UI state
-  const [selectedNode, setSelectedNode]   = useState<SelectedNodeInfo | null>(null);
   const [frozen, setFrozen]               = useState(false);
   const [controlsOpen, setControlsOpen]  = useState(false);
   const [hoveredNode, setHoveredNode]     = useState<GraphNode | null>(null);
@@ -311,7 +310,6 @@ export default function GraphPanel({
     setLoading(true);
     setError(null);
     setFocusNodeId(null);
-    setSelectedNode(null);
     try {
       const res = await apiRequest(seedKey
         ? `/api/graph?seeds=${encodeURIComponent(seedKey)}`
@@ -327,6 +325,7 @@ export default function GraphPanel({
     }
   }, [seedKey]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- loading from the server: the spinner state starts here.
   useEffect(() => { loadGraph(); }, [loadGraph]);
 
   // ── Layout controls ───────────────────────────────────────────────────────────
@@ -350,11 +349,11 @@ export default function GraphPanel({
     openEntity(node.nodeType === "entity" ? "entity" : node.nodeType === "task" ? "task" : "note", node.id);
   }, []);
 
-  // Mirror the drawer's selection into the overlay (focus controls).
-  useEffect(() => {
+  // The drawer's selection, for the overlay (focus controls).
+  const selectedNode: SelectedNodeInfo | null = useMemo(() => {
     const raw = selectedId ? allNodes.find((n) => n.id === selectedId) : undefined;
-    setSelectedNode(raw ? { id: raw.id, type: raw.type, label: raw.label, note_type: raw.note_type,
-      entity_type: raw.entity_type, status: raw.status, created_at: raw.created_at } : null);
+    return raw ? { id: raw.id, type: raw.type, label: raw.label, note_type: raw.note_type,
+      entity_type: raw.entity_type, status: raw.status, created_at: raw.created_at } : null;
   }, [selectedId, allNodes]);
 
   // ── Node hover ───────────────────────────────────────────────────────────────

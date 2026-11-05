@@ -25,28 +25,27 @@ impl KnowledgeService {
         min_score: f64,
     ) -> Result<Vec<(String, String, String)>> {
         // 1. Vector search — only when an LLM is configured AND the embed succeeds.
-        let embedding = match self.llm.as_ref() {
-            Some(llm) => match llm.embed(topic).await {
+        let embedding = if let Some(llm) = self.llm.as_ref() {
+            match llm.embed(topic).await {
                 Ok(e) => Some(e),
                 Err(e) => {
                     warn!("Failed to embed topic (falling back to BM25): {}", e);
                     None
                 }
-            },
-            None => {
-                warn!("LLM not configured for vector search (falling back to BM25)");
-                None
             }
+        } else {
+            warn!("LLM not configured for vector search (falling back to BM25)");
+            None
         };
 
         if let Some(embedding) = embedding {
-            let cypher = r#"
+            let cypher = r"
             CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
             YIELD node, score
             WHERE score > $min_score
             RETURN node.id AS id, node.content AS content, node.note_type AS note_type
             ORDER BY score DESC
-            "#;
+            ";
 
             let rows = self
                 .neo4j
@@ -68,12 +67,12 @@ impl KnowledgeService {
         //    here, so ranking is left to the full-text index. Sanitizing is required:
         //    an unescaped ':' or '/' in the topic makes queryNodes throw (see
         //    sanitize_lucene_query), which would turn the fallback into a second failure.
-        let cypher = r#"
+        let cypher = r"
         CALL db.index.fulltext.queryNodes('note_content_fulltext', $query, {limit: $limit})
         YIELD node, score
         RETURN node.id AS id, node.content AS content, node.note_type AS note_type
         ORDER BY score DESC
-        "#;
+        ";
 
         let rows = self
             .neo4j
@@ -129,8 +128,7 @@ impl KnowledgeService {
 
         if notes.is_empty() {
             return Err(anyhow::anyhow!(
-                "No notes found related to topic '{}' — nothing to synthesize",
-                topic
+                "No notes found related to topic '{topic}' — nothing to synthesize"
             ));
         }
 
@@ -158,7 +156,7 @@ impl KnowledgeService {
         let content = llm
             .generate(&prompt, None)
             .await
-            .map_err(|e| anyhow::anyhow!("LLM synthesis failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("LLM synthesis failed: {e}"))?;
 
         let (note_id, _) = self
             .store_note_raw(
@@ -242,7 +240,7 @@ impl KnowledgeService {
         let response = llm
             .generate(&prompt, None)
             .await
-            .map_err(|e| anyhow::anyhow!("LLM audit failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("LLM audit failed: {e}"))?;
 
         let text = response.trim();
         let parsed: serde_json::Value = agent_brain_llm::llm::first_json_object(text, &["aligned"])
@@ -258,11 +256,11 @@ impl KnowledgeService {
 
         let aligned = parsed
             .get("aligned")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
         let confidence = parsed
             .get("confidence")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.5);
         let concerns: Vec<String> = parsed
             .get("concerns")
@@ -311,11 +309,11 @@ impl KnowledgeService {
 
         // Optionally fetch task + reflection notes
         let task_context = if let Some(tid) = task_id {
-            let cypher = r#"
+            let cypher = r"
             MATCH (n:Note)-[:REFLECTS_ON]->(t:Task {id: $task_id})
             RETURN n.id AS id, n.content AS content
             LIMIT 5
-            "#;
+            ";
             let q = neo4rs::query(cypher).param("task_id", tid);
             match self.neo4j.execute(q).await {
                 Ok(rows) => rows
@@ -324,7 +322,7 @@ impl KnowledgeService {
                         if let (Ok(id), Ok(content)) =
                             (row.get::<String>("id"), row.get::<String>("content"))
                         {
-                            Some(format!("[Task Note {}]: {}", id, content))
+                            Some(format!("[Task Note {id}]: {content}"))
                         } else {
                             None
                         }
@@ -367,7 +365,7 @@ impl KnowledgeService {
         let response = llm
             .generate(&prompt, None)
             .await
-            .map_err(|e| anyhow::anyhow!("LLM explanation failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("LLM explanation failed: {e}"))?;
 
         let sources: Vec<serde_json::Value> = knowledge_notes
             .iter()

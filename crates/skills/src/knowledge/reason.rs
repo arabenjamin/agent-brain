@@ -47,11 +47,7 @@ fn answer_text(parsed: &Value, raw: &str, prompt: &str) -> String {
         Value::String(s) => s.clone(),
         Value::Array(items) => items
             .iter()
-            .map(|i| {
-                i.as_str()
-                    .map(String::from)
-                    .unwrap_or_else(|| i.to_string())
-            })
+            .map(|i| i.as_str().map_or_else(|| i.to_string(), String::from))
             .collect::<Vec<_>>()
             .join("\n"),
         Value::Null => agent_brain_knowledge::knowledge::exact::check_links(raw, prompt).text,
@@ -199,7 +195,7 @@ impl KnowledgeSkill {
                         "explanation": explanation,
                         "knowledge_sources": sources,
                     })),
-                    Err(e) => ToolCallResult::error(format!("Explanation failed: {}", e)),
+                    Err(e) => ToolCallResult::error(format!("Explanation failed: {e}")),
                 }
             }
             "clarify" => {
@@ -209,7 +205,7 @@ impl KnowledgeSkill {
                     input.question
                 );
                 if let Some(ctx) = &input.context {
-                    prompt.push_str(&format!("\nCONTEXT: {}\n", ctx));
+                    prompt.push_str(&format!("\nCONTEXT: {ctx}\n"));
                 }
                 if let Some(tools) = &input.available_tools
                     && !tools.is_empty()
@@ -236,9 +232,7 @@ Respond with a JSON object only (no markdown, no explanation):
                     // The LLM was unavailable, or still couldn't produce valid
                     // JSON after self-correcting retries — surface the error
                     // rather than fabricate a clarification result.
-                    Err(e) => {
-                        ToolCallResult::error(format!("Clarification analysis failed: {}", e))
-                    }
+                    Err(e) => ToolCallResult::error(format!("Clarification analysis failed: {e}")),
                 }
             }
             "audit" => {
@@ -257,7 +251,7 @@ Respond with a JSON object only (no markdown, no explanation):
                             "reasoning": reasoning,
                         }))
                     }
-                    Err(e) => ToolCallResult::error(format!("Audit failed: {}", e)),
+                    Err(e) => ToolCallResult::error(format!("Audit failed: {e}")),
                 }
             }
             "structured" => {
@@ -324,7 +318,7 @@ Respond with a JSON object only (no markdown, no explanation):
 
                         ToolCallResult::success_json(response)
                     }
-                    Err(e) => ToolCallResult::error(format!("Structured reasoning failed: {}", e)),
+                    Err(e) => ToolCallResult::error(format!("Structured reasoning failed: {e}")),
                 }
             }
             _ => {
@@ -389,7 +383,7 @@ Respond with a JSON object only (no markdown, no explanation):
                             }
                             ToolCallResult::success_json(parsed)
                         }
-                        Err(e) => ToolCallResult::error(format!("Reasoning failed: {}", e)),
+                        Err(e) => ToolCallResult::error(format!("Reasoning failed: {e}")),
                     };
                 }
 
@@ -410,7 +404,7 @@ Respond with a JSON object only (no markdown, no explanation):
                         }
                         ToolCallResult::success_json(response)
                     }
-                    Err(e) => ToolCallResult::error(format!("Reasoning failed: {}", e)),
+                    Err(e) => ToolCallResult::error(format!("Reasoning failed: {e}")),
                 }
             }
         }
@@ -508,7 +502,7 @@ Respond with a JSON object only (no markdown, no explanation):
 
         let raw = match self.llm.generate(&prompt, None).await {
             Ok(r) => r,
-            Err(e) => return ToolCallResult::error(format!("LLM call failed: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("LLM call failed: {e}")),
         };
 
         let text = raw.trim();
@@ -606,7 +600,7 @@ Respond with a JSON object only (no markdown, no explanation):
                 "note_type": "semantic",
                 "preview": preview
             })),
-            Err(e) => ToolCallResult::error(format!("Knowledge synthesis failed: {}", e)),
+            Err(e) => ToolCallResult::error(format!("Knowledge synthesis failed: {e}")),
         }
     }
 }

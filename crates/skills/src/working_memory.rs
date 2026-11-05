@@ -194,8 +194,10 @@ impl WorkingMemorySkill {
                 .as_deref()
                 .map(str::trim)
                 .filter(|c| !c.is_empty())
-                .map(String::from)
-                .unwrap_or_else(|| agent_brain_scheduler::items::title_from(&input.message));
+                .map_or_else(
+                    || agent_brain_scheduler::items::title_from(&input.message),
+                    String::from,
+                );
             let item = agent_brain_scheduler::items::NewItem {
                 title,
                 description: Some(input.message.clone()),
@@ -275,7 +277,7 @@ impl WorkingMemorySkill {
                 });
                 ToolCallResult::success_json(response)
             }
-            Err(e) => ToolCallResult::error(format!("Failed to push context: {}", e)),
+            Err(e) => ToolCallResult::error(format!("Failed to push context: {e}")),
         }
     }
 }

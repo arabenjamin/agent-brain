@@ -243,7 +243,7 @@ impl Plugins {
             .chain(extra.iter().map(PathBuf::as_path))
             .chain(runtime)
             .filter_map(|d| std::fs::read_dir(d).ok())
-            .flat_map(|e| e.flatten())
+            .flat_map(std::iter::Iterator::flatten)
             .filter(|e| e.path().join("plugin.yaml").is_file())
             .filter_map(|e| e.file_name().to_str().map(String::from))
             .filter(|n| !wanted.contains(n))
@@ -436,14 +436,16 @@ fn declared_cell() -> &'static std::sync::RwLock<HashMap<String, CodeStatus>> {
 
 /// Record what each bundle's `tools/` contributed (skills/bundle_tools.rs).
 pub fn set_declared_status(status: HashMap<String, CodeStatus>) {
-    *declared_cell().write().unwrap_or_else(|e| e.into_inner()) = status;
+    *declared_cell()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
 }
 
 /// What each bundle's `tools/` contributed, or why not.
 pub fn declared_status() -> HashMap<String, CodeStatus> {
     declared_cell()
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 
@@ -451,20 +453,22 @@ pub fn declared_status() -> HashMap<String, CodeStatus> {
 pub fn code_status() -> HashMap<String, CodeStatus> {
     code_cell()
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 
 /// Record the code status at startup (`services::plugins::plugin_skills`).
 pub fn set_code_status(status: HashMap<String, CodeStatus>) {
-    *code_cell().write().unwrap_or_else(|e| e.into_inner()) = status;
+    *code_cell()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
 }
 
 /// A plugin's `start` hook failed: its tools stay, the error is shown.
 pub fn record_code_error(plugin: &str, error: String) {
     if let Some(st) = code_cell()
         .write()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_mut(plugin)
     {
         st.error = Some(error);

@@ -477,8 +477,8 @@ pub(super) async fn run_behavior(
             for (k, v) in o {
                 let empty = v.is_null()
                     || v.as_str().is_some_and(|s| s.trim().is_empty())
-                    || v.as_object().is_some_and(|m| m.is_empty())
-                    || v.as_array().is_some_and(|a| a.is_empty());
+                    || v.as_object().is_some_and(serde_json::Map::is_empty)
+                    || v.as_array().is_some_and(std::vec::Vec::is_empty);
                 if b.slots.contains(k) && !empty {
                     args[k] = v.clone();
                 }
@@ -838,7 +838,10 @@ mod tests {
         let t = |name: &str, label: &str, aliases: &[&str]| TopicDef {
             name: name.into(),
             label: label.into(),
-            aliases: aliases.iter().map(|a| a.to_string()).collect(),
+            aliases: aliases
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             ..Default::default()
         };
         let topics = [

@@ -62,9 +62,7 @@ impl Default for SchedulerConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(300),
-            enabled: std::env::var("SCHEDULER_ENABLED")
-                .map(|v| v != "false" && v != "0")
-                .unwrap_or(true),
+            enabled: std::env::var("SCHEDULER_ENABLED").map_or(true, |v| v != "false" && v != "0"),
             max_tasks_per_run: 3,
             error_budget: 5,
             session_id: None,
@@ -167,9 +165,7 @@ impl SchedulerService {
             svc_clone.run_loop().await;
         });
 
-        let enabled = std::env::var("SCHEDULER_ENABLED")
-            .map(|v| v != "false" && v != "0")
-            .unwrap_or(true);
+        let enabled = std::env::var("SCHEDULER_ENABLED").map_or(true, |v| v != "false" && v != "0");
         let interval = std::env::var("SCHEDULER_INTERVAL_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -779,13 +775,13 @@ impl SchedulerService {
     /// The same tool failing ≥3 times in 7 days, per its outcome notes, gets a
     /// diagnosis run.
     async fn trigger_repeated_tool_failures(&self) -> Result<usize, String> {
-        let cypher = r#"
+        let cypher = r"
         MATCH (n:Note)
         WHERE n.note_type = 'outcome'
           AND n.content CONTAINS 'Success: false'
           AND n.created_at >= datetime() - duration({days: 7})
         RETURN n.content AS content
-        "#;
+        ";
         let rows = self
             .neo4j
             .execute(neo4rs::query(cypher))
@@ -963,8 +959,7 @@ impl SchedulerService {
         let is_stale = first
             .and_then(|r| r.get::<String>("newest").ok())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-            .map(|dt| (Utc::now() - dt.to_utc()).num_days() >= 7)
-            .unwrap_or(true);
+            .is_none_or(|dt| (Utc::now() - dt.to_utc()).num_days() >= 7);
         if note_count > 0 && !is_stale {
             return false;
         }
@@ -1215,10 +1210,7 @@ impl SchedulerService {
         if criteria.is_none() {
             return steps;
         }
-        if task_context
-            .map(|c| c.contains("ADVERSARIAL ABORT"))
-            .unwrap_or(false)
-        {
+        if task_context.is_some_and(|c| c.contains("ADVERSARIAL ABORT")) {
             return steps;
         }
 

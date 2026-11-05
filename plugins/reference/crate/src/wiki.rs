@@ -612,15 +612,15 @@ async fn store_items(neo4j: &Db, items: &[Item]) -> Result<()> {
             m.insert("aliases".into(), i.aliases.clone().into());
             m.insert(
                 "wiki_title".into(),
-                i.wiki_title.clone().map(Into::into).unwrap_or(Value::Null),
+                i.wiki_title.clone().map_or(Value::Null, Into::into),
             );
             m.insert(
                 "lat".into(),
-                i.location.map(|p| p.lat.into()).unwrap_or(Value::Null),
+                i.location.map_or(Value::Null, |p| p.lat.into()),
             );
             m.insert(
                 "lon".into(),
-                i.location.map(|p| p.lon.into()).unwrap_or(Value::Null),
+                i.location.map_or(Value::Null, |p| p.lon.into()),
             );
             m.insert("coord_count".into(), i.coord_count.into());
             Value::Object(m)
@@ -827,38 +827,37 @@ pub async fn link_entities(
         );
     }
     let model = llm.model_name();
-    let ids: Vec<String> = match entity_id {
-        Some(id) => vec![id.to_string()],
-        None => {
-            let review: Vec<String> = neo4j
-                .merge_candidates(None, usize::MAX)
-                .await
-                .ok()
-                .and_then(|v| v["candidates"].as_array().cloned())
-                .unwrap_or_default()
-                .iter()
-                .flat_map(|c| [c["from"]["id"].as_str(), c["into"]["id"].as_str()])
-                .flatten()
-                .map(String::from)
-                .collect();
-            neo4j
-                .execute(
-                    query(&format!(
-                        "{WAITING} \
-                         WITH e, COUNT {{ (:Note {{note_type: 'claim'}})-[:MENTIONS]->(e) }} AS m, \
-                              (e.id IN $review OR EXISTS {{ (e)-[:RELATES {{status: 'proposed'}}]-() }}) AS in_review \
-                         RETURN e.id AS id ORDER BY in_review DESC, m DESC LIMIT $n"
-                    ))
-                    .param("review", review)
-                    .param("demonyms", demonyms())
-                    .param("days", RECHECK_NONE_DAYS)
-                    .param("n", limit),
-                )
-                .await?
-                .iter()
-                .filter_map(|r| r.get::<String>("id").ok())
-                .collect()
-        }
+    let ids: Vec<String> = if let Some(id) = entity_id {
+        vec![id.to_string()]
+    } else {
+        let review: Vec<String> = neo4j
+            .merge_candidates(None, usize::MAX)
+            .await
+            .ok()
+            .and_then(|v| v["candidates"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|c| [c["from"]["id"].as_str(), c["into"]["id"].as_str()])
+            .flatten()
+            .map(String::from)
+            .collect();
+        neo4j
+            .execute(
+                query(&format!(
+                    "{WAITING} \
+                     WITH e, COUNT {{ (:Note {{note_type: 'claim'}})-[:MENTIONS]->(e) }} AS m, \
+                          (e.id IN $review OR EXISTS {{ (e)-[:RELATES {{status: 'proposed'}}]-() }}) AS in_review \
+                     RETURN e.id AS id ORDER BY in_review DESC, m DESC LIMIT $n"
+                ))
+                .param("review", review)
+                .param("demonyms", demonyms())
+                .param("days", RECHECK_NONE_DAYS)
+                .param("n", limit),
+            )
+            .await?
+            .iter()
+            .filter_map(|r| r.get::<String>("id").ok())
+            .collect()
     };
     let mut results = Vec::new();
     let mut tally: HashMap<String, i64> = HashMap::new();

@@ -262,7 +262,8 @@ export default function ToolPanel() {
     }
   }, []);
 
-  useEffect(() => { fetchAll(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps -- loading from the server: the spinner state starts here.
+  useEffect(() => { fetchAll(); }, []);
 
   // Build tool-name → skill-name index from live registry
   const toolToSkill = new Map<string, string>();

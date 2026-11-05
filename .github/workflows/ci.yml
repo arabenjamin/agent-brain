@@ -101,12 +101,47 @@ jobs:
           retention-days: 3
 
   # ---------------------------------------------------------------------------
+  # Frontend: the image only builds it, so its tests and lint run here.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/dev'
+    defaults:
+      run:
+        working-directory: hbi-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hbi-frontend/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Secrets: the whole history, since this repo is public.
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/dev'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: scripts/secret_scan.sh
+
+  # ---------------------------------------------------------------------------
   # Ship: Docker image → GHCR, GitHub Release, promote dev → master
   # ---------------------------------------------------------------------------
   ship:
     name: Ship
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, frontend, secrets]
     permissions:
       contents: write
       packages: write

@@ -548,14 +548,13 @@ pub async fn extract_from_claims(
         };
         let mut found = 0i64;
         for c in validate(vocab, &answer, &ents) {
-            match &c.dropped {
-                Some(why) => *dropped.entry(why.clone()).or_default() += 1,
-                None => {
-                    *tally
-                        .entry(propose(neo4j, &c, &id, &model).await?)
-                        .or_default() += 1;
-                    found += 1;
-                }
+            if let Some(why) = &c.dropped {
+                *dropped.entry(why.clone()).or_default() += 1
+            } else {
+                *tally
+                    .entry(propose(neo4j, &c, &id, &model).await?)
+                    .or_default() += 1;
+                found += 1;
             }
         }
         neo4j

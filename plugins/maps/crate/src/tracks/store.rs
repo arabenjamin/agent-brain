@@ -167,7 +167,7 @@ impl Store {
             let mut st =
                 c.prepare("SELECT mmsi, ship_type FROM vessels WHERE ship_type IS NOT NULL")?;
             let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-            Ok(rows.filter_map(|r| r.ok()).collect())
+            Ok(rows.filter_map(std::result::Result::ok).collect())
         })
     }
 
@@ -236,7 +236,7 @@ impl Store {
                 Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?))
             })?;
             let mut counts: HashMap<String, i64> = HashMap::new();
-            for (class, ty) in rows.filter_map(|r| r.ok()) {
+            for (class, ty) in rows.filter_map(std::result::Result::ok) {
                 let k = class
                     .or_else(|| ty.map(|t| ship_class(t).to_string()))
                     .unwrap_or_else(|| "unknown".into());
@@ -255,7 +255,7 @@ impl Store {
                 "SELECT area, source, count(DISTINCT id) FROM positions WHERE seen >= ? GROUP BY area, source",
             )?;
             let rows = st.query_map(params![since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-            Ok(rows.filter_map(|r| r.ok()).collect())
+            Ok(rows.filter_map(std::result::Result::ok).collect())
         })
     }
 
@@ -270,7 +270,7 @@ impl Store {
         bbox: Option<[f64; 4]>,
         limit: usize,
     ) -> Result<Vec<Value>> {
-        let [w, so, e, n] = bbox.map(|b| b.map(Some)).unwrap_or([None; 4]);
+        let [w, so, e, n] = bbox.map_or([None; 4], |b| b.map(Some));
         self.with(|c| {
             let mut st = c.prepare(
                 "SELECT p.source, p.id, p.area, arg_max(p.lat, p.seen), arg_max(p.lon, p.seen),
@@ -304,7 +304,7 @@ impl Store {
                     }))
                 },
             )?;
-            Ok(rows.filter_map(|r| r.ok()).collect())
+            Ok(rows.filter_map(std::result::Result::ok).collect())
         })
     }
 }

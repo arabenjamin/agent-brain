@@ -316,12 +316,17 @@ impl Topics {
     /// The current topics: the graph's set once [`reload`] has run, the
     /// YAML files until then. Cheap to call; take it once per unit of work.
     pub fn global() -> Arc<Topics> {
-        cell().read().unwrap_or_else(|e| e.into_inner()).clone()
+        cell()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn set_global(t: Topics) -> Arc<Topics> {
         let t = Arc::new(t);
-        *cell().write().unwrap_or_else(|e| e.into_inner()) = t.clone();
+        *cell()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = t.clone();
         t
     }
 
@@ -519,8 +524,9 @@ fn def_row(d: &TopicDef) -> neo4rs::BoltType {
         "reference".to_string(),
         d.reference
             .as_deref()
-            .map(|r| r.trim().to_string().into())
-            .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
+            .map_or(neo4rs::BoltType::Null(neo4rs::BoltNull), |r| {
+                r.trim().to_string().into()
+            }),
     );
     m.insert(
         "aliases".to_string(),
@@ -535,8 +541,7 @@ fn def_row(d: &TopicDef) -> neo4rs::BoltType {
         "plugin".to_string(),
         d.plugin
             .clone()
-            .map(Into::into)
-            .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
+            .map_or(neo4rs::BoltType::Null(neo4rs::BoltNull), Into::into),
     );
     m.into()
 }
@@ -1135,8 +1140,7 @@ pub async fn busy(neo4j: &Neo4jClient) -> bool {
         .await
         .ok()
         .and_then(|r| r.first().and_then(|r| r.get::<i64>("c").ok()))
-        .map(|c| c > 0)
-        .unwrap_or(true)
+        .is_none_or(|c| c > 0)
 }
 
 /// The background assigner: while the brain is idle, classify the notes that
@@ -1144,8 +1148,7 @@ pub async fn busy(neo4j: &Neo4jClient) -> bool {
 /// `TOPIC_ASSIGNER_ENABLED=false` turns it off.
 pub fn spawn_assigner(neo4j: Neo4jClient, llm: Arc<dyn LlmProvider>) {
     if std::env::var("TOPIC_ASSIGNER_ENABLED")
-        .map(|v| v.eq_ignore_ascii_case("false") || v == "0")
-        .unwrap_or(false)
+        .is_ok_and(|v| v.eq_ignore_ascii_case("false") || v == "0")
     {
         info!("Topic assigner disabled (TOPIC_ASSIGNER_ENABLED=false)");
         return;
@@ -1478,7 +1481,11 @@ mod tests {
     #[test]
     fn note_topics_are_known_unique_and_at_most_two() {
         let t = defs();
-        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let v = |xs: &[&str]| {
+            xs.iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
             check_note_topics(&v(&["ai-ml"]), &t).unwrap(),
             v(&["ai-ml"])

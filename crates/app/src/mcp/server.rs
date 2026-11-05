@@ -213,8 +213,7 @@ impl McpServerCore {
         let llm = self
             .chat_llm_config
             .as_ref()
-            .map(Arc::clone)
-            .unwrap_or_else(|| Arc::clone(&self.brain.llm_config));
+            .map_or_else(|| Arc::clone(&self.brain.llm_config), Arc::clone);
 
         let chat = ChatService::with_context_builder(
             Arc::clone(&self.brain.tool_handler),
@@ -228,11 +227,12 @@ impl McpServerCore {
         // Publish the chat service's shared AgentRunner so the background
         // `run_agent` tool reaches the same loop engine. This is the single
         // factory point, called once at startup when the slot is uncontended.
-        match self.brain.agent_runner_handle().try_write() {
-            Ok(mut slot) => *slot = Some(chat.agent_runner()),
-            Err(_) => tracing::warn!(
+        if let Ok(mut slot) = self.brain.agent_runner_handle().try_write() {
+            *slot = Some(chat.agent_runner())
+        } else {
+            tracing::warn!(
                 "could not publish AgentRunner (slot busy at startup); run_agent will be unavailable"
-            ),
+            )
         }
 
         chat
@@ -264,8 +264,7 @@ impl McpServerCore {
     pub fn chat_llm_config_arc(&self) -> Arc<RwLock<Option<crate::services::LlmConfig>>> {
         self.chat_llm_config
             .as_ref()
-            .map(Arc::clone)
-            .unwrap_or_else(|| self.brain.llm_config_arc())
+            .map_or_else(|| self.brain.llm_config_arc(), Arc::clone)
     }
 
     /// Return a clone of the telemetry client for the `/api/models` REST endpoint.
@@ -456,7 +455,7 @@ impl McpServerCore {
             .map_err(|e| {
                 JsonRpcErrorResponse::invalid_params(
                     request.id.clone(),
-                    format!("Invalid initialize params: {}", e),
+                    format!("Invalid initialize params: {e}"),
                 )
             })?
             .ok_or_else(|| {
@@ -559,7 +558,7 @@ impl McpServerCore {
             .map_err(|e| {
                 JsonRpcErrorResponse::invalid_params(
                     request.id.clone(),
-                    format!("Invalid tool call params: {}", e),
+                    format!("Invalid tool call params: {e}"),
                 )
             })?
             .ok_or_else(|| {

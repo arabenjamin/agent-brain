@@ -8,6 +8,16 @@ echo "Running pre-commit checks..."
 echo "=========================================="
 echo ""
 
+# Secrets first: this repo is public, and the check takes under two seconds.
+if command -v docker >/dev/null 2>&1; then
+    echo "Checking staged changes for secrets (gitleaks)..."
+    "$(git rev-parse --show-toplevel)/scripts/secret_scan.sh" --staged
+    echo "✓ No secrets staged"
+else
+    echo "WARNING: Docker not found, so staged changes were NOT checked for secrets."
+fi
+echo ""
+
 # 1. Formatting
 echo "1. Checking code formatting (cargo fmt)..."
 if ! cargo fmt -- --check; then

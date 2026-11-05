@@ -58,7 +58,7 @@ async fn test_create_task_without_db() {
     if let Some(content) = result.content.first()
         && let agent_brain::mcp::protocol::Content::Text { text } = content
     {
-        println!("Tool output: {}", text);
+        println!("Tool output: {text}");
         assert!(text.contains("Persistence layer (Neo4j) not available"));
     }
 }

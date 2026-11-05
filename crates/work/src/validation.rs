@@ -646,9 +646,8 @@ pub fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<Strin
             let prev = &steps[i - 1].tool_name;
             warnings.push(format!(
                 "step {n} (`reason`): no `context` argument, so it will reason over the \
-                 knowledge graph and never see step {} (`{prev}`) output. Pass \
-                 `context: \"{{{{_prev}}}}\"` to hand the upstream result in.",
-                i
+                 knowledge graph and never see step {i} (`{prev}`) output. Pass \
+                 `context: \"{{{{_prev}}}}\"` to hand the upstream result in."
             ));
         }
 
@@ -708,8 +707,7 @@ pub fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<Strin
         if PERSISTING_TOOLS.contains(&tool) && i > 0 && !references_prev(args) {
             warnings.push(format!(
                 "step {n} (`{tool}`): arguments contain no `{{{{_prev}}}}`, so it will \
-                 persist a fixed literal and discard step {} output.",
-                i
+                 persist a fixed literal and discard step {i} output."
             ));
         }
 
@@ -777,7 +775,7 @@ pub fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<Strin
                 last.arguments
                     .as_ref()
                     .and_then(|a| a.get("store_inference"))
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     != Some(true)
             }
             _ => false,
@@ -1304,7 +1302,7 @@ mod tests {
             "pick": "jobs[].url,jobs[].apply_url"
         });
         let v = validate_step_arguments(0, "http_request", Some(&args), &schemas());
-        assert!(has_hard(&v), "must reject: {:?}", v);
+        assert!(has_hard(&v), "must reject: {v:?}");
         let msg = render_hard(&v);
         assert!(
             msg.contains("query_params"),
@@ -1324,14 +1322,14 @@ mod tests {
             "pick": ["jobs[].url", "jobs[].apply_url"]
         });
         let v = validate_step_arguments(0, "http_request", Some(&args), &schemas());
-        assert!(!has_hard(&v), "clean args must pass: {:?}", v);
+        assert!(!has_hard(&v), "clean args must pass: {v:?}");
     }
 
     #[test]
     fn missing_required_field_is_rejected() {
         let args = json!({ "url": "https://example.com" }); // no method
         let v = validate_step_arguments(0, "http_request", Some(&args), &schemas());
-        assert!(has_hard(&v), "missing required must reject: {:?}", v);
+        assert!(has_hard(&v), "missing required must reject: {v:?}");
     }
 
     #[test]
@@ -1339,7 +1337,7 @@ mod tests {
         // A tool with no schema is not this function's job to reject.
         let args = json!({ "anything": 1 });
         let v = validate_step_arguments(0, "not_a_real_tool", Some(&args), &schemas());
-        assert!(v.is_empty(), "unknown tool should be skipped, got: {:?}", v);
+        assert!(v.is_empty(), "unknown tool should be skipped, got: {v:?}");
     }
 
     #[test]
@@ -1411,7 +1409,7 @@ mod tests {
             "query_params": { "q": "{{date}}" }
         });
         let v = validate_step_arguments(0, "http_request", Some(&args), &schemas());
-        assert!(!has_hard(&v), "templated strings must pass: {:?}", v);
+        assert!(!has_hard(&v), "templated strings must pass: {v:?}");
     }
 
     #[test]

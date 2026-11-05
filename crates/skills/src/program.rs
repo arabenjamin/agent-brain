@@ -371,7 +371,10 @@ mod tests {
         assert!(
             errors.is_empty(),
             "{:?}",
-            errors.iter().map(|e| e.render()).collect::<Vec<_>>()
+            errors
+                .iter()
+                .map(agent_brain_work::validation::Violation::render)
+                .collect::<Vec<_>>()
         );
     }
 }

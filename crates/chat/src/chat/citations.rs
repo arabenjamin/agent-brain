@@ -75,7 +75,7 @@ impl CitationChecker for GraphCitationChecker {
         let rows = v.get("rows")?.as_array()?;
         Some(
             rows.iter()
-                .filter(|r| r.get("found").and_then(|f| f.as_bool()) == Some(false))
+                .filter(|r| r.get("found").and_then(serde_json::Value::as_bool) == Some(false))
                 .filter_map(|r| r.get("id").and_then(|i| i.as_str()).map(String::from))
                 .collect(),
         )

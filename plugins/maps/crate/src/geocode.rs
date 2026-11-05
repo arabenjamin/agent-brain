@@ -275,10 +275,7 @@ impl GeocodeSkill {
                 .param("osm", best.and_then(|b| b["osm"].as_str()))
                 .param("lat", best.and_then(|b| b["lat"].as_f64()))
                 .param("lon", best.and_then(|b| b["lon"].as_f64()))
-                .param(
-                    "bbox",
-                    best.map(|b| b["bbox"].clone()).unwrap_or(Value::Null),
-                )
+                .param("bbox", best.map_or(Value::Null, |b| b["bbox"].clone()))
                 .param("c", serde_json::to_string(cands).unwrap_or_default()),
             )
             .await

@@ -498,22 +498,21 @@ impl SchedulerSkill {
             (None, None) => return Err("`name` or `id` is required".to_string()),
         }
         .map_err(|e| e.to_string())?;
-        match found {
-            Some(wf) => Ok(wf),
-            None => {
-                let names: Vec<String> = neo4j
-                    .list_workflows(false)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|w| w.name)
-                    .collect();
-                Err(format!(
-                    "No workflow '{}'. Workflows: {}",
-                    id.or(name).unwrap_or(""),
-                    names.join(", ")
-                ))
-            }
+        if let Some(wf) = found {
+            Ok(wf)
+        } else {
+            let names: Vec<String> = neo4j
+                .list_workflows(false)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|w| w.name)
+                .collect();
+            Err(format!(
+                "No workflow '{}'. Workflows: {}",
+                id.or(name).unwrap_or(""),
+                names.join(", ")
+            ))
         }
     }
 
@@ -524,7 +523,7 @@ impl SchedulerSkill {
     async fn list_workflows(&self, neo4j: &Neo4jClient, args: &Value) -> ToolCallResult {
         let enabled_only = args["enabled_only"].as_bool().unwrap_or(false);
         let scheduled_only = args["scheduled_only"].as_bool().unwrap_or(false);
-        let filter = args["filter"].as_str().map(|s| s.to_lowercase());
+        let filter = args["filter"].as_str().map(str::to_lowercase);
         let verbose = args["verbose"].as_bool().unwrap_or(false);
         let all = match neo4j.list_workflows(enabled_only).await {
             Ok(t) => t,
@@ -552,21 +551,24 @@ impl SchedulerSkill {
                 let mut row = json!({
                     "name": t.name,
                     "enabled": t.enabled,
-                    "every": t.interval_seconds.map(humanize_interval).unwrap_or_else(|| "by name".into()),
+                    "every": t.interval_seconds.map_or_else(|| "by name".into(), humanize_interval),
                     "last_run": day(&t.last_run_at),
                 });
                 if t.interval_seconds.is_some() {
                     row["next_run"] = json!(day(&t.next_run_at));
                 }
                 if !t.inputs.is_empty() {
-                    row["inputs"] = json!(t.inputs.iter().map(|i| i.name.as_str()).collect::<Vec<_>>());
+                    row["inputs"] =
+                        json!(t.inputs.iter().map(|i| i.name.as_str()).collect::<Vec<_>>());
                 }
                 if t.is_default {
                     row["default"] = json!(true);
                 }
                 // "Disabled" alone invites a guess at why; a deliberate pause
                 // read as a breakage gets "fixed" by re-enabling it.
-                if !t.enabled && let Some(ref why) = t.paused_reason {
+                if !t.enabled
+                    && let Some(ref why) = t.paused_reason
+                {
                     row["paused_reason"] = json!(why);
                 }
                 if verbose {
@@ -576,9 +578,8 @@ impl SchedulerSkill {
                     row["checks"] = json!(t.checks);
                     row["topic"] = json!(t.topic);
                     row["kind"] = json!(t.kind);
-                    row["step_count"] = json!(
-                        serde_json::from_str::<Vec<Value>>(&t.steps).map(|s| s.len()).unwrap_or(0)
-                    );
+                    row["step_count"] =
+                        json!(serde_json::from_str::<Vec<Value>>(&t.steps).map_or(0, |s| s.len()));
                 }
                 row
             })

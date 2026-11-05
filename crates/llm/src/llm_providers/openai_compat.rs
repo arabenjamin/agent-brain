@@ -70,7 +70,7 @@ impl OpenAiCompatProvider {
     /// Add Authorization header if an API key is configured.
     fn maybe_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(key) = &self.config.api_key {
-            builder.header("Authorization", format!("Bearer {}", key))
+            builder.header("Authorization", format!("Bearer {key}"))
         } else {
             builder
         }
@@ -215,8 +215,7 @@ impl LlmProvider for OpenAiCompatProvider {
                     let status = response.status();
                     let body = response.text().await.unwrap_or_default();
                     return Err(LlmProviderError::GenerationFailed(format!(
-                        "OpenAI-compat embeddings error ({}): {}",
-                        status, body
+                        "OpenAI-compat embeddings error ({status}): {body}"
                     )));
                 }
 
@@ -247,17 +246,16 @@ impl LlmProvider for OpenAiCompatProvider {
 
     async fn health_check(&self) -> bool {
         let url = format!("{}/health", self.base_url());
-        match self.client.get(&url).send().await {
-            Ok(r) => r.status().is_success(),
-            Err(_) => {
-                // Fall back to /v1/models — some servers don't expose /health
-                let models_url = format!("{}/models", self.root);
-                match self.maybe_auth(self.client.get(&models_url)).send().await {
-                    Ok(r) => r.status().is_success(),
-                    Err(e) => {
-                        warn!(error = %e, "OpenAI-compat health check failed");
-                        false
-                    }
+        if let Ok(r) = self.client.get(&url).send().await {
+            r.status().is_success()
+        } else {
+            // Fall back to /v1/models — some servers don't expose /health
+            let models_url = format!("{}/models", self.root);
+            match self.maybe_auth(self.client.get(&models_url)).send().await {
+                Ok(r) => r.status().is_success(),
+                Err(e) => {
+                    warn!(error = %e, "OpenAI-compat health check failed");
+                    false
                 }
             }
         }
@@ -295,8 +293,7 @@ impl OpenAiCompatProvider {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(LlmProviderError::GenerationFailed(format!(
-                "OpenAI-compat chat error ({}): {}",
-                status, body
+                "OpenAI-compat chat error ({status}): {body}"
             )));
         }
 

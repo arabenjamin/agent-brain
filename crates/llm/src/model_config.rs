@@ -318,7 +318,10 @@ mod tests {
 
     fn catalog(ladder: &[&str], models: &[(&str, &str, &str)]) -> ModelCatalog {
         let mut c = ModelCatalog::empty();
-        c.chat_fallback_ladder = ladder.iter().map(|s| s.to_string()).collect();
+        c.chat_fallback_ladder = ladder
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         for (key, provider, model) in models {
             c.models.insert((*key).to_string(), entry(provider, model));
         }

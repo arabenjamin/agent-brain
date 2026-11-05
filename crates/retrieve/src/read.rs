@@ -86,7 +86,7 @@ fn caller() -> (String, Option<String>, Option<String>) {
         .try_with(|c| c.purpose.as_str().to_string())
         .unwrap_or_else(|_| "direct".to_string());
     let tool = agent_brain_llm::ctx::CURRENT_TOOL
-        .try_with(|t| t.clone())
+        .try_with(std::clone::Clone::clone)
         .ok()
         .flatten();
     (purpose, tool, agent_brain_llm::ctx::current_owner_task())

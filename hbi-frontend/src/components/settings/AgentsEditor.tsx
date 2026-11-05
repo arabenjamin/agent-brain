@@ -139,14 +139,6 @@ export default function ContextProfileModal({
   // The front door (CHAT_DEFAULT_PROFILE): the server refuses to delete it.
   const defaultProfile = useDefaultProfile().data ?? null;
 
-  // Reset to list mode when modal opens/closes
-  useEffect(() => {
-    if (isOpen) {
-      setMode("list");
-      setError(null);
-    }
-  }, [isOpen]);
-
   // Fetch skills and models when the modal opens
   useEffect(() => {
     if (!isOpen) return;

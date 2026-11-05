@@ -45,6 +45,7 @@ export default function EntityNeighbourhood({ id, scope }: { id: string; scope?:
   }, [id, scope]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- a new entity clears the old pair while its graph loads.
     setPair(null);
     expand(id, true);
   }, [id, scope, expand]);

@@ -50,18 +50,17 @@ use serde_json::Value;
 /// model (`ModelCatalog::provider_issues`).
 pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -> LlmConfig {
     let name = provider_registry::canonical_name(provider);
-    match provider_registry::get(&name) {
-        Some(entry) => config_for_provider(base, &name, &entry, model),
-        None => {
-            tracing::warn!(
-                provider = %name,
-                model = %model,
-                "provider is not in the registry; building a local-engine config for this model"
-            );
-            let local = provider_registry::get(LOCAL)
-                .unwrap_or_else(|| provider_registry::builtin()[LOCAL].clone());
-            config_for_provider(base, LOCAL, &local, model)
-        }
+    if let Some(entry) = provider_registry::get(&name) {
+        config_for_provider(base, &name, &entry, model)
+    } else {
+        tracing::warn!(
+            provider = %name,
+            model = %model,
+            "provider is not in the registry; building a local-engine config for this model"
+        );
+        let local = provider_registry::get(LOCAL)
+            .unwrap_or_else(|| provider_registry::builtin()[LOCAL].clone());
+        config_for_provider(base, LOCAL, &local, model)
     }
 }
 
@@ -286,7 +285,7 @@ pub fn resolve_model_config(
         ctx,
         &policy,
         provider_registry::get,
-        |e| e.key_configured(),
+        super::provider_registry::ProviderEntry::key_configured,
         crate::budget::verdict,
         &unavailable,
     );
@@ -322,8 +321,7 @@ pub fn resolve_model_config(
         runner_up = plan
             .candidates
             .get(1)
-            .map(|c| c.model.as_str())
-            .unwrap_or("-"),
+            .map_or("-", |c| c.model.as_str()),
         purpose = %ctx.purpose,
         data_class = %ctx.data_class,
         policy = %policy.source,

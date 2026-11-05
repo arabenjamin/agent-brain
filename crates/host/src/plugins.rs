@@ -70,7 +70,7 @@ fn router_cell() -> &'static RwLock<HashMap<String, agent_brain_plugin_api::axum
 pub fn plugin_router(name: &str) -> Option<agent_brain_plugin_api::axum::Router> {
     router_cell()
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(name)
         .cloned()
 }
@@ -183,7 +183,9 @@ pub fn plugin_skills(
     }
     set_code_status(status);
     agent_brain_work::tools::set_plugin_retrieval_tools(retrieval);
-    *router_cell().write().unwrap_or_else(|e| e.into_inner()) = routers;
+    *router_cell()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = routers;
     (out, accepted)
 }
 
@@ -665,11 +667,10 @@ pub async fn mark_unavailable_workflows(
         neo4j
             .set_workflow_unavailable(&wf.id, reason.as_deref())
             .await?;
-        match reason {
-            Some(r) => {
-                warn!(workflow = %wf.name, reason = %r, "Workflow cannot run — marked unavailable")
-            }
-            None => info!(workflow = %wf.name, "Workflow can run again — unavailable mark cleared"),
+        if let Some(r) = reason {
+            warn!(workflow = %wf.name, reason = %r, "Workflow cannot run — marked unavailable")
+        } else {
+            info!(workflow = %wf.name, "Workflow can run again — unavailable mark cleared")
         }
     }
     Ok(unavailable)

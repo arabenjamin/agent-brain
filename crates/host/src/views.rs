@@ -592,7 +592,7 @@ fn join_rows(out: &mut Value, extra: &[Value], join: &str) {
                             json!((x * 1e6).round() / 1e6)
                         }
                     };
-                    obj.insert(c.clone(), sum.map(shown).unwrap_or(Value::Null));
+                    obj.insert(c.clone(), sum.map_or(Value::Null, shown));
                 }
                 obj.remove(join);
                 continue;

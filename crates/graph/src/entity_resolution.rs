@@ -280,9 +280,7 @@ pub fn upper_pattern(key: &str) -> String {
 
 /// Does the text have `key` in capitals? (Case-sensitive aliases.)
 pub fn text_has_upper(text: &str, key: &str) -> bool {
-    regex::Regex::new(&upper_pattern(key))
-        .map(|re| re.is_match(text))
-        .unwrap_or(false)
+    regex::Regex::new(&upper_pattern(key)).is_ok_and(|re| re.is_match(text))
 }
 
 // ─── Write-time resolution ───────────────────────────────────────────────────
@@ -938,8 +936,7 @@ pub async fn sync(
             let left = entities
                 .iter()
                 .find(|e| e.name == m.from)
-                .map(|e| e.mentions)
-                .unwrap_or(0);
+                .map_or(0, |e| e.mentions);
             if left > 0 && movable_upper(neo4j, &m.from, k).await? == 0 {
                 continue;
             }
@@ -1130,7 +1127,7 @@ pub fn find_candidates(entities: &[CandEntity], rules: &Rules) -> Vec<Candidate>
         }
         let n = e.name.chars().count();
         if (2..=6).contains(&n)
-            && e.name.chars().all(|c| c.is_alphabetic())
+            && e.name.chars().all(char::is_alphabetic)
             && e.entity_type != "person"
             && let Some(long) = by_initials.get(&e.name)
         {
@@ -1411,7 +1408,7 @@ mod tests {
 
     fn rules() -> Rules {
         Rules::from_yaml(
-            r#"
+            r"
 titles: [president, former president, senator, sen, dr, mr]
 articles: [the]
 keep_distinct: [the hacker news]
@@ -1424,7 +1421,7 @@ entities:
   - name: donald trump
     type: person
     aliases: [trump]
-"#,
+",
         )
         .unwrap()
     }

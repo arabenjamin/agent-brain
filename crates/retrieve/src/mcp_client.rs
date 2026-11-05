@@ -315,7 +315,7 @@ impl McpClientSkill {
                 let text = content_text(&result);
                 let is_error = result
                     .get("isError")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
                 // `answer` carries the text so {{_prev}} flows in a chain. A
                 // remote error is a *successful* call with is_error=true (like
@@ -358,16 +358,15 @@ fn remote_problems(
     arguments: &Value,
 ) -> Vec<String> {
     use agent_brain_work::validation::check_tool_arguments;
-    match schemas.get(tool) {
-        Some(schema) => check_tool_arguments(&format!("{server}/{tool}"), schema, Some(arguments)),
-        None => {
-            let mut names: Vec<&str> = schemas.keys().map(String::as_str).collect();
-            names.sort();
-            vec![format!(
-                "`{tool}` is not a tool of {server}; it has: {}",
-                names.join(", ")
-            )]
-        }
+    if let Some(schema) = schemas.get(tool) {
+        check_tool_arguments(&format!("{server}/{tool}"), schema, Some(arguments))
+    } else {
+        let mut names: Vec<&str> = schemas.keys().map(String::as_str).collect();
+        names.sort();
+        vec![format!(
+            "`{tool}` is not a tool of {server}; it has: {}",
+            names.join(", ")
+        )]
     }
 }
 

@@ -16,3 +16,6 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 tracing = { workspace = true }
 url = "2"
 uuid = { workspace = true }
+
+[lints]
+workspace = true

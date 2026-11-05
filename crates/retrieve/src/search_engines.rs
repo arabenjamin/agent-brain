@@ -545,13 +545,12 @@ fn dialect_params(d: Dialect, q: &QuerySpec, now: DateTime<Utc>) -> Vec<(String,
         Dialect::Webz => p.extend(webz_params(q, now.date_naive())),
         Dialect::Tinyfish => {
             // It refuses `recency_minutes` combined with a date bound.
-            match (q.recency, q.after, q.before) {
-                (Some(r), None, None) => put("recency_minutes", Some(json!(r.days() * 1440))),
-                _ => {
-                    let (start, end) = q.tavily_dates();
-                    put("after_date", start.map(Value::String));
-                    put("before_date", end.map(Value::String));
-                }
+            if let (Some(r), None, None) = (q.recency, q.after, q.before) {
+                put("recency_minutes", Some(json!(r.days() * 1440)))
+            } else {
+                let (start, end) = q.tavily_dates();
+                put("after_date", start.map(Value::String));
+                put("before_date", end.map(Value::String));
             }
         }
     }
@@ -588,8 +587,7 @@ pub fn currents_params(q: &QuerySpec, now: DateTime<Utc>) -> Vec<(String, Value)
             end - chrono::Duration::days(CURRENTS_RANGE_DAYS) + chrono::Duration::minutes(1);
         let start = since
             .and_hms_opt(0, 0, 0)
-            .map(|s| s.and_utc())
-            .unwrap_or(earliest)
+            .map_or(earliest, |s| s.and_utc())
             .max(earliest);
         let fmt = "%Y-%m-%dT%H:%M:%SZ";
         p.push(("start_date".into(), json!(start.format(fmt).to_string())));

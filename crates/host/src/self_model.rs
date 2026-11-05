@@ -92,8 +92,7 @@ pub async fn read_code_version(codebase_dir: &Path) -> Option<CodeVersion> {
         .args(["status", "--porcelain"])
         .output()
         .await
-        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false);
+        .is_ok_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
     let dirty = agent_brain_graph::build::dirty().unwrap_or(live_dirty);
     Some(CodeVersion {
         sha,

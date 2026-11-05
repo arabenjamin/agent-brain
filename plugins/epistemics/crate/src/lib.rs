@@ -58,19 +58,18 @@ impl Plugin for Epistemics {
         if let Some(r) = ctx.root() {
             let _ = ROOT.set(r.to_path_buf());
         }
-        match (db(ctx), ctx.llm.clone()) {
-            (Some(d), Some(llm)) => vec![
+        if let (Some(d), Some(llm)) = (db(ctx), ctx.llm.clone()) {
+            vec![
                 Arc::new(claim_skill::ClaimSkill::new(
                     d.clone(),
                     llm.clone(),
                     ctx.clone(),
                 )) as Arc<dyn Skill>,
                 Arc::new(relation_skill::RelationSkill::new(d, llm)),
-            ],
-            _ => {
-                tracing::warn!("epistemics: the host gave no graph or LLM; no tools");
-                vec![]
-            }
+            ]
+        } else {
+            tracing::warn!("epistemics: the host gave no graph or LLM; no tools");
+            vec![]
         }
     }
 

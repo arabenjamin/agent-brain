@@ -253,7 +253,9 @@ pub fn install(overrides: &HashMap<String, ProviderEntry>) -> usize {
     let n = table.len();
     // The concurrency gates are sized from the same table (services/provider_gate.rs).
     crate::provider_gate::configure(&table);
-    *slot().write().unwrap_or_else(|p| p.into_inner()) = table;
+    *slot()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = table;
     n
 }
 
@@ -271,7 +273,9 @@ pub fn install_model_limits(limits: impl IntoIterator<Item = (String, String, Li
         .map(|(provider, model, l)| ((canonical_name(&provider), model), l))
         .collect();
     let n = table.len();
-    *model_slot().write().unwrap_or_else(|p| p.into_inner()) = table;
+    *model_slot()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = table;
     n
 }
 
@@ -279,7 +283,7 @@ pub fn install_model_limits(limits: impl IntoIterator<Item = (String, String, Li
 pub fn model_limits(provider: &str, model: &str) -> Option<Limits> {
     model_slot()
         .read()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&(canonical_name(provider), model.to_string()))
         .cloned()
 }
@@ -306,7 +310,7 @@ pub fn apply_request_extra(provider: &str, body: &mut Value) {
 pub fn get(name: &str) -> Option<ProviderEntry> {
     slot()
         .read()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&canonical_name(name))
         .cloned()
 }
@@ -314,7 +318,10 @@ pub fn get(name: &str) -> Option<ProviderEntry> {
 /// The registry as JSON for `/api/models`. Carries the key's env var name and
 /// whether it is set — never the key.
 pub fn snapshot_json() -> Value {
-    let table = slot().read().unwrap_or_else(|p| p.into_inner()).clone();
+    let table = slot()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     Value::Array(
         table
             .into_iter()

@@ -138,17 +138,16 @@ fn strip_relay_header(answer: &str) -> &str {
 
 /// Post a line into an item's thread, giving it one (`todo-<id>`) if it has none.
 pub async fn post_to_thread(neo4j: &Neo4jClient, t: &Todo, role: &str, text: &str) -> String {
-    let session = match t.session_id.clone() {
-        Some(s) => s,
-        None => {
-            let s = format!("todo-{}", t.id);
-            let patch = TodoItemPatch {
-                session_id: Some(Some(s.clone())),
-                ..Default::default()
-            };
-            let _ = neo4j.patch_todo_item(&t.id, &patch).await;
-            s
-        }
+    let session = if let Some(s) = t.session_id.clone() {
+        s
+    } else {
+        let s = format!("todo-{}", t.id);
+        let patch = TodoItemPatch {
+            session_id: Some(Some(s.clone())),
+            ..Default::default()
+        };
+        let _ = neo4j.patch_todo_item(&t.id, &patch).await;
+        s
     };
     let id = uuid::Uuid::new_v4().to_string();
     let ts = chrono::Utc::now().to_rfc3339();

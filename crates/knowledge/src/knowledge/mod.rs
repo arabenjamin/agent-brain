@@ -100,7 +100,7 @@ pub fn effective_provenance(requested: Option<ProvenanceFlag>) -> ProvenanceFlag
 /// The exclusion in scope for this task, if any.
 pub fn current_retrieval_exclude() -> Option<RetrievalExclude> {
     RETRIEVAL_EXCLUDE
-        .try_with(|e| e.clone())
+        .try_with(std::clone::Clone::clone)
         .ok()
         .filter(|e| !e.is_empty())
 }

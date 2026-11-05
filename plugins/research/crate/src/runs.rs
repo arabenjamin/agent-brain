@@ -84,8 +84,7 @@ pub fn month_start(now: DateTime<Utc>) -> DateTime<Utc> {
     now.date_naive()
         .with_day(1)
         .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|d| d.and_utc())
-        .unwrap_or(now)
+        .map_or(now, |d| d.and_utc())
 }
 
 #[derive(Clone)]
@@ -278,7 +277,7 @@ pub fn render(run: &Run, max_sources: usize) -> String {
     out.push_str(run.report.as_deref().unwrap_or("(no report text)"));
     if !run.sources.is_empty() {
         let shown = run.sources.len().min(max_sources);
-        out.push_str(&format!("\n\nSources ({} shown", shown));
+        out.push_str(&format!("\n\nSources ({shown} shown"));
         if shown < run.sources.len() {
             out.push_str(&format!(
                 " of {}; the rest are on (:ResearchRun {{run_id: '{}'}})",

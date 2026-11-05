@@ -149,14 +149,13 @@ impl QuerySpec {
                         spec.parts.push(Part::Phrase(phrase));
                     }
                 }
-                i = close.map(|c| c + 1).unwrap_or(chars.len());
+                i = close.map_or(chars.len(), |c| c + 1);
                 continue;
             }
             let end = chars[start..]
                 .iter()
                 .position(|c| c.is_whitespace())
-                .map(|p| start + p)
-                .unwrap_or(chars.len());
+                .map_or(chars.len(), |p| start + p);
             // Grouping parentheses, as in `(site:a OR site:b)`, are syntax.
             let token: String = chars[start..end]
                 .iter()

@@ -273,7 +273,10 @@ async fn run(
         .await
         .map_err(|e| format!("subscription not sent: {e}"))?;
 
-    let mut types = store.blocking(|s| s.ship_types()).await.unwrap_or_default();
+    let mut types = store
+        .blocking(super::store::Store::ship_types)
+        .await
+        .unwrap_or_default();
     let mut kept: HashMap<String, i64> = HashMap::new();
     let mut positions: Vec<Position> = Vec::new();
     let mut vessels: Vec<Vessel> = Vec::new();
@@ -344,7 +347,7 @@ async fn run(
                     area: a.clone(),
                     hour: tally.hour,
                     messages: tally.messages.get(a).copied().unwrap_or(0),
-                    ids: tally.ids.get(a).map(|s| s.len() as i64).unwrap_or(0),
+                    ids: tally.ids.get(a).map_or(0, |s| s.len() as i64),
                     up_secs: up,
                 }).collect();
                 tally.messages.clear();

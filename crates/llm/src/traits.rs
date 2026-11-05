@@ -114,7 +114,13 @@ mod generate_json_tests {
     impl ScriptedLlm {
         fn new(responses: &[&str]) -> Self {
             Self {
-                responses: Mutex::new(responses.iter().rev().map(|s| s.to_string()).collect()),
+                responses: Mutex::new(
+                    responses
+                        .iter()
+                        .rev()
+                        .map(std::string::ToString::to_string)
+                        .collect(),
+                ),
                 prompts: Mutex::new(Vec::new()),
             }
         }

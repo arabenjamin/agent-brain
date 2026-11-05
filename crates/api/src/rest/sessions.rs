@@ -89,11 +89,7 @@ pub async fn handle_session_feedback(
         Some(s @ (-1..=1)) => s,
         _ => return bad_request("score must be 1 (up), -1 (down) or 0 (clear)"),
     };
-    let note = body["note"]
-        .as_str()
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string();
+    let note = body["note"].as_str().map_or("", str::trim).to_string();
     let rows = neo4j
         .execute(
             neo4rs::query(

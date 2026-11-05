@@ -188,7 +188,7 @@ impl McpClient {
             .headers()
             .get("Mcp-Session-Id")
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
             return Err(format!(

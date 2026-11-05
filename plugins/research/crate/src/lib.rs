@@ -23,9 +23,10 @@ pub struct Research;
 
 /// The bundle's folder; the source tree's in tests.
 fn bundle_root(ctx: &PluginContext) -> PathBuf {
-    ctx.root()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/..")))
+    ctx.root().map_or_else(
+        || PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/..")),
+        PathBuf::from,
+    )
 }
 
 fn parts(ctx: &PluginContext) -> Option<(Arc<client::ParallelClient>, runs::Ledger)> {

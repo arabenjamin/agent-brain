@@ -205,7 +205,11 @@ impl ChatService {
                 .ok()
                 .and_then(|r| r.tokens_out)
                 .map(i64::from),
-            chat_result.as_ref().err().map(|e| e.to_string()).as_deref(),
+            chat_result
+                .as_ref()
+                .err()
+                .map(std::string::ToString::to_string)
+                .as_deref(),
         );
         match chat_result {
             Ok(response) if !response.text.is_empty() => {

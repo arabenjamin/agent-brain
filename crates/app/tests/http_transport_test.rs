@@ -222,12 +222,7 @@ async fn test_mcp_protocol_headers() {
             .header(name, value)
             .body(Body::empty());
 
-        assert!(
-            request.is_ok(),
-            "Header {}: {} should be valid",
-            name,
-            value
-        );
+        assert!(request.is_ok(), "Header {name}: {value} should be valid");
     }
 }
 

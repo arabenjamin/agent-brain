@@ -7,6 +7,15 @@ exclude = ["vendor/neo4rs"]
 version = "0.1.0"
 edition = "2024"
 
+[workspace.lints.clippy]
+# Chosen from clippy::pedantic one at a time, not the whole group: on this code
+# the group is half noise (must_use_candidate, doc_markdown, missing_errors_doc).
+map_unwrap_or = "warn"
+needless_raw_string_hashes = "warn"
+redundant_closure_for_method_calls = "warn"
+single_match_else = "warn"
+uninlined_format_args = "warn"
+
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

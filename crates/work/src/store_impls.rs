@@ -89,7 +89,7 @@ impl WorkingMemoryStore for Neo4jClient {
         role: &str,
         ts: &str,
     ) -> anyhow::Result<i64> {
-        let cypher = r#"
+        let cypher = r"
         OPTIONAL MATCH (w:WorkingMemory {session_id: $session_id})
         WITH COALESCE(max(w.turn_index), -1) + 1 AS next_turn
         CREATE (wm:WorkingMemory {
@@ -101,7 +101,7 @@ impl WorkingMemoryStore for Neo4jClient {
             created_at: datetime($ts)
         })
         RETURN wm.turn_index AS turn_index
-        "#;
+        ";
 
         let q = neo4rs::query(cypher)
             .param("id", id)
@@ -110,10 +110,7 @@ impl WorkingMemoryStore for Neo4jClient {
             .param("role", role)
             .param("ts", ts);
 
-        let rows = self
-            .execute(q)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         let turn_index = rows
             .first()
             .and_then(|r| r.get::<i64>("turn_index").ok())
@@ -122,21 +119,18 @@ impl WorkingMemoryStore for Neo4jClient {
     }
 
     async fn get_entries(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Value>> {
-        let cypher = r#"
+        let cypher = r"
         MATCH (w:WorkingMemory {session_id: $session_id})
         RETURN w.turn_index AS turn, w.role AS role, w.content AS content,
                w.feedback_score AS feedback
         ORDER BY w.turn_index ASC LIMIT $limit
-        "#;
+        ";
 
         let q = neo4rs::query(cypher)
             .param("session_id", session_id)
             .param("limit", limit as i64);
 
-        let rows = self
-            .execute(q)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(rows
             .iter()
             .map(|row| {
@@ -161,7 +155,7 @@ impl WorkingMemoryStore for Neo4jClient {
         //
         // LIMIT lands before the OPTIONAL MATCHes so the Task lookups run for
         // the returned page only, not for every session in the graph.
-        let cypher = r#"
+        let cypher = r"
         MATCH (w:WorkingMemory)
         WHERE w.archived IS NULL OR w.archived = false
         WITH w.session_id AS sid,
@@ -178,13 +172,10 @@ impl WorkingMemoryStore for Neo4jClient {
                COALESCE(first.content, sid) AS title,
                t.goal AS task_goal
         ORDER BY started_at DESC
-        "#;
+        ";
 
         let q = neo4rs::query(cypher).param("limit", limit);
-        let rows = self
-            .execute(q)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(rows
             .iter()
             .map(|row| {
@@ -205,7 +196,7 @@ impl WorkingMemoryStore for Neo4jClient {
             "MATCH (w:WorkingMemory {session_id: $session_id}) SET w.archived = true",
         )
         .param("session_id", session_id);
-        self.run(q).await.map_err(|e| anyhow::anyhow!("{}", e))
+        self.run(q).await.map_err(|e| anyhow::anyhow!("{e}"))
     }
 }
 
@@ -239,7 +230,7 @@ impl TaskStore for Neo4jClient {
     async fn update_task_status(&self, id: &str, status: TaskStatus) -> anyhow::Result<()> {
         Neo4jClient::update_task_status(self, id, status)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     async fn store_reflection_note(
@@ -249,7 +240,7 @@ impl TaskStore for Neo4jClient {
     ) -> anyhow::Result<String> {
         Neo4jClient::store_reflection_note(self, content, task_id)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     async fn store_outcome_note(
@@ -259,12 +250,12 @@ impl TaskStore for Neo4jClient {
     ) -> anyhow::Result<String> {
         Neo4jClient::store_outcome_note(self, content, task_id)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     async fn auto_complete_parent_if_done(&self, task_id: &str) -> anyhow::Result<Option<String>> {
         // Find parent task; if all subtasks are completed, complete the parent too.
-        let cypher = r#"
+        let cypher = r"
         MATCH (child:Task {id: $task_id})<-[:SUBTASK_OF]-(parent:Task)
         WHERE parent.status <> 'completed'
         WITH parent
@@ -273,19 +264,16 @@ impl TaskStore for Neo4jClient {
         WHERE ALL(s IN statuses WHERE s = 'completed')
         SET parent.status = 'completed'
         RETURN parent.id AS parent_id
-        "#;
+        ";
 
         let q = neo4rs::query(cypher).param("task_id", task_id);
-        let rows = self
-            .execute(q)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(rows.first().and_then(|r| r.get::<String>("parent_id").ok()))
     }
 
     async fn find_similar_tasks(&self, days_lookback: u32) -> anyhow::Result<Vec<Task>> {
         Neo4jClient::find_similar_tasks(self, days_lookback)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 }

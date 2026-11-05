@@ -254,7 +254,9 @@ impl DevNotes {
     ) -> Result<(Vec<Value>, usize)> {
         // Filters apply after the merge, so a filtered search draws a wider pool:
         // otherwise the note it wants can rank outside the unfiltered top 60.
-        let filtered = [kind, subsystem, path].iter().any(|f| f.is_some());
+        let filtered = [kind, subsystem, path]
+            .iter()
+            .any(std::option::Option::is_some);
         let pool: i64 = if filtered { 400 } else { 60 };
         let mut scores: HashMap<String, f64> = HashMap::new();
         if let Some(v) = self

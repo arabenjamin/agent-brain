@@ -61,17 +61,11 @@ impl Plugin for Reference {
         if let Some(e) = &ctx.entities {
             let _ = DEMONYMS.set(e.demonym_words());
         }
-        match (db(ctx), ctx.llm.clone()) {
-            (Some(d), Some(llm)) => {
-                vec![
-                    Arc::new(skill::WikiSkill::new(d, llm, ctx.knowledge.clone()))
-                        as Arc<dyn Skill>,
-                ]
-            }
-            _ => {
-                tracing::warn!("reference: the host gave no graph or LLM; no tools");
-                vec![]
-            }
+        if let (Some(d), Some(llm)) = (db(ctx), ctx.llm.clone()) {
+            vec![Arc::new(skill::WikiSkill::new(d, llm, ctx.knowledge.clone())) as Arc<dyn Skill>]
+        } else {
+            tracing::warn!("reference: the host gave no graph or LLM; no tools");
+            vec![]
         }
     }
 

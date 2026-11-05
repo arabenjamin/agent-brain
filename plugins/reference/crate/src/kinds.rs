@@ -416,8 +416,8 @@ pub async fn refresh(neo4j: &Db, entity: Option<&str>, budget: usize) -> Result<
         };
         let mut m = serde_json::Map::new();
         m.insert("qid".into(), qid.clone().into());
-        m.insert("kind".into(), kind.map(Into::into).unwrap_or(Value::Null));
-        m.insert("ktype".into(), ktype.map(Into::into).unwrap_or(Value::Null));
+        m.insert("kind".into(), kind.map_or(Value::Null, Into::into));
+        m.insert("ktype".into(), ktype.map_or(Value::Null, Into::into));
         m.insert("refused".into(), refused.into());
         rows.push(Value::Object(m));
     }
@@ -700,7 +700,12 @@ mod tests {
     fn graph(edges: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
         edges
             .iter()
-            .map(|(c, ps)| (c.to_string(), ps.iter().map(|p| p.to_string()).collect()))
+            .map(|(c, ps)| {
+                (
+                    c.to_string(),
+                    ps.iter().map(std::string::ToString::to_string).collect(),
+                )
+            })
             .collect()
     }
 

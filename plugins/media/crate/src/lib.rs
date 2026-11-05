@@ -106,12 +106,11 @@ impl Plugin for Media {
                 .with_reader(ctx.reader.clone())
                 .with_telemetry(ctx),
         );
-        match skill::MediaSkill::new(svc, ctx) {
-            Some(s) => vec![Arc::new(s) as Arc<dyn Skill>],
-            None => {
-                warn!("media: the host gave no graph or LLM; no tools");
-                vec![]
-            }
+        if let Some(s) = skill::MediaSkill::new(svc, ctx) {
+            vec![Arc::new(s) as Arc<dyn Skill>]
+        } else {
+            warn!("media: the host gave no graph or LLM; no tools");
+            vec![]
         }
     }
 

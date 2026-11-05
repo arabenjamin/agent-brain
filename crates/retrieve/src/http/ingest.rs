@@ -131,7 +131,10 @@ fn parse_parameters(params: Option<&Value>) -> Vec<Value> {
         .filter_map(|p| {
             let name = p.get("name").and_then(|v| v.as_str())?;
             let loc = p.get("in").and_then(|v| v.as_str()).unwrap_or("");
-            let required = p.get("required").and_then(|v| v.as_bool()).unwrap_or(false);
+            let required = p
+                .get("required")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
             let ptype = p
                 .get("schema")
                 .and_then(|s| s.get("type"))
@@ -311,12 +314,11 @@ fn strip_block(s: &str, tag: &str) -> String {
     let mut i = 0;
     while let Some(start) = find_ci(s, &open, i) {
         out.push_str(&s[i..start]);
-        match find_ci(s, &close, start) {
-            Some(cpos) => i = cpos + close.len(),
-            None => {
-                i = s.len();
-                break;
-            }
+        if let Some(cpos) = find_ci(s, &close, start) {
+            i = cpos + close.len()
+        } else {
+            i = s.len();
+            break;
         }
     }
     out.push_str(&s[i..]);
@@ -405,7 +407,7 @@ fn parse_llm_endpoints(value: &Value) -> Vec<ParsedEndpoint> {
                         Some(json!({
                             "name": name,
                             "in": p.get("in").and_then(|v| v.as_str()).unwrap_or(""),
-                            "required": p.get("required").and_then(|v| v.as_bool()).unwrap_or(false),
+                            "required": p.get("required").and_then(serde_json::Value::as_bool).unwrap_or(false),
                             "type": p.get("type").and_then(|v| v.as_str()).unwrap_or(""),
                         }))
                     })
@@ -535,8 +537,7 @@ fn resolve_url(candidate: &str, base_url: &str) -> String {
     url::Url::parse(base_url)
         .ok()
         .and_then(|b| b.join(candidate).ok())
-        .map(|u| u.to_string())
-        .unwrap_or_else(|| candidate.to_string())
+        .map_or_else(|| candidate.to_string(), |u| u.to_string())
 }
 
 /// Names an OpenAPI/Swagger spec file may take at the root of a project.
@@ -682,7 +683,7 @@ fn find_route_files(root: &Path) -> Vec<PathBuf> {
             if !ROUTE_EXTS.contains(&ext.as_str()) {
                 continue;
             }
-            if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+            if entry.metadata().map_or(0, |m| m.len()) > MAX_FILE_BYTES {
                 continue;
             }
             if let Ok(content) = std::fs::read_to_string(&path) {
@@ -881,7 +882,7 @@ impl HttpSkill {
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
 
         let Some(ref neo4j) = self.neo4j else {
@@ -1077,7 +1078,7 @@ impl HttpSkill {
             batch.push(neo4rs::BoltType::from(row));
         }
 
-        let cypher = r#"
+        let cypher = r"
         MERGE (c:ApiContext {name: $name})
           SET c.base_url        = $base_url,
               c.description      = $description,
@@ -1098,7 +1099,7 @@ impl HttpSkill {
               e.updated_at    = datetime($ts)
         MERGE (c)-[:EXPOSES]->(e)
         RETURN count(e) AS n
-        "#;
+        ";
 
         let rows = match neo4j
             .execute(
@@ -1119,7 +1120,7 @@ impl HttpSkill {
             .await
         {
             Ok(r) => r,
-            Err(e) => return ToolCallResult::error(format!("Failed to store endpoints: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("Failed to store endpoints: {e}")),
         };
 
         let stored = rows
@@ -1138,12 +1139,12 @@ impl HttpSkill {
         // re-ingest into a true mirror of the source — a removed route disappears.
         let mut pruned = 0i64;
         if prune {
-            let prune_cypher = r#"
+            let prune_cypher = r"
             MATCH (c:ApiContext {name: $name})-[:EXPOSES]->(e:ApiEndpoint)
             WHERE e.updated_at < datetime($ts)
             DETACH DELETE e
             RETURN count(e) AS pruned
-            "#;
+            ";
             match neo4j
                 .execute(
                     neo4rs::query(prune_cypher)
@@ -1256,13 +1257,15 @@ impl HttpSkill {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(String::from)
-            .unwrap_or_else(|| {
-                url::Url::parse(docs_url)
-                    .ok()
-                    .map(|u| u.origin().ascii_serialization())
-                    .unwrap_or_default()
-            });
+            .map_or_else(
+                || {
+                    url::Url::parse(docs_url)
+                        .ok()
+                        .map(|u| u.origin().ascii_serialization())
+                        .unwrap_or_default()
+                },
+                String::from,
+            );
 
         let name = name_override
             .filter(|s| !s.trim().is_empty())
@@ -1391,7 +1394,7 @@ impl HttpSkill {
             .unwrap_or_else(|| {
                 root.file_name()
                     .and_then(|s| s.to_str())
-                    .map(|s| s.to_lowercase())
+                    .map(str::to_lowercase)
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "ingested_api".to_string())
             });

@@ -118,7 +118,7 @@ impl LeaseBook {
             } else {
                 reason.to_string()
             },
-            acquired_at: current.map(|l| l.acquired_at).unwrap_or(now),
+            acquired_at: current.map_or(now, |l| l.acquired_at),
             expires_at: now + Duration::hours(ttl),
         };
         self.lease = Some(lease.clone());
@@ -173,7 +173,7 @@ fn global() -> MutexGuard<'static, Global> {
     static G: OnceLock<Mutex<Global>> = OnceLock::new();
     G.get_or_init(|| Mutex::new(Global::default()))
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Clear the persisted lease and run the release hook. Never called with the

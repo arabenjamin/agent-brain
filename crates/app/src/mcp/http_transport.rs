@@ -1215,7 +1215,7 @@ impl IntoResponse for McpHttpError {
                 JsonRpcErrorResponse::new(
                     None,
                     -32600,
-                    format!("Missing {} header", MCP_PROTOCOL_VERSION_HEADER),
+                    format!("Missing {MCP_PROTOCOL_VERSION_HEADER} header"),
                 ),
             ),
             McpHttpError::MissingSessionId => (
@@ -1223,12 +1223,12 @@ impl IntoResponse for McpHttpError {
                 JsonRpcErrorResponse::new(
                     None,
                     -32600,
-                    format!("Missing {} header", MCP_SESSION_ID_HEADER),
+                    format!("Missing {MCP_SESSION_ID_HEADER} header"),
                 ),
             ),
             McpHttpError::SessionNotFound(id) => (
                 StatusCode::NOT_FOUND,
-                JsonRpcErrorResponse::new(None, -32000, format!("Session not found: {}", id)),
+                JsonRpcErrorResponse::new(None, -32000, format!("Session not found: {id}")),
             ),
             McpHttpError::SessionError(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

@@ -236,7 +236,7 @@ impl KnowledgeSkill {
                     "count": notes.len(),
                     "notes": notes
                 })),
-                Err(e) => ToolCallResult::error(format!("Entity search failed: {}", e)),
+                Err(e) => ToolCallResult::error(format!("Entity search failed: {e}")),
             };
         }
 
@@ -325,7 +325,7 @@ impl KnowledgeSkill {
                         }
                         ToolCallResult::success_json(out)
                     }
-                    Err(e) => ToolCallResult::error(format!("note enumeration failed: {}", e)),
+                    Err(e) => ToolCallResult::error(format!("note enumeration failed: {e}")),
                 };
             }
             return ToolCallResult::error(
@@ -364,7 +364,7 @@ impl KnowledgeSkill {
                 "count": results.len(),
                 "notes": results
             })),
-            Err(e) => ToolCallResult::error(format!("Search failed: {}", e)),
+            Err(e) => ToolCallResult::error(format!("Search failed: {e}")),
         }
     }
 

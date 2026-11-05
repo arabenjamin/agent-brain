@@ -133,7 +133,7 @@ impl EvalReport {
         }
         let sum: f64 = scored
             .iter()
-            .map(|c| c.hit_rank.map(|r| 1.0 / r as f64).unwrap_or(0.0))
+            .map(|c| c.hit_rank.map_or(0.0, |r| 1.0 / r as f64))
             .sum();
         sum / scored.len() as f64
     }
@@ -258,7 +258,7 @@ pub async fn bootstrap(neo4j: &Neo4jClient, n: usize) -> Result<String> {
     // not knowledge anyone queries for. The `STARTS WITH` guard also drops any
     // such log that slipped in under another type. `rand()` gives a fresh sample
     // each run, which is what you want while curating.
-    let cypher = r#"
+    let cypher = r"
         MATCH (note:Note)
         WHERE NOT (note)-[:PART_OF]->()
           AND note.content IS NOT NULL
@@ -269,7 +269,7 @@ pub async fn bootstrap(neo4j: &Neo4jClient, n: usize) -> Result<String> {
         RETURN note.id AS id, note.content AS content
         ORDER BY rand()
         LIMIT $n
-    "#;
+    ";
     let rows = neo4j
         .execute(neo4rs::query(cypher).param("n", n as i64))
         .await
@@ -315,7 +315,7 @@ fn first_substantial_line(content: &str, max: usize) -> String {
     let substantial = |l: &str| l.split_whitespace().count() >= 4;
     let non_heading = content
         .lines()
-        .map(|l| l.trim())
+        .map(str::trim)
         .find(|l| !l.starts_with('#') && substantial(l));
     let line = non_heading
         .or_else(|| {

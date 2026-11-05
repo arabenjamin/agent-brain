@@ -118,7 +118,7 @@ tokio::task_local! {
 /// one is scoped ([`USAGE_TOOL_LABEL`]), else `"chat"`.
 fn usage_tool_label() -> String {
     USAGE_TOOL_LABEL
-        .try_with(|s| s.clone())
+        .try_with(std::clone::Clone::clone)
         .unwrap_or_else(|_| "chat".to_string())
 }
 
@@ -233,7 +233,8 @@ pub fn filter_tools(
     if names.is_empty() {
         return all;
     }
-    let allowed: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
+    let allowed: std::collections::HashSet<&str> =
+        names.iter().map(std::string::String::as_str).collect();
     all.into_iter()
         .filter(|t| allowed.contains(t.name.as_str()))
         .collect()

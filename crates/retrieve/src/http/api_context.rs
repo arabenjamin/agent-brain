@@ -195,7 +195,7 @@ impl HttpSkill {
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
 
         let Some(ref neo4j) = self.neo4j else {
@@ -248,7 +248,7 @@ impl HttpSkill {
             )
             .await
         {
-            return ToolCallResult::error(format!("Failed to store ApiContext: {}", e));
+            return ToolCallResult::error(format!("Failed to store ApiContext: {e}"));
         }
 
         let summaries: Vec<String> = input

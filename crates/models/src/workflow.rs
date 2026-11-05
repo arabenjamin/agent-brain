@@ -89,8 +89,7 @@ impl Workflow {
             .filter(|i| {
                 inputs
                     .get(&i.name)
-                    .map(|v| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()))
-                    .unwrap_or(true)
+                    .is_none_or(|v| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()))
             })
             .map(|i| i.name.as_str())
             .collect()

@@ -27,7 +27,7 @@ pub fn cut(s: &str, max: usize) -> String {
         out.push(ch);
     }
     let dropped = total - max;
-    format!("{}…[+{} chars]", out, dropped)
+    format!("{out}…[+{dropped} chars]")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

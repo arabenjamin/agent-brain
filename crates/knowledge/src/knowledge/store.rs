@@ -57,7 +57,7 @@ impl KnowledgeService {
 
         let cypher = match (embedding.is_some(), needs_review) {
             (true, true) => {
-                r#"
+                r"
             CREATE (n:Note {
                 id: $id,
                 content: $content,
@@ -69,10 +69,10 @@ impl KnowledgeService {
                 review_interval_days: 1,
                 embedding: $embedding
             })
-            "#
+            "
             }
             (true, false) => {
-                r#"
+                r"
             CREATE (n:Note {
                 id: $id,
                 content: $content,
@@ -82,10 +82,10 @@ impl KnowledgeService {
                 access_count: 0,
                 embedding: $embedding
             })
-            "#
+            "
             }
             (false, true) => {
-                r#"
+                r"
             CREATE (n:Note {
                 id: $id,
                 content: $content,
@@ -96,10 +96,10 @@ impl KnowledgeService {
                 next_review_at: datetime($timestamp) + duration({days: 1}),
                 review_interval_days: 1
             })
-            "#
+            "
             }
             (false, false) => {
-                r#"
+                r"
             CREATE (n:Note {
                 id: $id,
                 content: $content,
@@ -108,7 +108,7 @@ impl KnowledgeService {
                 last_accessed_at: datetime($timestamp),
                 access_count: 0
             })
-            "#
+            "
             }
         };
 
@@ -360,7 +360,7 @@ impl KnowledgeService {
         note_id: &str,
         embedding: &[f32],
     ) -> Result<usize> {
-        let cypher = r#"
+        let cypher = r"
         CALL db.index.vector.queryNodes('note_embeddings', 10, $embedding)
         YIELD node AS other, score
         WHERE other.id <> $note_id AND score >= 0.75
@@ -368,7 +368,7 @@ impl KnowledgeService {
         MERGE (n)-[r:RELATES_TO]->(other)
         ON CREATE SET r.similarity = score
         RETURN count(r) AS created
-        "#;
+        ";
 
         let query = neo4rs::query(cypher)
             .param("embedding", embedding.to_vec())
@@ -431,7 +431,7 @@ impl KnowledgeService {
             }
             // Restore the period on all but the final fragment
             let piece = if !content.trim_end().ends_with(sentence) {
-                format!("{}.", sentence)
+                format!("{sentence}.")
             } else {
                 sentence.to_string()
             };

@@ -101,26 +101,26 @@ impl KnowledgeService {
 
         let query = if let Some(nt) = note_type {
             neo4rs::query(
-                r#"
+                r"
             MATCH (n:Note)
             WHERE n.note_type = $note_type
             RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
                    n.access_count AS access_count, toString(n.created_at) AS created_at,
                    n.source_context AS source_context, n.provenance AS provenance
             ORDER BY n.created_at DESC LIMIT $limit
-            "#,
+            ",
             )
             .param("note_type", nt)
             .param("limit", limit as i64)
         } else {
             neo4rs::query(
-                r#"
+                r"
             MATCH (n:Note)
             RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
                    n.access_count AS access_count, toString(n.created_at) AS created_at,
                    n.source_context AS source_context, n.provenance AS provenance
             ORDER BY n.created_at DESC LIMIT $limit
-            "#,
+            ",
             )
             .param("limit", limit as i64)
         };
@@ -517,7 +517,6 @@ impl KnowledgeService {
                  summarise directly. If your copy ends in a TRUNCATED marker it was clipped in \
                  transit: call again with offset set past what you received, do not report the \
                  list as unavailable. Counts exclude chunk fragments.",
-                seen = seen,
             )
         } else if filtered {
             // Two different next moves, and which one is right depends on WHO

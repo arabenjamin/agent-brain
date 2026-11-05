@@ -175,7 +175,9 @@ impl Neo4jClient {
             description: description.map(str::to_string),
             status,
             priority,
-            tags: tags.map(|t| t.to_vec()).unwrap_or_default(),
+            tags: tags
+                .map(<[std::string::String]>::to_vec)
+                .unwrap_or_default(),
             due_at: due_at.map(str::to_string),
             created_at: now.clone(),
             updated_at: now,
@@ -327,7 +329,9 @@ impl Neo4jClient {
         };
         let new_status = status.unwrap_or(&current.status).to_string();
         let new_priority = priority.unwrap_or(current.priority);
-        let new_tags: Vec<String> = tags.map(|t| t.to_vec()).unwrap_or(current.tags.clone());
+        let new_tags: Vec<String> = tags
+            .map(<[std::string::String]>::to_vec)
+            .unwrap_or(current.tags.clone());
         let new_tags_json = serde_json::to_string(&new_tags).unwrap_or_else(|_| "[]".to_string());
         let new_due_at: String = match due_at {
             Some(Some(s)) => s.to_string(),

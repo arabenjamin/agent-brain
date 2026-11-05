@@ -140,8 +140,7 @@ impl MediaService {
             window_chars: 6000,
             transcriber: crate::transcribe::from_env(),
             media_dir: std::env::var("MEDIA_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::env::temp_dir()),
+                .map_or_else(|_| std::env::temp_dir(), std::path::PathBuf::from),
             // A media or article URL comes from a model: public hosts only.
             http: net_policy::guarded_client(),
             reader: None,
@@ -240,7 +239,7 @@ impl MediaService {
         })?;
         let canon = requested
             .canonicalize()
-            .map_err(|e| anyhow::anyhow!("local file not found or unreadable ('{}'): {e}", rest))?;
+            .map_err(|e| anyhow::anyhow!("local file not found or unreadable ('{rest}'): {e}"))?;
         if !canon.starts_with(&root) {
             anyhow::bail!(
                 "local file '{}' is outside the allowed MEDIA_DIR ('{}')",
@@ -441,14 +440,20 @@ impl MediaService {
         let channel = first_nonempty(&[str_field(v, "channel"), str_field(v, "uploader")]);
         let channel_id = first_nonempty(&[str_field(v, "channel_id"), str_field(v, "uploader_id")]);
         let url = first_nonempty(&[str_field(v, "webpage_url"), str_field(v, "original_url")]);
-        let duration_secs = v.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0) as i64;
+        let duration_secs = v
+            .get("duration")
+            .and_then(agent_brain_plugin_api::Value::as_f64)
+            .unwrap_or(0.0) as i64;
         let published_at = format_upload_date(&str_field(v, "upload_date"));
         // `is_live` is true only while the stream is actually broadcasting;
         // `was_live` (a finished stream, now a normal VOD with a real duration)
         // is deliberately NOT treated as live — those are safe to ingest.
         // A scheduled premiere (`live_status: is_upcoming`) has no transcript
         // yet either; treat it like a live stream so it is skipped, not ingested.
-        let is_live = v.get("is_live").and_then(|x| x.as_bool()).unwrap_or(false)
+        let is_live = v
+            .get("is_live")
+            .and_then(agent_brain_plugin_api::Value::as_bool)
+            .unwrap_or(false)
             || v.get("live_status").and_then(|x| x.as_str()) == Some("is_upcoming");
 
         Ok(VideoMeta {
@@ -901,7 +906,7 @@ impl MediaService {
                 .get(&url)
                 .send()
                 .await
-                .and_then(|r| r.error_for_status())
+                .and_then(reqwest::Response::error_for_status)
             {
                 Ok(resp) => break resp.text().await?,
                 Err(e) => {
@@ -1206,7 +1211,7 @@ pub fn extract_article_text(html: &str) -> String {
             .unwrap()
             .captures_iter(&h)
             .map(|c| c[1].to_string())
-            .max_by_key(|s| s.len())
+            .max_by_key(std::string::String::len)
     };
     let region = largest("article")
         .filter(|s| s.len() > 2_000)
@@ -1338,7 +1343,7 @@ fn parse_article_feed(xml: &str) -> Vec<FeedItem> {
             atom_link
                 .captures_iter(block)
                 .find(|c| {
-                    let tag = c.get(0).map(|m| m.as_str()).unwrap_or("");
+                    let tag = c.get(0).map_or("", |m| m.as_str());
                     !tag.contains("rel=\"") || tag.contains("rel=\"alternate\"")
                 })
                 .map(|c| decode_entities(c[1].trim()))
@@ -1581,7 +1586,7 @@ fn title_from_path(path: &str) -> String {
         .rsplit('/')
         .next()
         .unwrap_or(path);
-    let stem = seg.rsplit_once('.').map(|(s, _)| s).unwrap_or(seg);
+    let stem = seg.rsplit_once('.').map_or(seg, |(s, _)| s);
     let pretty = stem.replace(['_', '-'], " ");
     let pretty = normalize_ws(&pretty);
     if pretty.is_empty() {
@@ -1657,11 +1662,7 @@ fn parse_rss_feed(xml: &str) -> Vec<FeedItem> {
         let title = title_re
             .captures(item)
             .map(|c| {
-                let raw = c
-                    .get(1)
-                    .or_else(|| c.get(2))
-                    .map(|m| m.as_str())
-                    .unwrap_or("");
+                let raw = c.get(1).or_else(|| c.get(2)).map_or("", |m| m.as_str());
                 unescape_xml(raw.trim())
             })
             .unwrap_or_default();
@@ -1982,7 +1983,7 @@ mod tests {
 
     #[test]
     fn parses_youtube_atom_feed() {
-        let xml = r#"<feed>
+        let xml = r"<feed>
           <entry>
             <yt:videoId>VID1</yt:videoId>
             <yt:channelId>CHAN</yt:channelId>
@@ -1995,7 +1996,7 @@ mod tests {
             <title>Second</title>
             <published>2024-01-02T00:00:00+00:00</published>
           </entry>
-        </feed>"#;
+        </feed>";
         let items = parse_youtube_feed(xml);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].video_id, "VID1");

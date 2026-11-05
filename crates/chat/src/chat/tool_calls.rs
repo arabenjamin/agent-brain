@@ -29,7 +29,7 @@ pub(super) fn parse_xml_tool_calls(text: &str) -> Vec<(String, String, Value)> {
 
         // Find closing tag
         let close_tag = "</invoke>";
-        let body_start = rest.find('>').map(|i| i + 1).unwrap_or(rest.len());
+        let body_start = rest.find('>').map_or(rest.len(), |i| i + 1);
         let body_end = rest.find(close_tag).unwrap_or(rest.len());
 
         let body = &rest[body_start..body_end];
@@ -49,7 +49,7 @@ pub(super) fn parse_xml_tool_calls(text: &str) -> Vec<(String, String, Value)> {
                 if let Some(tag_end) = tag_rest.find('>') {
                     let key = tag_rest[..tag_end].trim().to_string();
                     let after_tag = &tag_rest[tag_end + 1..];
-                    let close = format!("</{}>", key);
+                    let close = format!("</{key}>");
                     if let Some(val_end) = after_tag.find(&close) {
                         map.insert(key, Value::String(after_tag[..val_end].trim().to_string()));
                         rem = &after_tag[val_end + close.len()..];
@@ -67,7 +67,7 @@ pub(super) fn parse_xml_tool_calls(text: &str) -> Vec<(String, String, Value)> {
             }
         };
 
-        let id = format!("xml-{}", id_counter);
+        let id = format!("xml-{id_counter}");
         id_counter += 1;
         calls.push((id, name, args));
 
@@ -117,9 +117,7 @@ pub(super) fn malformed_tool_call_correction(tool: Option<&str>, error: &str) ->
 /// The visible line appended to a reply whose tool call never ran. Prose that
 /// promises an action must not stand when the action did not happen.
 pub(super) fn malformed_tool_call_notice(tool: Option<&str>, error: &str) -> String {
-    let which = tool
-        .map(|t| format!("`{t}`"))
-        .unwrap_or_else(|| "a tool".to_string());
+    let which = tool.map_or_else(|| "a tool".to_string(), |t| format!("`{t}`"));
     format!(
         "⚠ The call to {which} was malformed and did NOT run ({error}). Nothing described \
          above as being done by that call has happened — ask again to retry it."

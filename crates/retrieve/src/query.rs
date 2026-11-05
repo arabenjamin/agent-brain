@@ -442,7 +442,7 @@ impl QuerySkill {
         }
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
         let Some(ref neo4j) = self.neo4j else {
             return ToolCallResult::error("Neo4j not available".to_string());
@@ -471,7 +471,7 @@ impl QuerySkill {
                 let count = result.len();
                 ToolCallResult::success_json(json!({ "tasks": result, "count": count }))
             }
-            Err(e) => ToolCallResult::error(format!("recent_tasks query failed: {}", e)),
+            Err(e) => ToolCallResult::error(format!("recent_tasks query failed: {e}")),
         }
     }
 
@@ -508,12 +508,13 @@ impl QuerySkill {
                         .collect()
                 };
                 let untagged = names(&|r| r["kind"].is_null() && r["tags_by"].is_null());
-                let unused = names(&|r| r["used_by"].as_array().is_none_or(|u| u.is_empty()));
+                let unused =
+                    names(&|r| r["used_by"].as_array().is_none_or(std::vec::Vec::is_empty));
                 ToolCallResult::success_json(json!({
                     "apis": result, "count": count, "untagged": untagged, "used_by_no_workflow": unused,
                 }))
             }
-            Err(e) => ToolCallResult::error(format!("list_apis query failed: {}", e)),
+            Err(e) => ToolCallResult::error(format!("list_apis query failed: {e}")),
         }
     }
 
@@ -524,7 +525,7 @@ impl QuerySkill {
         }
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
         let Some(ref neo4j) = self.neo4j else {
             return ToolCallResult::error("Neo4j not available".to_string());
@@ -561,7 +562,7 @@ impl QuerySkill {
                 }
                 ToolCallResult::success_json(response)
             }
-            Err(e) => ToolCallResult::error(format!("list_endpoints query failed: {}", e)),
+            Err(e) => ToolCallResult::error(format!("list_endpoints query failed: {e}")),
         }
     }
 
@@ -582,7 +583,7 @@ impl QuerySkill {
         }
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
         let Some(ref neo4j) = self.neo4j else {
             return ToolCallResult::error("Neo4j not available".to_string());
@@ -616,7 +617,7 @@ impl QuerySkill {
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| json!({})),
-            Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {e}")),
         };
 
         // ── Drill-down: one profile's allowlist ──────────────────────────────
@@ -637,8 +638,8 @@ impl QuerySkill {
                 )
                 .await;
             match rows {
-                Ok(rows) => match Self::rows_to_json(rows).into_iter().next() {
-                    Some(row) => {
+                Ok(rows) => {
+                    if let Some(row) = Self::rows_to_json(rows).into_iter().next() {
                         response["profile"] = row;
                         // allows_all means "no allowlist", i.e. the whole
                         // registry — an empty `tools` array there would read as
@@ -646,20 +647,19 @@ impl QuerySkill {
                         if response["profile"]["allows_all"] == json!(true) {
                             response["profile"]["note"] = json!(
                                 "This profile declares no allowlist, so it may use ALL \
-                                 registered tools (tool_count above), not the empty list."
+                             registered tools (tool_count above), not the empty list."
                             );
                         }
-                    }
-                    None => {
+                    } else {
                         response["profile"] = json!(null);
                         response["hint"] = json!(format!(
                             "No context profile named '{name}'. Profile names are \
-                             case-sensitive; call list_capabilities with kind=\"profiles\" \
-                             for the exact names."
+                         case-sensitive; call list_capabilities with kind=\"profiles\" \
+                         for the exact names."
                         ));
                     }
-                },
-                Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+                }
+                Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {e}")),
             }
             return ToolCallResult::success_json(response);
         }
@@ -700,7 +700,7 @@ impl QuerySkill {
                         ));
                     }
                 }
-                Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+                Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {e}")),
             }
             return ToolCallResult::success_json(response);
         }
@@ -715,7 +715,7 @@ impl QuerySkill {
                 .await;
             match rows {
                 Ok(rows) => response["tools"] = json!(Self::rows_to_json(rows)),
-                Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+                Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {e}")),
             }
             if let Ok(rows) = neo4j
                 .execute(neo4rs::query(
@@ -798,7 +798,7 @@ impl QuerySkill {
                     response["profiles"] = json!(list);
                 }
             }
-            Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {e}")),
         }
 
         if kind == "summary" {
@@ -836,7 +836,7 @@ impl QuerySkill {
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
 
         // Who may write is decided by where the call runs, never by an argument
@@ -948,7 +948,7 @@ impl QuerySkill {
             Err(e) if is_read_mode_refusal(&e.to_string()) => ToolCallResult::error(format!(
                 "Neo4j refused a write in this read-only query. {WRITE_HINT}"
             )),
-            Err(e) => ToolCallResult::error(format!("Neo4j query failed: {}", e)),
+            Err(e) => ToolCallResult::error(format!("Neo4j query failed: {e}")),
         }
     }
 
@@ -965,7 +965,7 @@ impl QuerySkill {
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
 
         let Some(ref telemetry) = self.telemetry else {
@@ -983,7 +983,7 @@ impl QuerySkill {
                 });
                 ToolCallResult::success_json(response)
             }
-            Err(e) => ToolCallResult::error(format!("DuckDB query failed: {}", e)),
+            Err(e) => ToolCallResult::error(format!("DuckDB query failed: {e}")),
         }
     }
 }

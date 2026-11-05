@@ -17,7 +17,7 @@ const CC_SECOND_LEVEL: &[&str] = &[
 /// state-media list names `chinadaily.com.cn`, the merge was simply wrong.
 pub fn registrable_domain(url_or_host: &str) -> Option<String> {
     let s = url_or_host.trim();
-    let rest = s.split_once("://").map(|x| x.1).unwrap_or(s);
+    let rest = s.split_once("://").map_or(s, |x| x.1);
     let host = rest
         .split(['/', '"', '\\', ' ', '\'', '?', '#', ':'])
         .next()
@@ -50,7 +50,7 @@ pub fn registrable_domain(url_or_host: &str) -> Option<String> {
 /// follows it (a query string or a further segment), so the Wikipedia article
 /// `/wiki/Search` is not one.
 pub fn is_search_page(link: &str) -> bool {
-    let rest = link.split_once("://").map(|x| x.1).unwrap_or(link);
+    let rest = link.split_once("://").map_or(link, |x| x.1);
     let (host, path_and_query) = rest.split_once('/').unwrap_or((rest, ""));
     let host = host.to_lowercase();
     let lower = path_and_query.to_lowercase();

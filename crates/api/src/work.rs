@@ -109,18 +109,17 @@ pub(crate) fn step_tools(steps_json: &str) -> (Vec<String>, usize) {
     let mut tools = Vec::with_capacity(steps.len());
     let mut legacy = 0;
     for s in &steps {
-        match s
+        if let Some(t) = s
             .get("tool_name")
             .and_then(Value::as_str)
             .filter(|t| !t.is_empty())
         {
-            Some(t) => tools.push(t.to_string()),
-            None => {
-                if s.get("tool").is_some() {
-                    legacy += 1;
-                }
-                tools.push(String::new());
+            tools.push(t.to_string())
+        } else {
+            if s.get("tool").is_some() {
+                legacy += 1;
             }
+            tools.push(String::new());
         }
     }
     (tools, legacy)
@@ -578,7 +577,7 @@ pub async fn handle_list_workflows(
         .map(|wf| {
             let mine = runs.get(&wf.name);
             let mut v = workflow_json(wf);
-            v["last_run"] = mine.map(|(_, l)| l.clone()).unwrap_or(Value::Null);
+            v["last_run"] = mine.map_or(Value::Null, |(_, l)| l.clone());
             v["runs_recorded"] = json!(mine.map_or(0, |(n, _)| *n));
             v
         })

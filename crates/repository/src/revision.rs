@@ -174,12 +174,11 @@ const REVISION_FIELDS: &str = "r.kind AS kind, r.name AS name, r.version AS vers
      toString(r.at) AS at";
 
 fn opt_str(v: Option<&str>) -> BoltType {
-    v.map(|s| BoltType::from(s.to_string()))
-        .unwrap_or(BoltType::Null(BoltNull))
+    v.map_or(BoltType::Null(BoltNull), |s| BoltType::from(s.to_string()))
 }
 
 fn opt_i64(v: Option<i64>) -> BoltType {
-    v.map(BoltType::from).unwrap_or(BoltType::Null(BoltNull))
+    v.map_or(BoltType::Null(BoltNull), BoltType::from)
 }
 
 impl Neo4jClient {

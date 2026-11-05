@@ -373,8 +373,7 @@ async fn handle_areas(State(s): St, Query(q): Query<AreasQuery>) -> Response {
             let seen = counts
                 .iter()
                 .find(|(ar, so, _)| *ar == a.name && *so == source)
-                .map(|c| c.2)
-                .unwrap_or(0);
+                .map_or(0, |c| c.2);
             cov.insert(
                 what.into(),
                 json!({"state": state, "says": says, "reports": reports, "seen": seen}),

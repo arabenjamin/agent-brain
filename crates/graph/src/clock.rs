@@ -99,8 +99,7 @@ pub fn local_midnight_utc(day: chrono::NaiveDate) -> DateTime<Utc> {
         .timezone()
         .from_local_datetime(&day.and_hms_opt(0, 0, 0).expect("midnight exists"))
         .single()
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(Utc::now)
+        .map_or_else(Utc::now, |dt| dt.with_timezone(&Utc))
 }
 
 /// The start of the current local day, as a UTC instant.

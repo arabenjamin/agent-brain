@@ -74,7 +74,7 @@ fn caller() -> (String, Option<String>, Option<String>) {
         .try_with(|c| c.purpose.as_str().to_string())
         .unwrap_or_else(|_| "direct".to_string());
     let tool = agent_brain_llm::ctx::CURRENT_TOOL
-        .try_with(|t| t.clone())
+        .try_with(std::clone::Clone::clone)
         .ok()
         .flatten();
     (purpose, tool, agent_brain_llm::ctx::current_owner_task())
@@ -417,8 +417,7 @@ impl SearchSkill {
         // Extract host from URL cheaply — everything between "://" and the next "/".
         let host = url
             .split_once("://")
-            .map(|x| x.1)
-            .unwrap_or(url)
+            .map_or(url, |x| x.1)
             .split('/')
             .next()
             .unwrap_or(url)
@@ -908,7 +907,7 @@ impl SearchSkill {
         ];
         let mut out: Vec<String> = query
             .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .map(|w| w.to_lowercase())
+            .map(str::to_lowercase)
             .filter(|w| w.len() > 3 && !STOP.contains(&w.as_str()))
             .collect();
         out.sort();
@@ -1471,7 +1470,7 @@ mod tests {
     }
 
     fn v(items: &[&str]) -> Vec<String> {
-        items.iter().map(|s| s.to_string()).collect()
+        items.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

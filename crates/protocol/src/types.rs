@@ -125,7 +125,7 @@ impl JsonRpcErrorResponse {
         Self::new(
             Some(id),
             error_codes::METHOD_NOT_FOUND,
-            format!("Method not found: {}", method),
+            format!("Method not found: {method}"),
         )
     }
 
@@ -358,5 +358,5 @@ impl ToolCallResult {
 pub fn parse_args<T: DeserializeOwned>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
-        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))
+        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {e}")))
 }

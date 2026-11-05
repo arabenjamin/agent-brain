@@ -30,13 +30,19 @@ static BACKGROUND_FALLBACK: OnceLock<StdRwLock<Vec<LlmConfig>>> = OnceLock::new(
 /// after the provider registry, so each rung carries its endpoint and key.
 pub fn install_background_fallback(ladder: Vec<LlmConfig>) {
     let slot = BACKGROUND_FALLBACK.get_or_init(|| StdRwLock::new(Vec::new()));
-    *slot.write().unwrap_or_else(|p| p.into_inner()) = ladder;
+    *slot
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ladder;
 }
 
 fn background_fallback() -> Vec<LlmConfig> {
     BACKGROUND_FALLBACK
         .get()
-        .map(|l| l.read().unwrap_or_else(|p| p.into_inner()).clone())
+        .map(|l| {
+            l.read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })
         .unwrap_or_default()
 }
 
@@ -88,18 +94,18 @@ impl SharedLlm {
         let model_name = llm.model.clone();
         let provider_label = llm.provider_label();
         let client =
-            LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
+            LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {e}"))?;
         let start = Instant::now();
         let result = client
             .generate_with_system(prompt, system)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e));
+            .map_err(|e| anyhow::anyhow!("{e}"));
         let duration_ms = start.elapsed().as_millis() as i64;
         // One write path for the usage ledger and the budget ledger, so every
         // call that spends quota is counted where the router can see it. The
         // error text carries retry hints (Gemini's retryDelay) for cooldowns.
         let (tin, tout) = response_tokens(&result);
-        let error_text = result.as_ref().err().map(|e| e.to_string());
+        let error_text = result.as_ref().err().map(std::string::ToString::to_string);
         crate::budget::record_call(
             self.telemetry.as_ref(),
             &provider_label,
@@ -169,12 +175,16 @@ impl LlmProvider for SharedLlm {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String> {
         // Routing precedence: capability-selected model (per-step router) >
         // local pin (background jobs) > active config.
-        let selected = SELECTED_LLM.try_with(|v| v.clone()).unwrap_or(None);
+        let selected = SELECTED_LLM
+            .try_with(std::clone::Clone::clone)
+            .unwrap_or(None);
         let use_local = USE_LOCAL_LLM.try_with(|&v| v).unwrap_or(false);
         // Set by the queue coordinator to the job's tool name. `None` outside a
         // job (a direct MCP call, a startup protocol step) is honest — those
         // rows genuinely have no owning tool.
-        let tool = CURRENT_TOOL.try_with(|v| v.clone()).unwrap_or(None);
+        let tool = CURRENT_TOOL
+            .try_with(std::clone::Clone::clone)
+            .unwrap_or(None);
         let tool = tool.as_deref();
         // `is_selected` distinguishes a capability-routed model (e.g. a
         // `reasoning` step routed to gemini-2.5-flash) from the plain active
@@ -310,11 +320,11 @@ impl LlmProvider for SharedLlm {
         let config = self.config.read().await.clone();
         let llm = config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?;
         let client =
-            LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
+            LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {e}"))?;
         client
             .embeddings(text)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     fn model_name(&self) -> &str {
@@ -442,7 +452,7 @@ mod tests {
     use super::*;
 
     fn err(msg: &str) -> anyhow::Error {
-        anyhow::anyhow!("{}", msg)
+        anyhow::anyhow!("{msg}")
     }
 
     /// The verbatim error that failed the Off-Grid Networking Monitor run of

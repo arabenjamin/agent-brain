@@ -246,34 +246,30 @@ impl RoutingPolicy {
         paid_for: Option<&str>,
     ) -> Self {
         let explicit = routing_billing.map(str::trim).filter(|s| !s.is_empty());
-        let (billing, source) = match explicit {
-            Some(list) => {
-                let mut billing = Vec::new();
-                for word in list.split(',') {
-                    let b = match word.trim().to_ascii_lowercase().as_str() {
-                        "local" => Billing::Local,
-                        "free" => Billing::Free,
-                        "paid" => Billing::Paid,
-                        _ => continue,
-                    };
-                    if !billing.contains(&b) {
-                        billing.push(b);
-                    }
-                }
-                (billing, format!("ROUTING_BILLING={list}"))
-            }
-            None => {
-                let tier = cloud_tier
-                    .and_then(|v| v.trim().parse::<u8>().ok())
-                    .map(|t| t.min(2))
-                    .unwrap_or(1);
-                let billing = match tier {
-                    0 => vec![Billing::Local],
-                    1 => vec![Billing::Local, Billing::Free],
-                    _ => vec![Billing::Local, Billing::Free, Billing::Paid],
+        let (billing, source) = if let Some(list) = explicit {
+            let mut billing = Vec::new();
+            for word in list.split(',') {
+                let b = match word.trim().to_ascii_lowercase().as_str() {
+                    "local" => Billing::Local,
+                    "free" => Billing::Free,
+                    "paid" => Billing::Paid,
+                    _ => continue,
                 };
-                (billing, format!("CLOUD_TIER={tier}"))
+                if !billing.contains(&b) {
+                    billing.push(b);
+                }
             }
+            (billing, format!("ROUTING_BILLING={list}"))
+        } else {
+            let tier = cloud_tier
+                .and_then(|v| v.trim().parse::<u8>().ok())
+                .map_or(1, |t| t.min(2));
+            let billing = match tier {
+                0 => vec![Billing::Local],
+                1 => vec![Billing::Local, Billing::Free],
+                _ => vec![Billing::Local, Billing::Free, Billing::Paid],
+            };
+            (billing, format!("CLOUD_TIER={tier}"))
         };
         let mut purposes = Vec::new();
         for word in paid_for.unwrap_or("").split(',') {

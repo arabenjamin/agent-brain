@@ -92,7 +92,9 @@ fn meta_learning_chain(tool_name: &str, attempt: u32, error_text: &str) -> Vec<C
 fn parse_adversarial_robustness(text: &str) -> f32 {
     // Try to parse the JSON blob returned by the tool.
     if let Some(v) = agent_brain_llm::llm::first_json_object(text, &["overall_robustness"])
-        && let Some(r) = v.get("overall_robustness").and_then(|x| x.as_f64())
+        && let Some(r) = v
+            .get("overall_robustness")
+            .and_then(serde_json::Value::as_f64)
     {
         return (r as f32).clamp(1.0, 5.0);
     }
@@ -138,7 +140,7 @@ impl QueueService {
     /// last 24 hours. Used to dedupe the dead-job meta-learning chain so a repeatedly
     /// failing tool doesn't spawn a fresh Analyze→Hypothesize→Integrate chain every time.
     async fn recently_meta_learned(&self, tool_name: &str) -> bool {
-        let ctx = format!("dead_job:{}", tool_name);
+        let ctx = format!("dead_job:{tool_name}");
         let cypher = "MATCH (n:Note) \
                       WHERE n.note_type = 'meta_learning_result' \
                         AND n.source_context = $ctx \

@@ -63,8 +63,7 @@ impl DevDocsSkill {
                 let query = s("query").ok_or("search needs `query`")?;
                 let limit = a["limit"]
                     .as_u64()
-                    .map(|l| l as usize)
-                    .unwrap_or(DEFAULT_LIMIT)
+                    .map_or(DEFAULT_LIMIT, |l| l as usize)
                     .clamp(1, MAX_LIMIT);
                 let (hits, matched) = self
                     .notes

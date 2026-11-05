@@ -435,7 +435,7 @@ impl TelemetryClient {
                 now.to_rfc3339(),
                 prompt,
                 response,
-                tools_used.map(|v| v.to_string()),
+                tools_used.map(std::string::ToString::to_string),
                 success,
                 latency_ms as i64,
                 model
@@ -778,7 +778,7 @@ impl TelemetryClient {
                 ))
             },
         )?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.filter_map(std::result::Result::ok).collect())
     }
 
     /// Per-model requests and tokens since `day_start` (RFC 3339), for models
@@ -809,7 +809,7 @@ impl TelemetryClient {
                 row.get::<_, i64>(3)?,
             ))
         })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.filter_map(std::result::Result::ok).collect())
     }
 
     /// Model names with a given `error_kind` recorded in the last `hours`.
@@ -826,7 +826,7 @@ impl TelemetryClient {
              WHERE error_kind = ? AND created_at >= CAST(? AS TIMESTAMPTZ)",
         )?;
         let rows = stmt.query_map(params![error_kind, cutoff], |row| row.get::<_, String>(0))?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.filter_map(std::result::Result::ok).collect())
     }
 
     // =========================================================================
@@ -922,8 +922,7 @@ impl TelemetryClient {
         let day_start = now
             .date_naive()
             .and_hms_opt(0, 0, 0)
-            .map(|d| d.and_utc())
-            .unwrap_or(now);
+            .map_or(now, |d| d.and_utc());
         let (period, day, hour, minute) = (
             period_start.to_rfc3339(),
             day_start.to_rfc3339(),
@@ -999,9 +998,10 @@ impl TelemetryClient {
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        let cutoff = window_hours
-            .map(|h| (Utc::now() - chrono::Duration::hours(h)).to_rfc3339())
-            .unwrap_or_else(|| "1970-01-01T00:00:00+00:00".to_string());
+        let cutoff = window_hours.map_or_else(
+            || "1970-01-01T00:00:00+00:00".to_string(),
+            |h| (Utc::now() - chrono::Duration::hours(h)).to_rfc3339(),
+        );
         let mut stmt = conn.prepare(
             "SELECT reader,
                     COUNT(*) AS attempts,
@@ -1038,7 +1038,7 @@ impl TelemetryClient {
                 },
             }))
         })?;
-        let readers: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).collect();
+        let readers: Vec<serde_json::Value> = rows.filter_map(std::result::Result::ok).collect();
         Ok(serde_json::json!({ "window_hours": window_hours, "readers": readers }))
     }
 
@@ -1057,7 +1057,7 @@ impl TelemetryClient {
         let rows = stmt.query_map(params![cutoff], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.filter_map(std::result::Result::ok).collect())
     }
 
     /// Engines that recorded a given `error_kind` within the last `hours`.
@@ -1080,7 +1080,7 @@ impl TelemetryClient {
              WHERE error_kind = ? AND created_at >= CAST(? AS TIMESTAMPTZ)",
         )?;
         let rows = stmt.query_map(params![error_kind, cutoff], |row| row.get::<_, String>(0))?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.filter_map(std::result::Result::ok).collect())
     }
 
     /// Readers that recorded `error_kind` within the last `hours`
@@ -1096,7 +1096,7 @@ impl TelemetryClient {
              WHERE error_kind = ? AND created_at >= CAST(? AS TIMESTAMPTZ)",
         )?;
         let rows = stmt.query_map(params![error_kind, cutoff], |row| row.get::<_, String>(0))?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.filter_map(std::result::Result::ok).collect())
     }
 
     /// Aggregated search usage: per-engine totals plus a per-day breakdown.
@@ -1176,11 +1176,11 @@ impl TelemetryClient {
         };
         let engines: Vec<serde_json::Value> = if let Some(ref c) = cutoff {
             stmt.query_map(params![c], map_engine)?
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .collect()
         } else {
             stmt.query_map([], map_engine)?
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .collect()
         };
 
@@ -1206,11 +1206,11 @@ impl TelemetryClient {
         };
         let by_caller: Vec<serde_json::Value> = if let Some(ref c) = cutoff {
             stmt.query_map(params![c], map_caller)?
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .collect()
         } else {
             stmt.query_map([], map_caller)?
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .collect()
         };
 
@@ -1239,11 +1239,11 @@ impl TelemetryClient {
         };
         let daily_rows: Vec<_> = if let Some(ref c) = cutoff {
             stmt.query_map(params![c], map_day)?
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .collect()
         } else {
             stmt.query_map([], map_day)?
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .collect()
         };
         let by_day: Vec<serde_json::Value> = daily_rows
@@ -1320,11 +1320,11 @@ impl TelemetryClient {
             };
             let collected: Vec<_> = if let Some(ref c) = cutoff {
                 stmt.query_map(params![c], map_row)?
-                    .filter_map(|r| r.ok())
+                    .filter_map(std::result::Result::ok)
                     .collect()
             } else {
                 stmt.query_map([], map_row)?
-                    .filter_map(|r| r.ok())
+                    .filter_map(std::result::Result::ok)
                     .collect()
             };
             let rows: Vec<serde_json::Value> = collected
@@ -1442,7 +1442,7 @@ impl TelemetryClient {
         {
             base.to_string()
         } else {
-            format!("{} LIMIT {}", base, limit)
+            format!("{base} LIMIT {limit}")
         };
 
         let mut stmt = conn.prepare(&limited)?;
@@ -1494,7 +1494,7 @@ impl TelemetryClient {
                 }
                 Ok(vals)
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .inspect(|vals| {
                 if observed_col_count == 0 && !vals.is_empty() {
                     observed_col_count = vals.len();

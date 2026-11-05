@@ -33,15 +33,14 @@ impl Plugin for Maps {
     }
 
     fn tools(&self, ctx: &PluginContext) -> Vec<Arc<dyn Skill>> {
-        match ctx.graph.clone() {
-            Some(g) => vec![
+        if let Some(g) = ctx.graph.clone() {
+            vec![
                 Arc::new(GeocodeSkill::new(g, |k| ctx.env(k))) as Arc<dyn Skill>,
                 Arc::new(tracks::tool::AreaTrafficSkill::new(tracks(ctx))),
-            ],
-            None => {
-                tracing::warn!("maps: the host gave no graph; no tools");
-                vec![]
-            }
+            ]
+        } else {
+            tracing::warn!("maps: the host gave no graph; no tools");
+            vec![]
         }
     }
 

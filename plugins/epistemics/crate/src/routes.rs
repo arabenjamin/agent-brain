@@ -96,15 +96,16 @@ fn relation_json(m: &Value, side: &str) -> Value {
     let t = s("type").unwrap_or_default();
     let vt = Vocabulary::global().get(&t);
     let outgoing = from == side;
-    let reads = vt
-        .map(|v| {
+    let reads = vt.map_or_else(
+        || t.clone(),
+        |v| {
             if outgoing {
                 v.label.clone()
             } else {
                 v.inverse.clone()
             }
-        })
-        .unwrap_or_else(|| t.clone());
+        },
+    );
     let other = if outgoing { "to" } else { "from" };
     json!({
         "from": from, "to": to, "type": t, "reads": reads,
@@ -255,7 +256,7 @@ async fn handle_among(State(st): St, Query(params): Query<HashMap<String, String
 }
 
 fn text(body: &Value, k: &str) -> String {
-    body[k].as_str().map(str::trim).unwrap_or("").to_string()
+    body[k].as_str().map_or("", str::trim).to_string()
 }
 
 fn outcome(r: anyhow::Result<Result<Value, String>>, what: &str) -> Response {

@@ -220,8 +220,7 @@ fn build_chat_request(
     let first_user = turns
         .iter()
         .find(|t| t.role == "user")
-        .map(|t| t.content.as_str())
-        .unwrap_or(&message);
+        .map_or(message.as_str(), |t| t.content.as_str());
     let session_id = header_session.unwrap_or_else(|| derive_session_id(first_user, model));
 
     Ok(ChatRequest {
@@ -268,12 +267,11 @@ fn strip_think(text: &str) -> String {
     let mut rest = text;
     while let Some(start) = rest.find("<think>") {
         out.push_str(&rest[..start]);
-        match rest[start..].find("</think>") {
-            Some(end) => rest = &rest[start + end + "</think>".len()..],
-            None => {
-                rest = "";
-                break;
-            }
+        if let Some(end) = rest[start..].find("</think>") {
+            rest = &rest[start + end + "</think>".len()..]
+        } else {
+            rest = "";
+            break;
         }
     }
     out.push_str(rest);

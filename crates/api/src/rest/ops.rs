@@ -42,7 +42,9 @@ pub async fn handle_put_scheduler_config(
         return unavailable("Scheduler not yet initialised");
     };
 
-    let local_model = body["local_model"].as_str().map(|s| s.to_string());
+    let local_model = body["local_model"]
+        .as_str()
+        .map(std::string::ToString::to_string);
     let interval_secs = body["interval_secs"].as_u64();
     let enabled = body["enabled"].as_bool();
 
@@ -481,7 +483,7 @@ pub async fn handle_list_notifications(
         )
             .into_response();
     };
-    let unread_only = params.get("unread").map(|v| v == "true").unwrap_or(false);
+    let unread_only = params.get("unread").is_some_and(|v| v == "true");
     match neo4j.list_notifications(unread_only).await {
         Ok(items) => Json(json!({ "notifications": items })).into_response(),
         Err(e) => (

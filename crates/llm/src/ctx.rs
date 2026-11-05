@@ -57,15 +57,21 @@ pub fn in_probe() -> bool {
 
 /// The chat session this code runs under, if any.
 pub fn current_chat_session() -> Option<String> {
-    CHAT_SESSION.try_with(|v| v.clone()).unwrap_or(None)
+    CHAT_SESSION
+        .try_with(std::clone::Clone::clone)
+        .unwrap_or(None)
 }
 
 /// The agent whose loop this code runs under, if any.
 pub fn current_agent() -> Option<String> {
-    CURRENT_AGENT.try_with(|v| v.clone()).unwrap_or(None)
+    CURRENT_AGENT
+        .try_with(std::clone::Clone::clone)
+        .unwrap_or(None)
 }
 
 /// The owning task of the job this code runs under, if any.
 pub fn current_owner_task() -> Option<String> {
-    CURRENT_OWNER_TASK.try_with(|v| v.clone()).unwrap_or(None)
+    CURRENT_OWNER_TASK
+        .try_with(std::clone::Clone::clone)
+        .unwrap_or(None)
 }

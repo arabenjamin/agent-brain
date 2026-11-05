@@ -37,8 +37,7 @@ impl KnowledgeService {
     /// and every new claim. `CLAIM_ENTITY_BACKFILL=false` stops it.
     pub fn spawn_claim_entity_backfill(neo4j: Neo4jClient, llm: Arc<dyn LlmProvider>) {
         if std::env::var("CLAIM_ENTITY_BACKFILL")
-            .map(|v| v.eq_ignore_ascii_case("false") || v == "0")
-            .unwrap_or(false)
+            .is_ok_and(|v| v.eq_ignore_ascii_case("false") || v == "0")
         {
             info!("Claim entity backfill disabled (CLAIM_ENTITY_BACKFILL=false)");
             return;
@@ -134,8 +133,7 @@ impl KnowledgeService {
              - Use the fullest form the text gives (\"Donald Trump\" rather than \"Trump\" when both appear)\n\
              - Output ONLY a JSON object: {{\"entities\":[{{\"name\":\"Neo4j\",\"type\":\"technology\"}}]}}\n\
              - If there are none: {{\"entities\":[]}}\n\n\
-             TEXT:\n{}",
-            content
+             TEXT:\n{content}"
         );
         Self::extract_entities_with(neo4j, note_id, content, llm, &prompt).await
     }
@@ -370,7 +368,7 @@ impl KnowledgeService {
         entity_type: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>> {
-        let cypher = r#"
+        let cypher = r"
         MATCH (e:Entity)
         WHERE (toLower(e.name) CONTAINS toLower($entity_name)
                OR EXISTS { MATCH (a:EntityAlias)-[:ALIAS_OF]->(e) WHERE a.name = toLower($entity_name) })
@@ -379,7 +377,7 @@ impl KnowledgeService {
         RETURN n.id AS note_id, n.content AS content,
                e.name AS entity, e.entity_type AS entity_type, r.count AS mention_count
         ORDER BY r.count DESC LIMIT $limit
-        "#;
+        ";
 
         // neo4rs doesn't support passing Optional NULL cleanly; handle it via separate queries.
         let rows = if let Some(et) = entity_type {
@@ -393,7 +391,7 @@ impl KnowledgeService {
                 .await?
         } else {
             // Use a variant without the entity_type filter
-            let cypher_no_type = r#"
+            let cypher_no_type = r"
             MATCH (e:Entity)
             WHERE (toLower(e.name) CONTAINS toLower($entity_name)
                OR EXISTS { MATCH (a:EntityAlias)-[:ALIAS_OF]->(e) WHERE a.name = toLower($entity_name) })
@@ -401,7 +399,7 @@ impl KnowledgeService {
             RETURN n.id AS note_id, n.content AS content,
                    e.name AS entity, e.entity_type AS entity_type, r.count AS mention_count
             ORDER BY r.count DESC LIMIT $limit
-            "#;
+            ";
             self.neo4j
                 .execute(
                     neo4rs::query(cypher_no_type)

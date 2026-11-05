@@ -782,14 +782,13 @@ impl QueueService {
                 };
 
                 // Try to acquire a concurrency slot (non-blocking).
-                let permit = match semaphore.try_acquire_owned() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        // This provider is at capacity — set the job aside and keep scanning
-                        // so other providers with free slots are not blocked behind it.
-                        blocked.push(pjob);
-                        continue;
-                    }
+                let permit = if let Ok(p) = semaphore.try_acquire_owned() {
+                    p
+                } else {
+                    // This provider is at capacity — set the job aside and keep scanning
+                    // so other providers with free slots are not blocked behind it.
+                    blocked.push(pjob);
+                    continue;
                 };
 
                 let svc = Arc::clone(&self);
@@ -959,15 +958,18 @@ impl QueueService {
     /// only, so the compression call itself is free.
     async fn maybe_distill_prev(&self, job: &AgentJob, prev_text: &str) -> Option<String> {
         let args = job.arguments.as_ref()?;
-        if args.get("__distill_prev").and_then(|v| v.as_bool()) != Some(true) {
+        if args
+            .get("__distill_prev")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
             return None;
         }
 
         let max_chars = args
             .get("__distill_max_chars")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(DEFAULT_DISTILL_MAX_CHARS);
+            .and_then(serde_json::Value::as_u64)
+            .map_or(DEFAULT_DISTILL_MAX_CHARS, |n| n as usize);
 
         // Character counts throughout — byte length would misjudge non-ASCII
         // transcripts, which this path sees regularly via the media chains.
@@ -1140,8 +1142,7 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
                             .await
                             .ok()
                             .flatten()
-                            .map(|j| j.attempt_count)
-                            .unwrap_or(job.attempt_count + 1);
+                            .map_or(job.attempt_count + 1, |j| j.attempt_count);
                         self.on_job_dead(&job, attempt, job.max_attempts, &error)
                             .await;
                         return;
@@ -1199,17 +1200,13 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
         let Some(prev_text) = &job.prev_result else {
             return job.arguments.clone();
         };
-        let (wants_whole, wants_path) = job
-            .arguments
-            .as_ref()
-            .map(|a| {
-                let s = a.to_string();
-                (
-                    s.contains("{{_prev}}") || s.contains("{{result}}"),
-                    s.contains("{{_prev.") || s.contains("{{result."),
-                )
-            })
-            .unwrap_or((false, false));
+        let (wants_whole, wants_path) = job.arguments.as_ref().map_or((false, false), |a| {
+            let s = a.to_string();
+            (
+                s.contains("{{_prev}}") || s.contains("{{result}}"),
+                s.contains("{{_prev.") || s.contains("{{result."),
+            )
+        });
 
         let mut args = job.arguments.clone();
 
