@@ -125,6 +125,10 @@ pub struct ProviderEntry {
     /// relies on one of these is only true while it is sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_extra: Option<Value>,
+    /// Request timeout for this provider's calls, overriding the shared cloud
+    /// default. For a provider whose models think before they answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 fn default_enabled() -> bool {

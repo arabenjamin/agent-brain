@@ -15,6 +15,12 @@ tokio::task_local! {
     /// explicitly requires capabilities has earned its routing.
     pub static SELECTED_LLM: Option<crate::LlmConfig>;
 
+    /// `true` when `SELECTED_LLM` came from the step's own `model:`, not from
+    /// its capabilities. A pin runs as written or not at all: `SharedLlm` walks
+    /// no fallback chain for it, so a timeout cannot hand the step to another
+    /// model while the job still reports `completed`.
+    pub static PINNED_STEP: bool;
+
     /// Name of the tool whose execution this task is running, so `SharedLlm`
     /// can attribute its usage rows to it.
     ///

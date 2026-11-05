@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use crate::ctx::{CURRENT_TOOL, SELECTED_LLM, USE_LOCAL_LLM};
+use crate::ctx::{CURRENT_TOOL, PINNED_STEP, SELECTED_LLM, USE_LOCAL_LLM};
 use crate::routing::{RouteContext, RoutingPolicy};
 use crate::traits::LlmProvider;
 use crate::{LlmClient, LlmConfig};
@@ -169,6 +169,12 @@ fn build_fallback_chain(
     }
     chain
 }
+/// Whether this call's model came from a step's own `model:` pin. A capability
+/// route (`is_selected` without the pin) keeps its fallback chain: there, a spent
+/// budget or an outage is meant to degrade the step, not fail it.
+fn pin_forbids_fallback(is_selected: bool) -> bool {
+    is_selected && PINNED_STEP.try_with(|&p| p).unwrap_or(false)
+}
 
 #[async_trait]
 impl LlmProvider for SharedLlm {
@@ -245,6 +251,16 @@ impl LlmProvider for SharedLlm {
             }
         };
         let refused_primary = !refusals.is_empty();
+
+        // A step pinned to a model runs on it or not at all, whatever went wrong:
+        // its job dies with the reason, instead of completing on another model.
+        if pin_forbids_fallback(is_selected) {
+            return result.map(|r| r.text).map_err(|e| {
+                anyhow::anyhow!(
+                    "pinned model {primary_model} did not answer, and a pin does not fall back: {e}"
+                )
+            });
+        }
 
         // If the call failed in a way that says "this provider cannot answer
         // right now" — as opposed to "this prompt is bad" — walk a fallback
@@ -453,6 +469,19 @@ mod tests {
 
     fn err(msg: &str) -> anyhow::Error {
         anyhow::anyhow!("{msg}")
+    }
+
+    /// 2026-11-05: a step pinned to Kimi timed out at 120 s and local E4B wrote
+    /// its news section; the job said `completed`. Only a pin stops the chain.
+    #[tokio::test]
+    async fn only_a_pinned_step_gives_up_its_fallback_chain() {
+        let inside =
+            |selected| PINNED_STEP.scope(true, async move { pin_forbids_fallback(selected) });
+        assert!(inside(true).await, "a pin must not fall back");
+        assert!(!inside(false).await, "no selected model, no pin");
+        let capability = PINNED_STEP.scope(false, async { pin_forbids_fallback(true) });
+        assert!(!capability.await, "a capability route keeps its chain");
+        assert!(!pin_forbids_fallback(true), "outside a job there is no pin");
     }
 
     /// The verbatim error that failed the Off-Grid Networking Monitor run of

@@ -530,6 +530,20 @@ mod tests {
         assert_eq!(routes_to(&c, "deep_reasoning", TIER1), "");
     }
 
+    /// The daily brief's news step asks for `brief_writing`, so GLM writes it
+    /// while its budget lasts and the step's `provider_hint` takes over after.
+    /// A free holder would take the step back without anyone deciding to.
+    #[test]
+    fn brief_writing_is_held_by_glm_alone() {
+        let holders: Vec<_> = real_catalog()
+            .models
+            .iter()
+            .filter(|(_, e)| e.capabilities.iter().any(|x| x == "brief_writing"))
+            .map(|(k, _)| k.clone())
+            .collect();
+        assert_eq!(holders, vec!["z-ai/glm-5.3-flash"]);
+    }
+
     /// Adding a paid model that also claims `reasoning` must not move the
     /// free reasoning route.
     #[test]

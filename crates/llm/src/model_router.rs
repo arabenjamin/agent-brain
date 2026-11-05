@@ -110,6 +110,9 @@ pub fn config_for_provider(
             }
         }
     }
+    if let Some(secs) = entry.timeout_secs {
+        cfg.timeout = std::time::Duration::from_secs(secs);
+    }
     cfg.provider_name = Some(name.to_string());
     cfg
 }
@@ -358,6 +361,18 @@ mod plans_turns_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_provider_can_set_its_own_timeout() {
+        let entry = |extra: &str| -> ProviderEntry {
+            serde_yaml::from_str(&format!("kind: openai_compat\n{extra}")).unwrap()
+        };
+        let base = LlmConfig::default();
+        let set = config_for_provider(&base, "p", &entry("timeout_secs: 300"), "m");
+        assert_eq!(set.timeout, std::time::Duration::from_secs(300));
+        let unset = config_for_provider(&base, "p", &entry(""), "m");
+        assert_eq!(unset.timeout, base.timeout);
+    }
 
     fn row(name: &str, provider: &str, model: &str) -> CatalogModel {
         CatalogModel {

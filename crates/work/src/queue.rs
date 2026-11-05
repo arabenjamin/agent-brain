@@ -1157,20 +1157,24 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
         // (background default), which takes precedence over the active config;
         // ROUTE_CONTEXT lets the routing policy judge every one of them.
         let use_local = agent_brain_llm::model_router::is_local_hint(job.provider_hint.as_deref());
+        let pinned_step = job_arg(&job, "__model").is_some();
         let result = agent_brain_llm::routing::ROUTE_CONTEXT
             .scope(
                 route_ctx,
-                SELECTED_LLM.scope(
-                    selected_llm,
-                    USE_LOCAL_LLM.scope(
-                        use_local,
-                        CURRENT_TOOL.scope(
-                            Some(job.tool_name.clone()),
-                            CURRENT_OWNER_TASK.scope(
-                                job_arg(&job, "__owner_task_id")
-                                    .and_then(Value::as_str)
-                                    .map(String::from),
-                                handler.execute(&job.tool_name, resolved_args),
+                agent_brain_llm::ctx::PINNED_STEP.scope(
+                    pinned_step,
+                    SELECTED_LLM.scope(
+                        selected_llm,
+                        USE_LOCAL_LLM.scope(
+                            use_local,
+                            CURRENT_TOOL.scope(
+                                Some(job.tool_name.clone()),
+                                CURRENT_OWNER_TASK.scope(
+                                    job_arg(&job, "__owner_task_id")
+                                        .and_then(Value::as_str)
+                                        .map(String::from),
+                                    handler.execute(&job.tool_name, resolved_args),
+                                ),
                             ),
                         ),
                     ),

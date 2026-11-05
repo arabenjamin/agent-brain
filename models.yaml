@@ -120,6 +120,9 @@ providers:
     api_key_env: OPENROUTER_API_KEY
     limits: { rpm: 20, concurrency: 1 }
     spend: { daily_usd: 1, monthly_usd: 3 }
+    # Thinking models on a 15K-token prompt run past the shared 120 s, and a call
+    # killed then is still billed (Kimi and Qwen, 2 of 2 tries, 2026-11-05).
+    timeout_secs: 300
     request_extra: { provider: { zdr: true, ignore: ["Groq"] } }
     terms: "provider.zdr on every request, openrouter.ai/docs/guides/features/zdr, checked 2026-11-02"
   anthropic:
@@ -577,6 +580,9 @@ models:
     selection_rank: 400
     capabilities: []
 
+  # `brief_writing`, held by this model alone, is how the daily brief's news step
+  # asks for it (owner, 2026-11-05). A capability and not a pin: at the spend cap
+  # or in an outage the brief degrades to its provider_hint instead of not going out.
   "z-ai/glm-5.3-flash":
     provider: openrouter-paid
     model: "z-ai/glm-5.3-flash"
@@ -584,7 +590,7 @@ models:
     cost_per_1k_input: 0.00015
     cost_per_1k_output: 0.0005
     selection_rank: 401
-    capabilities: []
+    capabilities: [brief_writing]
 
   "deepseek/deepseek-v4-flash":
     provider: openrouter-paid
