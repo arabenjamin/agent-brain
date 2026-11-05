@@ -319,7 +319,9 @@ What happened with adapter v1: validation loss fell 53%, then HumanEval-rs dropp
 
 ## Results (confirmation on held-out problems, 2026-11-04)
 
-Same three adapters, one export pipeline, 274 MBPP-rs problems neither trained on nor used in Experiment 1, frozen plan in `workspace/gemma4-paper/PREREG.md`. Final pass: base 207, v1 177 (Holm p .0002), v2 188 (.022), v3 197 (.11). The repair hypothesis (adapters repair less after feedback) was not confirmed: 8-2, 6-2, 8-3 on the problems that split the models, Holm .33, .45, .45. Too few discordant problems to settle it either way. Seed 7 and seed 8 at temperature 0 replayed almost byte for byte, so a seed change does not measure noise on one server. Details: `workspace/gemma4-paper/CONFIRM_RESULTS.md`.
+Same three adapters, one export pipeline, 274 MBPP-rs problems neither trained on nor used in Experiment 1, frozen plan in `workspace/gemma4-paper/PREREG.md`. Final pass: base 207, v1 177 (Holm p .0002), v2 188 (.022), v3 197 (.11). The repair hypothesis (adapters repair less after feedback) was not confirmed: 8-2, 6-2, 8-3 on the problems that split the models, Holm .33, .45, .45. Too few discordant problems to settle it either way. The planned seed change never happened, because the OpenAI-compatible client sends no seed: that run was a replay, almost byte for byte, so it shows stability and not noise. Details: `workspace/gemma4-paper/CONFIRM_RESULTS.md`.
+
+A second frozen test followed the finding that adapters resend byte-identical code after feedback (MBPP-rs second turns: base 25%, v1 54%, v2 60%, v3 32%). Telling the model it repeated itself did not confirm: 1/0, 1/1, 1/2 on discordant problems, Holm 1.0, and v1 still repeated 56 of 62. Temperature 0.7 changed more code but fixed few. So count repeats as a symptom, and don't expect a retry prompt to repair a tuned model. Details: `workspace/gemma4-paper/REPEAT_RESULTS.md`.
 
 ## Results (Experiment 1, gemma4:e4b → Rust)
 

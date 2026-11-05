@@ -102,7 +102,7 @@ steps:
             "openrouter": json.loads(r"""{{steps.openrouter.body}}""").get("vendors", {}).get("openrouter", []),
         }
         by_id = {v: {m["id"]: m for m in ms if "id" in m} for v, ms in catalog.items()}
-        diffs, same, missing, skipped, limits = [], [], [], [], []
+        diffs, same, missing, skipped, limits, capped = [], [], [], [], [], []
         for m in models:
             prov, mid = m.get("provider"), m.get("model") or m.get("name")
             if prov not in by_id:
@@ -114,8 +114,15 @@ steps:
                 missing.append(f"{mid} ({prov})")
                 continue
             rows = []
-            if c.get("contextWindow") and m.get("context_window") != c["contextWindow"]:
-                rows.append(f"| {mid} | context window | {m.get('context_window'):,} | {c['contextWindow']:,} |")
+            # Above the model's window is drift (a request can fail); below it
+            # is a choice models.yaml may make on purpose (Haiku 5.5 is capped
+            # at its cheap price tier's 100K), so it is listed, not filed
+            # (filed as drift 2026-11-02; owner triage 2026-11-05).
+            ours = m.get("context_window") or 0
+            if c.get("contextWindow") and 0 < ours < c["contextWindow"]:
+                capped.append(f"{mid}: {ours:,} of {c['contextWindow']:,}")
+            elif c.get("contextWindow") and ours != c["contextWindow"]:
+                rows.append(f"| {mid} | context window | {ours:,} | {c['contextWindow']:,} |")
             price = c.get("pricing") or {}
             for ours, theirs, label in (("cost_in", "inputPer1M", "input $/1M"), ("cost_out", "outputPer1M", "output $/1M")):
                 mine = (m.get(ours) or 0) * 1000
@@ -136,6 +143,9 @@ steps:
         print()
         print(f"## CONFIRMED ({len(same)})")
         print(", ".join(same) or "None.")
+        print()
+        print(f"## CONTEXT CAPPED BELOW THE MODEL ({len(capped)})")
+        print("models.yaml uses less than the catalog's window: a choice, not drift (see the model's comment there). " + ("; ".join(capped) or "None."))
         print()
         print(f"## NOT IN THE CATALOG ({len(missing)})")
         print(", ".join(missing) or "None.")
