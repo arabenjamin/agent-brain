@@ -1,0 +1,13 @@
+# arXiv's query API (keyless): a paper index, the `reference-catalog` the
+# rust-training-data-scout's prior-work steps need (API match digest
+# 2026-11-02 offered the model catalog and the brain's own API, neither of which
+# indexes papers; owner registered arXiv 2026-11-05).
+# Answers Atom XML: parse it in a code step. arXiv asks for at most one request
+# every 3 seconds on a single connection, so keep it to one call per run.
+# Field prefixes: ti: au: abs: cat: all:, joined with AND / OR / ANDNOT.
+name: arxiv
+description: "arXiv paper search (keyless, Atom XML): GET query?search_query=<abs:/ti:/cat: terms joined with AND/OR>&sortBy=submittedDate&sortOrder=descending&max_results=N. Each entry has title, summary, published date, authors and the abs URL. One request every 3 seconds at most."
+base_url: https://export.arxiv.org/api
+auth_scheme: none
+kind: reference-catalog
+topics: [ai-ml]
