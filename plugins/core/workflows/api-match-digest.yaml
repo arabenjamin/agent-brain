@@ -1,5 +1,5 @@
 name: api-match-digest
-description: "Weekly (API_USE_PLAN Phase 3): matches every enabled workflow step's `needs` against the registered APIs' tags, in code, no model. Lists the steps a registered API could feed that do not use it, and the needs no API covers (the input for API discovery). Stored as a source_record; one Feed digest item only when the set of matches changes."
+description: "Weekly (API_USE_PLAN Phase 3): matches every enabled workflow step's `needs` against the registered APIs' tags, in code, no model. Lists the steps a registered API could feed that do not use it, and the needs no API covers (the input for API discovery). Stored as a source_record; one Feed digest item only when it has matches the prior digest did not."
 topic: agent-brain
 kind: maintenance
 every: 1w
@@ -18,7 +18,9 @@ steps:
   #   topic-less feeds (the cybersecurity RSS feeds were proposed for
   #   daily-news business, 2026-10-19).
   # - a step that already calls the API (context_name or base_url) is not a
-  #   match; it is counted as through the catalog.
+  #   match; it is counted as through the catalog. So is an API another step
+  #   of the same workflow calls (a search step beside its feed steps).
+  # - an item is filed only when the digest has matches the prior one did not.
   # Taking a match: the owner opens the item in chat and names the matches;
   # the front door (which has manage_workflow) has schedule-author draft each
   # change and saves it as a disabled copy <workflow>-<suffix> for review.
@@ -74,25 +76,37 @@ steps:
             if api["beat"]:  # a feed is about its topic: the topics must agree
                 return t in api["topics"] if t else not api["topics"]
             return not t or t in api["topics"] or not api["topics"]
+        def calls(step):
+            args = json.dumps(step.get("arguments") or {})
+            return [a["name"] for a in apis
+                    if f'"context_name": "{a["name"]}"' in args or (a["base_url"] and a["base_url"] in args)]
         matches, uncovered, served = [], {}, []
         for w in workflows:
-            for i, s in enumerate(json.loads(w["steps"])):
+            steps = json.loads(w["steps"])
+            # An API another step of the same workflow already calls is taken:
+            # surveillance-privacy-watch read the three cyber RSS feeds in their
+            # own steps and its search steps were still proposed them every week
+            # (2026-11-05).
+            in_workflow = {n for s in steps for n in calls(s)}
+            for i, s in enumerate(steps):
                 need = s.get("needs")
                 if not need:
                     continue
                 sid = s.get("id") or f"#{i}"
-                args = json.dumps(s.get("arguments") or {})
-                used = [a["name"] for a in apis
-                        if f'"context_name": "{a["name"]}"' in args or (a["base_url"] and a["base_url"] in args)]
+                used = calls(s)
                 if used:
                     served.append(f"- {w['name']} step `{sid}` ({label(need)}) ← {', '.join(used)}")
                     continue
-                cands = [a for a in apis if fits(need, a)]
+                fitting = [a for a in apis if fits(need, a)]
+                beside = [a["name"] for a in fitting if a["name"] in in_workflow]
+                if beside:
+                    served.append(f"- {w['name']} step `{sid}` ({label(need)}) ← {', '.join(beside)} (another step)")
+                cands = [a for a in fitting if a["name"] not in in_workflow]
                 if cands:
                     now = s.get("arguments", {}).get("query") or s.get("arguments", {}).get("url") or s["tool_name"]
                     names = ", ".join(f"{a['name']} ({a['kind']}{'; ' + ', '.join(a['topics']) if a['topics'] else ''})" for a in cands)
                     matches.append(f"- {w['name']} step `{sid}` ({label(need)}; now `{s['tool_name']}`: {str(now)[:80]}) ← {names}")
-                else:
+                elif not beside:
                     uncovered.setdefault(label(need), []).append(f"{w['name']}:{sid}")
         print(f"{sum(len(json.loads(w['steps'])) for w in workflows)} steps in {len(workflows)} enabled workflows with needs; {len(apis)} tagged APIs.")
         print()
@@ -138,8 +152,11 @@ steps:
             m = re.search(r"## MATCHES \(\d+\)\n(.*?)(?=\n## |\Z)", t, re.S)
             return None if not m else sorted(l for l in m.group(1).splitlines() if l.startswith("- "))
         old, new = matches(prior), matches(now)
-        if new and new != old:
-            added = [l for l in new if l not in (old or [])]
+        added = [l for l in (new or []) if l not in (old or [])]
+        # Only new matches are worth an item: when a match is taken or a
+        # workflow is turned off the set shrinks, and filing "0 new" re-asked
+        # the same question (2026-11-02, duplicate of 2026-10-26's item).
+        if added:
             print(f"The weekly API match ({{date}}) found {len(new)} step(s) a registered API could feed" + (f", {len(added)} new since the last digest" if old else "") + ":")
             print()
             print("\n".join(new))
@@ -148,7 +165,7 @@ steps:
     priority: 1
     max_attempts: 2
     provider_hint: local
-    description: "A message only when the matches changed"
+    description: "A message only when there are new matches"
 
   - tool_name: notify_user
     arguments:

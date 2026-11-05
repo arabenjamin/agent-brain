@@ -284,6 +284,32 @@ impl ChatService {
         tokens_out: Option<i64>,
         error: Option<&str>,
     ) {
+        self.record_llm_call_reported(
+            provider,
+            model,
+            success,
+            duration_ms,
+            tokens_in,
+            tokens_out,
+            error,
+            agent_brain_llm::budget::ProviderUsage::default(),
+        );
+    }
+
+    /// [`Self::record_llm_call`] with the cached tokens and billed cost the
+    /// provider reported in its usage block.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_llm_call_reported(
+        &self,
+        provider: &str,
+        model: &str,
+        success: bool,
+        duration_ms: i64,
+        tokens_in: Option<i64>,
+        tokens_out: Option<i64>,
+        error: Option<&str>,
+        reported: agent_brain_llm::budget::ProviderUsage,
+    ) {
         let label = usage_tool_label();
         let kind =
             (!success).then(|| error.map_or("other", agent_brain_llm::shared_llm::failure_kind_of));
@@ -298,7 +324,7 @@ impl ChatService {
                 "Chat model call failed"
             );
         }
-        agent_brain_llm::budget::record_call(
+        agent_brain_llm::budget::record_call_reported(
             self.telemetry.as_ref(),
             provider,
             model,
@@ -309,6 +335,7 @@ impl ChatService {
             tokens_out,
             kind,
             error,
+            reported,
         );
     }
 

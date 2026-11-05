@@ -670,9 +670,57 @@ pub fn record_call(
     error_kind: Option<&str>,
     error_text: Option<&str>,
 ) {
+    record_call_reported(
+        telemetry,
+        provider,
+        model,
+        tool,
+        success,
+        duration_ms,
+        tokens_in,
+        tokens_out,
+        error_kind,
+        error_text,
+        ProviderUsage::default(),
+    );
+}
+
+/// What a provider says about one call beyond its token counts. OpenRouter
+/// sends both on every response; other OpenAI-wire providers may send neither.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ProviderUsage {
+    /// Prompt tokens served from the provider's cache (part of `tokens_in`).
+    pub cached_tokens: Option<i64>,
+    /// The billed cost in USD, which replaces the catalog estimate.
+    pub cost_usd: Option<f64>,
+}
+
+/// Read [`ProviderUsage`] out of an OpenAI-wire `usage` block.
+pub fn provider_usage(usage: &Value) -> ProviderUsage {
+    ProviderUsage {
+        cached_tokens: usage["prompt_tokens_details"]["cached_tokens"].as_i64(),
+        cost_usd: usage["cost"].as_f64(),
+    }
+}
+
+/// [`record_call`] with what the provider reported about the call.
+#[allow(clippy::too_many_arguments)]
+pub fn record_call_reported(
+    telemetry: Option<&TelemetryClient>,
+    provider: &str,
+    model: &str,
+    tool: Option<&str>,
+    success: bool,
+    duration_ms: Option<i64>,
+    tokens_in: Option<i64>,
+    tokens_out: Option<i64>,
+    error_kind: Option<&str>,
+    error_text: Option<&str>,
+    usage: ProviderUsage,
+) {
     let cost = telemetry
         .and_then(|tc| {
-            tc.record_model_usage(
+            tc.record_model_usage_reported(
                 model,
                 Some(provider),
                 tool,
@@ -682,10 +730,13 @@ pub fn record_call(
                 tokens_out,
                 error_kind,
                 crate::ctx::current_owner_task().as_deref(),
+                usage.cached_tokens,
+                usage.cost_usd,
             )
             .ok()
         })
         .flatten()
+        .or(usage.cost_usd)
         .unwrap_or(0.0);
     let tokens = (tokens_in.unwrap_or(0).max(0) + tokens_out.unwrap_or(0).max(0)) as u64;
     book().record(
@@ -849,6 +900,28 @@ mod tests {
             error_text: text,
             ..call(provider, model)
         }
+    }
+
+    /// The usage block OpenRouter returned on 2026-11-05, verbatim but for the
+    /// numbers: cached tokens sit under `prompt_tokens_details`, the bill in `cost`.
+    #[test]
+    fn reads_cached_tokens_and_cost_from_an_openrouter_usage_block() {
+        let usage = json!({"prompt_tokens": 1900, "completion_tokens": 20, "total_tokens": 1920,
+            "cost": 0.0123, "is_byok": false,
+            "prompt_tokens_details": {"cached_tokens": 1500, "cache_write_tokens": 0,
+                "audio_tokens": 0, "video_tokens": 0},
+            "cost_details": {"upstream_inference_cost": 0},
+            "completion_tokens_details": {"reasoning_tokens": 20}});
+        assert_eq!(
+            provider_usage(&usage),
+            ProviderUsage {
+                cached_tokens: Some(1500),
+                cost_usd: Some(0.0123)
+            }
+        );
+        // Mistral's block has neither: the catalog estimate stands.
+        let plain = json!({"prompt_tokens": 5, "completion_tokens": 5});
+        assert_eq!(provider_usage(&plain), ProviderUsage::default());
     }
 
     #[test]

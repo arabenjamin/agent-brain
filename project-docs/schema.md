@@ -83,7 +83,9 @@ Per-invocation telemetry for every LLM call. Aggregated by `get_model_stats`.
 | `duration_ms` | INTEGER | — | Wall-clock latency |
 | `tokens_in` | INTEGER | — | Prompt tokens consumed |
 | `tokens_out` | INTEGER | — | Completion tokens generated |
-| `cost` | DOUBLE | — | Computed cost in USD (may be NULL) |
+| `cost` | DOUBLE | — | Cost in USD: the provider's billed amount when it states one (`cost_reported`), else tokens × the catalog's rates (may be NULL) |
+| `cached_tokens` | INTEGER | — | Prompt tokens the provider served from its cache, part of `tokens_in` (OpenRouter's `prompt_tokens_details.cached_tokens`). NULL when not reported and before 2026-11-05; Anthropic chat folds its cache into `tokens_in` instead |
+| `cost_reported` | BOOLEAN | — | `true` when `cost` is the provider's own figure (OpenRouter's `usage.cost`); NULL when it is the catalog estimate |
 | `error_kind` | TEXT | — | A notable failure class (`rate_limited`, …) |
 | `provider` | TEXT | — | Provider-registry name; NULL before 2026-09-13 |
 | `task_id` | TEXT | — | The Task that owned the call (a workflow run's record, `ctx::current_owner_task`); NULL on chat turns and before 2026-10-17. Joins cost to workflows (`workflow_scorecard` view) |

@@ -183,6 +183,7 @@ impl ProviderTurn for OpenAiTurn {
         let mut full_content = String::new();
         // Usage block (OpenAI-compat servers send it in the final chunk).
         let mut usage_tokens: (Option<i64>, Option<i64>) = (None, None);
+        let mut reported = agent_brain_llm::budget::ProviderUsage::default();
         // Tool call accumulator: index -> (call_id, name, accumulated_args,
         // extra fields). A delta with no `index` (Gemini) is keyed by its id.
         type Acc = (String, String, String, serde_json::Map<String, Value>);
@@ -234,6 +235,7 @@ impl ProviderTurn for OpenAiTurn {
                         chunk_json["usage"]["prompt_tokens"].as_i64(),
                         chunk_json["usage"]["completion_tokens"].as_i64(),
                     );
+                    reported = agent_brain_llm::budget::provider_usage(&chunk_json["usage"]);
                 }
 
                 let delta = &chunk_json["choices"][0]["delta"];
@@ -295,7 +297,7 @@ impl ProviderTurn for OpenAiTurn {
         // The response is fully read: free the provider slot before tools run.
         // A delegated sub-agent on this same provider would otherwise wait on it.
         drop(gate_permit);
-        svc.record_llm_call(
+        svc.record_llm_call_reported(
             &self.provider_label,
             &model,
             true,
@@ -303,6 +305,7 @@ impl ProviderTurn for OpenAiTurn {
             usage_tokens.0,
             usage_tokens.1,
             None,
+            reported,
         );
 
         self.extras.clear();

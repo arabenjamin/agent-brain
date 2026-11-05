@@ -155,6 +155,14 @@ impl TelemetryClient {
             -- workflow run's record), so cost is attributable per workflow.
             -- NULL on chat turns and on rows written before 2026-10-17.
             ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS task_id TEXT;
+            -- What the provider said about the call itself (2026-11-05): prompt
+            -- tokens it served from its cache (OpenRouter's
+            -- prompt_tokens_details.cached_tokens, part of tokens_in), and
+            -- whether `cost` is the provider's billed amount (true) or the
+            -- catalog estimate (NULL). Anthropic chat folds its cache into
+            -- tokens_in instead, so this stays NULL there.
+            ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS cached_tokens INTEGER;
+            ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS cost_reported BOOLEAN;
 
             CREATE TABLE IF NOT EXISTS search_usage (
                 id           TEXT PRIMARY KEY,
@@ -686,14 +694,51 @@ impl TelemetryClient {
         error_kind: Option<&str>,
         task_id: Option<&str>,
     ) -> Result<Option<f64>> {
+        self.record_model_usage_reported(
+            model_name,
+            provider,
+            tool_name,
+            success,
+            duration_ms,
+            tokens_in,
+            tokens_out,
+            error_kind,
+            task_id,
+            None,
+            None,
+        )
+    }
+
+    /// [`Self::record_model_usage`] with what the provider reported: prompt
+    /// tokens served from its cache, and the billed cost. A reported cost
+    /// replaces the catalog estimate, so the ledger and the spend caps follow
+    /// the bill (a cache discount, or a cheaper host than the catalog's).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_model_usage_reported(
+        &self,
+        model_name: &str,
+        provider: Option<&str>,
+        tool_name: Option<&str>,
+        success: bool,
+        duration_ms: Option<i64>,
+        tokens_in: Option<i64>,
+        tokens_out: Option<i64>,
+        error_kind: Option<&str>,
+        task_id: Option<&str>,
+        cached_tokens: Option<i64>,
+        reported_cost: Option<f64>,
+    ) -> Result<Option<f64>> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let id = uuid::Uuid::new_v4().to_string();
 
-        // Compute cost from registry per-1k rates when we have token counts.
-        let cost: Option<f64> = if tokens_in.is_some() || tokens_out.is_some() {
+        // The provider's billed cost when it gave one; else the registry's
+        // per-1k rates, when we have token counts.
+        let cost: Option<f64> = if reported_cost.is_some() {
+            reported_cost
+        } else if tokens_in.is_some() || tokens_out.is_some() {
             conn.query_row(
                 "SELECT cost_input, cost_output FROM model_registry
                  WHERE model = ? OR name = ? LIMIT 1",
@@ -715,8 +760,8 @@ impl TelemetryClient {
 
         conn.execute(
             "INSERT INTO model_usage
-             (id, model_name, provider, tool_name, success, duration_ms, tokens_in, tokens_out, cost, error_kind, task_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, model_name, provider, tool_name, success, duration_ms, tokens_in, tokens_out, cost, error_kind, task_id, cached_tokens, cost_reported)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 model_name,
@@ -728,7 +773,9 @@ impl TelemetryClient {
                 tokens_out,
                 cost,
                 error_kind,
-                task_id
+                task_id,
+                cached_tokens,
+                reported_cost.map(|_| true)
             ],
         )?;
         Ok(cost)
@@ -1901,6 +1948,57 @@ mod model_usage_task_tests {
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert_eq!(rows[0]["task_id"], serde_json::Value::Null);
         assert_eq!(rows[1]["task_id"], "task-1");
+    }
+
+    /// 2026-11-05: the ledger priced OpenRouter calls at the catalog's rate
+    /// while the bill ran lower (cache hits, cheaper hosts). A cost the
+    /// provider states wins, and the row says which kind it holds.
+    #[test]
+    fn a_reported_cost_replaces_the_catalog_estimate() {
+        let t = TelemetryClient::new(":memory:").unwrap();
+        t.upsert_model(
+            "m", "p", "m", 1000, 1.0, 1.0, "[]", None, None, None, None, None,
+        )
+        .unwrap();
+        let billed = t
+            .record_model_usage_reported(
+                "m",
+                Some("p"),
+                None,
+                true,
+                Some(1),
+                Some(1000),
+                Some(0),
+                None,
+                None,
+                Some(800),
+                Some(0.25),
+            )
+            .unwrap();
+        assert_eq!(billed, Some(0.25));
+        let estimated = t
+            .record_model_usage(
+                "m",
+                Some("p"),
+                None,
+                true,
+                Some(1),
+                Some(1000),
+                Some(0),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(estimated, Some(1.0), "no report keeps the catalog rate");
+        let rows = t
+            .query_raw(
+                "SELECT cached_tokens, cost_reported, cost FROM model_usage ORDER BY cost",
+                10,
+            )
+            .unwrap();
+        assert_eq!(rows[0]["cached_tokens"], 800);
+        assert_eq!(rows[0]["cost_reported"], true);
+        assert_eq!(rows[1]["cost_reported"], serde_json::Value::Null);
     }
 }
 

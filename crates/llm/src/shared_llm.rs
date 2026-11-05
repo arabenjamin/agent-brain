@@ -106,7 +106,8 @@ impl SharedLlm {
         // error text carries retry hints (Gemini's retryDelay) for cooldowns.
         let (tin, tout) = response_tokens(&result);
         let error_text = result.as_ref().err().map(std::string::ToString::to_string);
-        crate::budget::record_call(
+        let reported = result.as_ref().map(|r| r.reported).unwrap_or_default();
+        crate::budget::record_call_reported(
             self.telemetry.as_ref(),
             &provider_label,
             &model_name,
@@ -117,6 +118,7 @@ impl SharedLlm {
             tout,
             failure_kind(&result),
             error_text.as_deref(),
+            reported,
         );
         result
     }
@@ -562,6 +564,7 @@ mod tests {
             tokens_evaluated: None,
             tokens_in: None,
             tokens_out: None,
+            reported: Default::default(),
         })
     }
 

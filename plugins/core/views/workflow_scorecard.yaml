@@ -5,6 +5,9 @@
 # that day reads null, not zero). "reads" is the notes' access_count and
 # "cited" counts notes a claim points at (ASSERTED_IN, CORROBORATED_BY,
 # CONTRADICTED_BY): thin proxies for value, until the owner rates work.
+# `created` and `age_days` say how much of the window a workflow existed for:
+# a program review judged niche-scan "1 run in 30 days" on the day it was
+# created and filed two todos about it (2026-11-03).
 name: workflow_scorecard
 kind: cypher
 description: >-
@@ -42,6 +45,8 @@ cypher: |-
   OPTIONAL MATCH (n:Note) WHERE n.produced_by_task IN [r IN runs | r.id]
   WITH w, runs, collect(n) AS notes
   RETURN w.name AS workflow, w.kind AS kind, w.topic AS topic, w.enabled AS enabled,
+         toString(date(w.created_at)) AS created,
+         duration.inDays(w.created_at, datetime()).days AS age_days,
          size(runs) AS runs,
          size([r IN runs WHERE r.status IN ['completed', 'done']]) AS ok,
          size([r IN runs WHERE r.status IN ['failed', 'dead']]) AS failed,

@@ -17,6 +17,7 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tracing::{debug, warn};
 
 use super::{LlmProvider, LlmProviderError, ProviderConfig};
@@ -98,21 +99,15 @@ struct OaiMessage {
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
+    /// Kept raw: beyond the token counts it may carry the cached tokens and the
+    /// billed cost (OpenRouter), read by `budget::provider_usage`.
     #[serde(default)]
-    usage: Option<OaiUsage>,
+    usage: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
     message: OaiMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct OaiUsage {
-    #[serde(default)]
-    completion_tokens: u32,
-    #[serde(default)]
-    prompt_tokens: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -305,11 +300,23 @@ impl OpenAiCompatProvider {
             .map(|c| c.message.content)
             .unwrap_or_default();
 
-        let tokens_in = chat_res.usage.as_ref().map(|u| u.prompt_tokens);
-        let tokens_out = chat_res.usage.as_ref().map(|u| u.completion_tokens);
+        let count = |k: &str| {
+            chat_res
+                .usage
+                .as_ref()
+                .and_then(|u| u[k].as_u64())
+                .and_then(|n| u32::try_from(n).ok())
+        };
+        let (tokens_in, tokens_out) = (count("prompt_tokens"), count("completion_tokens"));
         let tokens = chat_res
             .usage
-            .map(|u| u.prompt_tokens + u.completion_tokens);
+            .as_ref()
+            .map(|_| tokens_in.unwrap_or(0) + tokens_out.unwrap_or(0));
+        let reported = chat_res
+            .usage
+            .as_ref()
+            .map(crate::budget::provider_usage)
+            .unwrap_or_default();
 
         Ok(LlmResponse {
             text,
@@ -317,6 +324,7 @@ impl OpenAiCompatProvider {
             tokens_evaluated: tokens,
             tokens_in,
             tokens_out,
+            reported,
         })
     }
 }

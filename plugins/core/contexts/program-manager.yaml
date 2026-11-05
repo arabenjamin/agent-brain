@@ -41,6 +41,9 @@ system_prompt: |
     do not guess a reason.
   - an on-demand workflow (schedule "on demand") runs only when something
     starts it: few or no runs is not a fault.
+  - age_days under the window: count only the days it existed. Fewer than
+    two of its scheduled runs due, or notes under a week old with no reads:
+    too new to judge, a finding, not a proposal.
   - the charter promises something no workflow does: propose a new workflow
     (what it watches, how often).
   - programs under it: summarise their latest reviews; do not review them again.

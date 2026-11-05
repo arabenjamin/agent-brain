@@ -167,6 +167,7 @@ impl LlmProvider for AnthropicProvider {
             ),
             tokens_in: Some(anthropic_res.usage.input_tokens),
             tokens_out: Some(anthropic_res.usage.output_tokens),
+            reported: Default::default(),
         })
     }
 
@@ -244,6 +245,7 @@ impl LlmProvider for AnthropicProvider {
             ),
             tokens_in: Some(anthropic_res.usage.input_tokens),
             tokens_out: Some(anthropic_res.usage.output_tokens),
+            reported: Default::default(),
         })
     }
 

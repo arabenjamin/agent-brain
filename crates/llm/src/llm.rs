@@ -281,6 +281,9 @@ pub struct LlmResponse {
 
     /// Completion/output tokens (if the provider reports them separately).
     pub tokens_out: Option<u32>,
+
+    /// Cached prompt tokens and billed cost, when the provider reports them.
+    pub reported: crate::budget::ProviderUsage,
 }
 
 /// LLM client for interacting with various providers.
