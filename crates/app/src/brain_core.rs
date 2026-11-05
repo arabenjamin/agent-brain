@@ -828,6 +828,7 @@ impl BrainCore {
                 %reason,
                 "The core plugin bundle did not load — check the volume mount or PLUGINS_DIR. Refusing to start."
             );
+            crate::logging::flush_error_tracking();
             std::process::exit(1);
         }
         // Source lists, media sources, MCP servers: ON CREATE only, so the
@@ -843,6 +844,7 @@ impl BrainCore {
             Ok(n) => info!(count = n, "Seeded workflows from the plugin bundles"),
             Err(e) => {
                 error!(error = %e, "Cannot seed workflows. Refusing to start.");
+                crate::logging::flush_error_tracking();
                 std::process::exit(1);
             }
         }

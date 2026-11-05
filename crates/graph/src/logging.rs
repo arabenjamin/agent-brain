@@ -7,6 +7,7 @@ use serde::Serialize;
 use tracing::Subscriber;
 use tracing_subscriber::{
     EnvFilter,
+    filter::LevelFilter,
     fmt::{self, format::FmtSpan},
     layer::{Context, Layer, SubscriberExt},
     registry::LookupSpan,
@@ -283,11 +284,34 @@ pub fn init(config: &LoggingConfig) {
     init_with_buffer(config, None);
 }
 
+/// Send panics and `ERROR` logs to the Sentry-protocol server in `SENTRY_DSN`;
+/// without it nothing is sent. Hold the guard until exit: dropping it flushes.
+pub fn init_error_tracking() -> sentry::ClientInitGuard {
+    let commit = std::env::var("BRAIN_GIT_COMMIT").ok();
+    sentry::init(sentry::ClientOptions::new().maybe_release(commit.filter(|c| !c.is_empty())))
+}
+
+/// `process::exit` drops no guard, so a fatal path sends its error first.
+pub fn flush_error_tracking() {
+    if let Some(client) = sentry::Hub::current().client() {
+        client.flush(Some(std::time::Duration::from_secs(2)));
+    }
+}
+
+fn error_tracking_layer<S>() -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    sentry::integrations::tracing::ErrorLayer::new().with_filter(LevelFilter::ERROR)
+}
+
 pub fn init_with_buffer(config: &LoggingConfig, buffer: Option<Arc<LogBuffer>>) {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.level));
 
-    let subscriber = tracing_subscriber::registry().with(env_filter);
+    let subscriber = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(error_tracking_layer());
 
     macro_rules! maybe_buffer {
         ($sub:expr) => {
@@ -335,6 +359,19 @@ mod tests {
             target: target.into(),
             message: msg.into(),
         }
+    }
+
+    #[test]
+    fn only_an_error_reaches_error_tracking() {
+        let subscriber = tracing_subscriber::registry().with(error_tracking_layer());
+        let events = sentry::test::with_captured_events(|| {
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::warn!("a warning stays in the log");
+                tracing::error!("an error is tracked");
+            });
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
     }
 
     #[test]

@@ -35,6 +35,7 @@ Copy `.env.example` to `.env` and configure:
 | `BRAIN_TIMEZONE` | *(falls back to `TZ`)* | Overrides `TZ` for the brain's own clock only, when the image's zone must differ from the brain's |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `LOG_FORMAT` | `pretty` | Log format (pretty/json) |
+| `SENTRY_DSN` | - | Where panics and `ERROR` logs go, on any Sentry-protocol server. Unset sends nothing. Error text can carry private content, so point it at a self-hosted server (`~/homelab/glitchtip`), not a cloud one |
 | `CHAT_DEFAULT_PROFILE` | `GeneralDefault-Orchrestator` | Context profile used when a chat request names none, and what a chat naming a profile that no longer exists runs as. **Compose sets `GeneralDefault-Orchrestator`** (the front door; the old 31-tool `general` was retired 2026-10-16). When set non-empty the chat path skips `auto_assign` entirely — see "The front door" below. Set empty to restore keyword routing |
 | `MCP_TOOL_PROFILE` | - | Bounds MCP `tools/list` to one profile's allowlist (`tools/call` is NOT filtered). **Compose sets `GeneralDefault-Orchrestator`** ⇒ 7 tools instead of ~42, which keeps a connecting client's context small. Any profile used here MUST include `run_agent`: `delegate` is chat-loop only and never registered, so without it the client has no dispatch path |
 | `MCP_TRANSPORT` | `stdio` | MCP transport type (stdio/http) |
