@@ -16,7 +16,6 @@ path = "src/main.rs"
 agent-brain-models = { path = "../models" }
 agent-brain-repository = { path = "../repository" }
 agent-brain-protocol = { path = "../protocol" }
-agent-brain-plugin-api = { path = "../plugin-api" }
 agent-brain-llm = { path = "../llm" }
 agent-brain-host = { path = "../host", default-features = false }
 agent-brain-api = { path = "../api", optional = true }
@@ -30,9 +29,6 @@ agent-brain-graph = { path = "../graph" }
 
 # Async runtime
 tokio = { workspace = true }
-
-# Neo4j graph database
-neo4rs = { workspace = true }
 
 # HTTP client
 reqwest = { workspace = true }
@@ -53,7 +49,6 @@ dotenvy = "0.15"
 
 # Logging
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -76,6 +71,8 @@ telemetry      = ["agent-brain-repository/telemetry"]
 default        = ["http-transport", "telemetry", "plugins"]
 
 [dev-dependencies]
+neo4rs = { workspace = true }
+tracing-subscriber = { workspace = true }
 serde_yaml = { workspace = true }
 
 [lints]

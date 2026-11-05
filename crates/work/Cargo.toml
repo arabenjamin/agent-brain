@@ -8,7 +8,6 @@ description = "Agent Brain's work layer: job queue, tool dispatch, workflows, pr
 agent-brain-models = { path = "../models" }
 agent-brain-repository = { path = "../repository" }
 agent-brain-protocol = { path = "../protocol" }
-agent-brain-plugin-api = { path = "../plugin-api" }
 agent-brain-llm = { path = "../llm" }
 agent-brain-graph = { path = "../graph" }
 agent-brain-knowledge = { path = "../knowledge" }
@@ -22,7 +21,6 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }

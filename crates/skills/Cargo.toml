@@ -15,17 +15,18 @@ agent-brain-work = { path = "../work" }
 agent-brain-scheduler = { path = "../scheduler" }
 agent-brain-chat = { path = "../chat" }
 agent-brain-retrieve = { path = "../retrieve" }
-anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 neo4rs = { workspace = true }
 regex = "1"
-reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
 
 [lints]
 workspace = true

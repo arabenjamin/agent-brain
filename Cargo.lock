@@ -28,7 +28,6 @@ dependencies = [
  "agent-brain-knowledge",
  "agent-brain-llm",
  "agent-brain-models",
- "agent-brain-plugin-api",
  "agent-brain-protocol",
  "agent-brain-repository",
  "agent-brain-retrieve",
@@ -61,7 +60,6 @@ dependencies = [
 name = "agent-brain-api"
 version = "0.1.0"
 dependencies = [
- "agent-brain-chat",
  "agent-brain-graph",
  "agent-brain-knowledge",
  "agent-brain-llm",
@@ -80,7 +78,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -92,7 +89,6 @@ dependencies = [
  "agent-brain-graph",
  "agent-brain-knowledge",
  "agent-brain-llm",
- "agent-brain-models",
  "agent-brain-protocol",
  "agent-brain-repository",
  "agent-brain-work",
@@ -107,7 +103,6 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "tracing",
- "uuid",
  "wiremock",
 ]
 
@@ -137,7 +132,6 @@ name = "agent-brain-graph"
 version = "0.1.0"
 dependencies = [
  "agent-brain-llm",
- "agent-brain-models",
  "agent-brain-repository",
  "anyhow",
  "async-trait",
@@ -221,7 +215,6 @@ name = "agent-brain-llm"
 version = "0.1.0"
 dependencies = [
  "agent-brain-engine",
- "agent-brain-models",
  "agent-brain-plugin-api",
  "agent-brain-repository",
  "anyhow",
@@ -365,8 +358,6 @@ version = "0.1.0"
 dependencies = [
  "agent-brain-plugin-api",
  "anyhow",
- "chrono",
- "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -425,7 +416,6 @@ name = "agent-brain-protocol"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "chrono",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -460,11 +450,9 @@ dependencies = [
  "agent-brain-graph",
  "agent-brain-knowledge",
  "agent-brain-llm",
- "agent-brain-models",
  "agent-brain-protocol",
  "agent-brain-repository",
  "agent-brain-work",
- "anyhow",
  "async-trait",
  "chrono",
  "neo4rs",
@@ -492,10 +480,8 @@ dependencies = [
  "agent-brain-repository",
  "agent-brain-work",
  "anyhow",
- "async-trait",
  "chrono",
  "neo4rs",
- "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -521,7 +507,6 @@ dependencies = [
  "chrono",
  "neo4rs",
  "regex",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
@@ -537,7 +522,6 @@ dependencies = [
  "agent-brain-knowledge",
  "agent-brain-llm",
  "agent-brain-models",
- "agent-brain-plugin-api",
  "agent-brain-protocol",
  "agent-brain-repository",
  "anyhow",
@@ -551,7 +535,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
  "tracing",
  "uuid",
