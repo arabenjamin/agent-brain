@@ -1,0 +1,25 @@
+{
+  "template": ".",
+  "commit": "63cfd751c9cb05781416b518223d6d5f30785d72",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "websocket",
+      "description": "WebSocket client (ws_connect, ws_send, ws_receive, ws_close): hold a live connection to a ws:// or wss:// endpoint across tool calls, for streaming feeds and push APIs that http_request cannot read.",
+      "kind": "rust",
+      "tools": "ws_close,ws_connect,ws_receive,ws_send",
+      "graph_labels": "",
+      "needs_env": "",
+      "__struct": "Websocket",
+      "__crate": "agent-brain-plugin-websocket",
+      "_template": ".",
+      "_commit": "63cfd751c9cb05781416b518223d6d5f30785d72"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}

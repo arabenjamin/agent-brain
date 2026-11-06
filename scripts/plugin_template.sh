@@ -13,11 +13,18 @@
 #     Bring the template's changes since the plugin's recorded commit into it
 #     (cruft's three-way update; a conflict is left marked for review).
 #
+#   scripts/plugin_template.sh link <name>
+#     Put a plugin built before the template on it (Phase 2 step 4): record
+#     its answers, read from its own files, in .cruft.json, and add the
+#     template's README.md if it has none. Changes none of its other files;
+#     `uvx ... cruft diff --project-dir plugins/<name>` then shows what differs.
+#
 #   scripts/plugin_template.sh check
 #     Fail when a stamped plugin is behind the template: templates/plugin
 #     changed after the commit its .cruft.json records. CI runs this. (cruft's
 #     own `check` compares commit hashes, so with the template in this repo
-#     every commit would flag every plugin.)
+#     every commit would flag every plugin.) Also fails on a bundle with no
+#     .cruft.json that is not in NOT_YET_LINKED.
 #
 # The template is this repo (".", with directory templates/plugin), so cruft
 # runs from the repo root and reads the template as committed: commit a
@@ -31,6 +38,12 @@ cruft() { uvx --quiet --from "cruft==$CRUFT_VERSION" --with "cookiecutter==$CC_V
 
 die() { echo "plugin_template: $*" >&2; exit 1; }
 
+# Bundles built before the template and not yet linked to it (Phase 2 step
+# 4). A bundle leaves this list in the commit that links it; a new one is
+# stamped. `core` is the brain's own bundle, not a plugin, and is never
+# stamped.
+NOT_YET_LINKED="alias-judge developer epistemics github harness maps media ml-lab osint-data reference research sandbox"
+
 # The template must be committed: cruft clones it from HEAD.
 template_committed() {
   git diff --quiet HEAD -- templates/plugin &&
@@ -39,7 +52,7 @@ template_committed() {
 }
 
 # cruft writes the template's absolute path; keep it "." so the file is the
-# same on every checkout.
+# same on every checkout. And mark the files that are the plugin's own.
 relative_template() {
   python3 - "$1/.cruft.json" <<'PYEOF'
 import json, sys
@@ -47,6 +60,9 @@ p = sys.argv[1]
 d = json.load(open(p))
 d["template"] = "."
 d["context"]["cookiecutter"]["_template"] = "."
+# The plugin's own once written: an update never patches these (a template
+# change to the skeleton tool would only conflict with the real one).
+d["skip"] = ["crate/src/skill.rs", "schemas/tools", "schemas/graph"]
 with open(p + ".new", "w") as f:
     f.write(json.dumps(d, indent=2) + "\n")
 import os
@@ -198,8 +214,63 @@ cmd_update() {
   checks "$name" "$(jq -r '.context.cookiecutter.__crate' "plugins/$name/.cruft.json")"
 }
 
+# A pre-template plugin's answers, from its own files: plugin.yaml's
+# description and requires.env, crate/ for the kind, the tools with a
+# schemas/tools file or an inline schema, and the labels its
+# schemas/graph/schema.cypher names.
+answers() {
+  python3 - "plugins/$1" <<'EOF'
+import json, os, re, sys
+import yaml
+d = sys.argv[1]
+y = yaml.safe_load(open(os.path.join(d, "plugin.yaml")))
+tools_dir = os.path.join(d, "schemas/tools")
+tools = [f[:-5] for f in os.listdir(tools_dir) if f.endswith(".json")] if os.path.isdir(tools_dir) else []
+# Tools whose schema is built in Rust from data: check_schemas.sh's INLINE_OK.
+for line in open("scripts/check_schemas.sh"):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) == 3 and parts[0].startswith(d + "/crate/"):
+        tools.append(parts[1])
+tools = sorted(set(tools))
+labels = []
+cy = os.path.join(d, "schemas/graph/schema.cypher")
+if os.path.isfile(cy):
+    for m in re.finditer(r"FOR \(\w+:(\w+)\)", open(cy).read()):
+        if m.group(1) not in labels:
+            labels.append(m.group(1))
+print(json.dumps({
+    "name": os.path.basename(d),
+    "description": " ".join(str(y.get("description", "")).split()).replace('"', "'"),
+    "kind": "rust" if os.path.isdir(os.path.join(d, "crate")) else "data",
+    "tools": ",".join(tools),
+    "graph_labels": ",".join(labels),
+    "needs_env": ",".join((y.get("requires") or {}).get("env") or []),
+}))
+EOF
+}
+
+cmd_link() {
+  local name=${1:-}
+  [ -n "$name" ] && [ -f "plugins/$name/plugin.yaml" ] || die "usage: link <name> (an existing plugin)"
+  [ ! -e "plugins/$name/.cruft.json" ] || die "plugins/$name is already on the template"
+  template_committed
+  local ctx tmp args=() kv
+  ctx=$(answers "$name")
+  cruft link . --directory templates/plugin --project-dir "plugins/$name" --no-input --extra-context "$ctx"
+  relative_template "plugins/$name"
+  if [ ! -e "plugins/$name/README.md" ]; then
+    while IFS= read -r kv; do args+=("$kv"); done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$ctx")
+    tmp=$(mktemp -d)
+    uvx --quiet --from "cookiecutter==$CC_VERSION" cookiecutter templates/plugin --no-input -o "$tmp" "${args[@]}"
+    cp "$tmp/$name/README.md" "plugins/$name/README.md"
+    rm -rf "$tmp"
+  fi
+  echo "linked plugins/$name: $(jq -c . <<<"$ctx")"
+  echo "next: edit plugins/$name/README.md's layout to its real modules; add the template's name test to crate/src/lib.rs; drop $name from NOT_YET_LINKED"
+}
+
 cmd_check() {
-  local f dir commit n=0 behind=()
+  local f dir commit n=0 behind=() b
   for f in $(git ls-files --cached --others --exclude-standard -- ':(glob)plugins/*/.cruft.json'); do
     n=$((n + 1))
     dir=$(dirname "$f")
@@ -210,16 +281,29 @@ cmd_check() {
       behind+=("$dir is behind templates/plugin (changed since ${commit:0:12}): scripts/plugin_template.sh update $(basename "$dir")")
     fi
   done
+  local pending=0
+  for b in plugins/*/; do
+    b=$(basename "$b")
+    [ "$b" = core ] && continue
+    [ -f "plugins/$b/plugin.yaml" ] || continue
+    if [[ " $NOT_YET_LINKED " == *" $b "* ]]; then
+      pending=$((pending + 1))
+      [ -f "plugins/$b/.cruft.json" ] && behind+=("plugins/$b is linked: drop it from NOT_YET_LINKED (scripts/plugin_template.sh)")
+    elif [ ! -f "plugins/$b/.cruft.json" ]; then
+      behind+=("plugins/$b has no .cruft.json: stamp it (scripts/plugin_template.sh new) or link it (link)")
+    fi
+  done
   if [ ${#behind[@]} -gt 0 ]; then
     printf '%s\n' "${behind[@]}" >&2
     exit 1
   fi
-  echo "plugin template: $n stamped plugins, all current with templates/plugin"
+  echo "plugin template: $n stamped plugins, all current with templates/plugin; $pending still to link"
 }
 
 case "${1:-}" in
   new) shift; cmd_new "$@" ;;
   update) shift; cmd_update "$@" ;;
+  link) shift; cmd_link "$@" ;;
   check) shift; cmd_check "$@" ;;
-  *) die "usage: $0 new|update|check (see the header)" ;;
+  *) die "usage: $0 new|update|link|check (see the header)" ;;
 esac

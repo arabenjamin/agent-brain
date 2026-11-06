@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 under way: the template, its script and its check built 2026-11-06; re-stamping the 13 plugins next.**
+built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 under way: the template, its script and its check built 2026-11-06; linking the 13 older plugins to it started the same day (websocket first).**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -408,6 +408,35 @@ keeping the plugin's own edit; a data plugin got only `plugin.yaml`,
 `README.md` and `.cruft.json`; `lookup`, `search_web`, `list_tasks` and
 `store_note` were each refused as taken. The Dockerfile edit was checked as
 text, not built.
+
+**Step 4, started 2026-11-06: link, don't re-stamp.** A plugin built before
+the template is put on it by `plugin_template.sh link <name>`. That reads its
+answers from its own files (plugin.yaml's description and env, the tools with
+a schema file or an inline one, the labels its graph file names), records them
+with `cruft link`, and adds the template's `README.md`. It changes no other
+file. Then by hand: the README's layout table lists the real modules, and
+`lib.rs` gets the template's `name_matches_plugin_yaml` test. `check` fails on
+a bundle with neither a `.cruft.json` nor a place in the script's
+`NOT_YET_LINKED`, which loses one name per commit. Two changes from the text
+above:
+- **No module or seed-directory renames.** Dev notes and history cite paths
+  such as `plugins/epistemics/crate/src/claims.rs`, and the seed kinds
+  (`sources-media`, `layers`) are read by the private bundle too. A rename
+  would break those for a name. The README's layout table says where each
+  thing is instead.
+- **What's the plugin's own is skipped by updates.** Every `.cruft.json`
+  (stamped or linked) lists `crate/src/skill.rs`, `schemas/tools` and
+  `schemas/graph` in cruft's `skip`. Once written they're the plugin's, and a
+  template change to the skeleton would only conflict. Tried in a scratch
+  clone: a template change to `skill.rs` and `README.md` reached the README
+  and left the linked plugin's `skill.rs` alone.
+
+The template's dispatch test (call every tool) isn't added to older plugins:
+called with no arguments, a real tool may go to the network.
+
+Linked: `websocket` (2026-11-06). Left: alias-judge, developer, epistemics,
+github, harness, maps, media, ml-lab, osint-data, reference, research,
+sandbox.
 
 Done when: a new plugin is one command, every plugin passes
 `plugin_template.sh check`, and none was hand-built.
