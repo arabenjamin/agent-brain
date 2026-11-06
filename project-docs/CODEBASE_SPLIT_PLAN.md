@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 steps 1–4 built 2026-11-06: the template, its script and its check, and all 13 older plugins linked to it. Left: step 5, the brain's own use.**
+built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 built 2026-11-06: the template, its script and its check, all 13 older plugins linked to it, and the brain's `scaffold_plugin`. Next: Phase 3.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -444,8 +444,49 @@ Linked 2026-11-06, in seven commits: `websocket`; the data plugins `github`,
 and `media`, one each. Each README was checked against its modules' doc
 comments and files; seven rows were wrong on the first draft and fixed.
 
+✅ **Step 5, built 2026-11-06: `scaffold_plugin`** (developer plugin,
+`crate/src/scaffold.rs`). It takes the template's answers and a `why`, and
+refuses early:
+- a bad answer: the template hook's own rules, checked again in Rust;
+- an answer holding `{`, `}` or `%`;
+- a bundle that already exists;
+- a tool name the brain already has (`(:ToolDef)`).
+
+Then it reads `templates/plugin` from the codebase and renders it in the
+Python sandbox. It stages the preview and `answers.json` under
+`scaffolds/<name>/` in the workspace, and files one Feed item (a proposal)
+with the command that applies it:
+`scripts/plugin_template.sh new --answers workspace/scaffolds/<name>/answers.json`.
+That re-renders from the same committed template, registers the plugin and
+runs the checks. The brain never writes the repo. The tool is offered only
+when the codebase, the workspace, `SANDBOX_URL`, the graph and the Feed are
+all there. It is in no agent's tool list yet; which agent gets it is the
+owner's call. Two things trying it found:
+- **Why the sandbox is needed, not only tidy.** cookiecutter renders every
+  answer as Jinja, so a model-written description holding `{{ … }}` would
+  run Python wherever it's rendered. The answers are refused for those
+  characters on both paths (`scaffold_plugin` and `plugin_template.sh new`),
+  and the render runs where there's no network and no secret.
+- **cookiecutter can't start its hooks in the sandbox.** The sandbox caps
+  processes per uid (`RLIMIT_NPROC` 64), and the count includes the host's
+  own processes under uid 1000 (about 2,000 threads), so starting any child
+  process fails with `EAGAIN`. The render runs the two hooks in its own
+  process instead, by replacing cookiecutter 2.7.1's `run_script`. The same
+  limit means `execute_code` can never start a subprocess: a separate
+  finding, left for the owner.
+
+The sandbox image gains `cookiecutter==2.7.1`, at build time like its other
+libraries. Tried offline in a throwaway copy of that image (no network,
+read-only, `noexec` tmp, the server's own limits):
+- a Rust plugin with two tools, a label and an env var rendered its 8 files;
+- a data plugin rendered `plugin.yaml` and `README.md`;
+- a bad name was refused by the template's hook, with its message.
+
+Separately, `new --answers` applied a staged data draft in a scratch clone
+and passed every check.
+
 Done when: a new plugin is one command, every plugin passes
-`plugin_template.sh check`, and none was hand-built.
+`plugin_template.sh check`, and none was hand-built. ✅ All three hold.
 
 ### Phase 3: shrink core: remove, then move into plugins
 

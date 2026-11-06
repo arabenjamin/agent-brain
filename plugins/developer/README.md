@@ -19,8 +19,9 @@ template change in as a diff to review.
 | `crate/src/dev_notes.rs` | `(:DevNote)`: the store, seeded from `devdocs/devnotes.jsonl` when the graph has none, and rewriting that file on every write |
 | `crate/src/arch.rs` | the living architecture: the inventory computed from what the brain knows about itself, and snapshots and their diffs |
 | `crate/src/snapshot.rs` | `snapshot_architecture` (deterministic, no model) |
+| `crate/src/scaffold.rs` | `scaffold_plugin`: a new plugin drafted from `templates/plugin`, rendered in the offline Python sandbox (`SANDBOX_URL`), staged under the workspace's `scaffolds/`, proposed in the Feed |
 | `crate/src/routes.rs` | `GET /api/plugins/developer/architecture`, the System → Architecture view |
-| `schemas/tools/` | the ten tools' input schemas |
+| `schemas/tools/` | the eleven tools' input schemas |
 | `schemas/graph/schema.cypher` | `ArchSnapshot` and `DevNote`: constraints, the dev notes' vector and full-text indexes |
 | `workflows/brain-api-sync.yaml` | weekly: an architecture snapshot, then the brain's API docs kept current |
 | `workflows/capability-mining.yaml` | weekly: failing tasks grouped by capability, reasoned into workflow, plugin or skill candidates (a reflection note) |

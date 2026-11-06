@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The bundle's name: lowercase words joined by '-' (e.g. rail-watch), at most 40 characters, not an existing bundle."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["rust", "data"],
+      "description": "data: seeds only (workflows, agents, views) using the brain's tools. rust: also a crate with tools."
+    },
+    "description": {
+      "type": "string",
+      "description": "What it does, one line, at most 300 characters, no double quotes and no '{', '}' or '%'."
+    },
+    "tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "rust only: the tools it will offer, snake_case, none the brain already has."
+    },
+    "graph_labels": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "rust only: the graph labels it owns, PascalCase; each gets an id constraint."
+    },
+    "needs_env": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "The env vars it needs to load (an API key), UPPER_SNAKE_CASE."
+    },
+    "why": {
+      "type": "string",
+      "description": "Why the brain needs this plugin, and the proposal or todo it serves: the first thing the owner reads."
+    }
+  },
+  "required": ["name", "kind", "description", "why"],
+  "additionalProperties": false
+}

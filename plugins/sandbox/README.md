@@ -14,7 +14,7 @@ template change in as a diff to review.
 | `plugin.yaml` | name, version, description |
 | `crate/src/lib.rs` | the `Plugin` impl (`Sandbox`) |
 | `crate/src/skill.rs` | `execute_code`, the client for the two sandboxes; its schema is built in Rust from the sandboxes configured |
-| `python/` | the Python sandbox's image and server |
+| `python/` | the Python sandbox's image and server; the image also holds cookiecutter, for the developer plugin's `scaffold_plugin` |
 | `rust/` | the Rust sandbox's image and server; `crates/Cargo.toml` lists the crates fetched into the image, since it runs offline |
 
 The isolation contract (an internal network with no egress, no `ports:`) is in `docker-compose.yml`; a failed run is a successful tool call.

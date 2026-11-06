@@ -24,6 +24,7 @@ mod codebase;
 mod dev_docs;
 mod dev_notes;
 mod routes;
+mod scaffold;
 mod snapshot;
 
 pub struct Developer;
@@ -45,6 +46,9 @@ impl Plugin for Developer {
         }
         if let Some(notes) = dev_notes(ctx) {
             skills.push(Arc::new(dev_docs::DevDocsSkill::new(notes)));
+        }
+        if let Some(s) = scaffold::ScaffoldSkill::new(ctx) {
+            skills.push(Arc::new(s));
         }
         skills
     }

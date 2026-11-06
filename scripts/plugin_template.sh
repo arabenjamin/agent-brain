@@ -5,6 +5,8 @@
 #
 #   scripts/plugin_template.sh new <name> --kind rust|data --description "..."
 #       [--tools a_tool,b_tool] [--graph-labels Thing,Other] [--env KEY,URL]
+#   scripts/plugin_template.sh new --answers workspace/scaffolds/<name>/answers.json
+#     (the second applies a draft the brain staged with scaffold_plugin)
 #     Stamp plugins/<name>, register a Rust one with the host (crates/host
 #     Cargo.toml and plugins.rs, the Dockerfile's dependency stage), format,
 #     and run its tests and the repo checks. Leaves everything unstaged.
@@ -151,9 +153,23 @@ checks() {
 }
 
 cmd_new() {
-  local name=${1:-} kind="" description="" tools="" labels="" env=""
-  [ -n "$name" ] || die "usage: new <name> --kind rust|data --description \"...\" [--tools a,b] [--graph-labels A,B] [--env K,V]"
-  shift
+  local name="" kind="" description="" tools="" labels="" env="" answers=""
+  if [ "${1:-}" = --answers ]; then
+    # A draft the brain staged (scaffold_plugin): its answers.json.
+    answers=${2:-}
+    [ -f "$answers" ] || die "--answers needs the draft's answers.json"
+    name=$(jq -r '.name // ""' "$answers")
+    kind=$(jq -r '.kind // ""' "$answers")
+    description=$(jq -r '.description // ""' "$answers")
+    tools=$(jq -r '.tools // ""' "$answers")
+    labels=$(jq -r '.graph_labels // ""' "$answers")
+    env=$(jq -r '.needs_env // ""' "$answers")
+    set --
+  else
+    name=${1:-}
+    [ -n "$name" ] || die "usage: new <name> --kind rust|data --description \"...\" [--tools a,b] [--graph-labels A,B] [--env K,V], or new --answers <answers.json>"
+    shift
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --kind) kind=$2; shift 2 ;;
@@ -166,6 +182,11 @@ cmd_new() {
   done
   [ "$kind" = rust ] || [ "$kind" = data ] || die "--kind rust or data"
   [ -n "$description" ] || die "--description is required"
+  # cookiecutter renders every answer as Jinja: one holding these would be
+  # evaluated, not copied.
+  case "$name$kind$description$tools$labels$env" in
+    *[{}%]*) die "no answer may hold '{', '}' or '%' (the template renders answers)" ;;
+  esac
   [ ! -e "plugins/$name" ] || die "plugins/$name exists"
   local t
   for t in ${tools//,/ }; do

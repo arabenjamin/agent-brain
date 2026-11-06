@@ -8,13 +8,17 @@ FROM python:3.13-slim
 # Compute libraries submitted code may import. sympy is the one that matters
 # most: symbolic algebra is where a language model's prose arithmetic fails
 # worst and an exact solver wins outright. scipy and scikit-learn are the
-# ML Lab's lesson exercises and optimizers (ML_LAB_PLAN.md).
+# ML Lab's lesson exercises and optimizers (ML_LAB_PLAN.md). cookiecutter
+# renders the plugin template for the developer plugin's scaffold_plugin
+# (CODEBASE_SPLIT_PLAN Phase 2 step 5): here because it evaluates answers a
+# model wrote as Jinja, and this is the place with no network and no secrets.
 RUN pip install --no-cache-dir \
         numpy==2.2.1 \
         sympy==1.13.3 \
         pandas==2.2.3 \
         scipy==1.15.1 \
-        scikit-learn==1.6.1
+        scikit-learn==1.6.1 \
+        cookiecutter==2.7.1
 
 RUN useradd -m -u 1000 sandbox
 
