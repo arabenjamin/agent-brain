@@ -58,6 +58,10 @@ struct SourceEntry {
     description: Option<String>,
     #[serde(default = "yes")]
     active: bool,
+    /// The source's tier (SOURCE_QUALITY_PLAN.md § 3a). Seeded on create only;
+    /// a later change is the owner's, through `manage_media_source` retype.
+    #[serde(default)]
+    source_type: Option<String>,
 }
 
 fn yes() -> bool {
@@ -86,6 +90,17 @@ fn parse_group(text: &str) -> Result<SourceGroupFile, String> {
             "source kind '{}' is not one of {}",
             s.kind,
             SOURCE_KINDS.join(", ")
+        ));
+    }
+    if let Some(t) = g
+        .sources
+        .iter()
+        .filter_map(|s| s.source_type.as_deref())
+        .find(|t| !store::SOURCE_TYPES.contains(t))
+    {
+        return Err(format!(
+            "source_type '{t}' is not one of {}",
+            store::SOURCE_TYPES.join(", ")
         ));
     }
     Ok(g)
@@ -151,6 +166,7 @@ impl Plugin for Media {
                         &s.reference,
                         &description,
                         s.active,
+                        s.source_type.as_deref(),
                         &plugin,
                     )
                     .await
@@ -216,5 +232,13 @@ mod tests {
                 .check_seed("sources-media", "name: x\nsources: []\n")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn check_seed_takes_known_source_types_only() {
+        let ok = "name: x\nsources:\n  - kind: article_rss\n    ref: https://a/rss\n    source_type: primary\n";
+        assert!(parse_group(ok).is_ok());
+        let bad = "name: x\nsources:\n  - kind: article_rss\n    ref: https://a/rss\n    source_type: gospel\n";
+        assert!(parse_group(bad).unwrap_err().contains("gospel"));
     }
 }

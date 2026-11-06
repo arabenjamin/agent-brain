@@ -605,6 +605,7 @@ pub const REWRITE_SOURCE_CHARS: usize = 12_000;
 pub const REWRITE_SYSTEM: &str = "You make extracted claims understandable on their own, using only what the source says. You never judge them.";
 
 /// Persist an extracted claim and link it to the note it was asserted in.
+#[allow(clippy::too_many_arguments)]
 pub async fn store_claim(
     neo4j: &Db,
     claim: &ExtractedClaim,
@@ -613,6 +614,7 @@ pub async fn store_claim(
     embedding: Option<Vec<f32>>,
     source: &SourceRef,
     produced_by_task: Option<String>,
+    source_type: Option<&str>,
 ) -> Result<String> {
     let id = Uuid::new_v4().to_string();
     // A claim is dated when it is extracted (no caller ever passed a date).
@@ -626,13 +628,14 @@ pub async fn store_claim(
          source_url: $source_url, source_title: $source_title, source_outlet: $source_outlet, \
          standalone_checked_at: datetime($ts), \
          source_context: $source_context, provenance: 'synthesis_inference', \
-         produced_by_task: $produced_by_task, \
+         produced_by_task: $produced_by_task, source_type: $source_type, \
          created_at: datetime($ts), last_accessed_at: datetime($ts), access_count: 0, \
          next_review_at: datetime($ts) + duration({days: 1}), review_interval_days: 1, \
          embedding: $embedding})",
     )
     .param("id", id.clone())
     .param("produced_by_task", produced_by_task)
+    .param("source_type", source_type.map(str::to_string))
     .param("content", claim.claim.as_str())
     .param("asserted_by", claim.asserted_by.clone().unwrap_or_default())
     .param(
@@ -1720,6 +1723,11 @@ pub const UNVERIFIABLE_KINDS: [&str; 3] = ["opinion", "prediction", "hypothetica
 /// week's 584 new claims had been attempted — the sweep was working through
 /// August while the claims anyone might ask about went unchecked. A claim about
 /// current events is worth checking while it is current.
+///
+/// Within each of those, a claim from a low tier (`analysis`, or a
+/// `commentary` sample) goes before one from `reporting`, and `primary` last
+/// (SOURCE_QUALITY_PLAN.md § 3a, use 4): it is the one most likely to need it.
+/// A claim with no tier (news briefs, monitors) ranks with `reporting`.
 pub async fn unverified_claims(neo4j: &Db, limit: usize) -> Result<Vec<(String, String)>> {
     let rows = neo4j
         .execute(
@@ -1730,6 +1738,8 @@ pub async fn unverified_claims(neo4j: &Db, limit: usize) -> Result<Vec<(String, 
                    AND c.verify_skipped IS NULL \
                  RETURN c.id AS id, c.content AS content \
                  ORDER BY CASE WHEN c.last_verify_attempt_at IS NULL THEN 0 ELSE 1 END ASC, \
+                          CASE c.source_type WHEN 'commentary' THEN 0 WHEN 'analysis' THEN 0 \
+                                             WHEN 'primary' THEN 2 ELSE 1 END ASC, \
                           CASE WHEN c.last_verify_attempt_at IS NULL THEN c.created_at END DESC, \
                           c.last_verify_attempt_at ASC \
                  LIMIT $limit",

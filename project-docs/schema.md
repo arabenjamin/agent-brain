@@ -221,6 +221,7 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `topics_at` | DateTime? | Native `DATETIME`, UTC — when it was last classified |
 | `topics_failed` | Integer? | Classification failures; at 3 the assigner leaves the note alone (counted as `failed`) |
 | `provenance` | String | Who chose the words: `user_input` (a person: the HBI, an outside MCP client's call), `synthesis_inference` (a model: every queue job, chat turn and sub-agent), `system_record` (the brain's own code: scheduler dispatches, claim evidence, code-version notes), `core_training`. Decided by the caller (`knowledge::effective_provenance`): the brain's own work cannot claim `user_input`. Shown to the model by recall |
+| `source_type` | String? | The tier of the channel or feed a learning note came from (`primary`, `reporting`, `analysis`, `commentary`; SOURCE_QUALITY_PLAN.md § 3a), set by `claim` extract on its source note from 2026-11-05. On a claim: the tier it was extracted under, kept when the source is later re-tiered. The verification sweep takes low tiers first |
 | `produced_by_task` | String? | The Task that owned the job that wrote it (`__owner_task_id`; for a schedule, its run-record task). Set on every note written inside a job from 2026-10-09, including claims and notes written inside a `run_agent` loop |
 | `provenance_was` / `provenance_relabelled_at` | String? / DateTime? | Set by `scripts/fix_note_provenance.cypher` (2026-10-08) on the 12,269 notes it relabelled: the old value (`none` when there was none) |
 
@@ -604,6 +605,21 @@ One paid Parallel Task run started by `deep_research` (the `research` plugin, `p
 | `source_count` | Integer? | All cited sources |
 | `error` | String? | Why it failed |
 
+#### `MediaSource` (media plugin)
+
+A watched channel or feed (`plugins/media/crate/src/store.rs`): `name` (unique), `kind`, `ref`, `description`, `active`, `managed_by`, `plugin`, `created_at`, `updated_at`, plus:
+
+| Property | Type | Description |
+|---|---|---|
+| `source_type` | String? | Its tier: `primary` \| `reporting` \| `analysis` \| `commentary`. Unset counts as `commentary`. Sets how many claims each item yields (`limits_by_type` in `video-learning` / `article-learning`). Changed only by `manage_media_source` retype, an owner request |
+| `source_type_since` | DateTime? | When the current tier was set |
+
+`(:Media)-[:FROM_SOURCE]->(:MediaSource)` links an item to it.
+
+#### `SourceTypeChange` (media plugin)
+
+One change of a `MediaSource`'s tier, kept so a source's trust can move over time without losing what it was (owner, 2026-11-05): `from` (`""` when unset), `to`, `at`, `by`, `reason`. Linked `(:MediaSource)-[:RETYPED]->(:SourceTypeChange)`; `manage_media_source` history lists them.
+
 #### `RemovedTool`
 
 A tombstone for a tool the brain no longer has (`services/self_model.rs`). Written at startup when a `:ToolDef` vanishes from the registry, annotated from `architecture/removed-tools.yaml`, and deleted if the tool is registered again. `list_capabilities(kind=tools)` lists them under `removed`.
@@ -649,6 +665,8 @@ One node, `{id: 'scheduler'}`: the scheduler's last tick, so the HBI shows when 
 | `UNDER` | `(Program)→(Program)` | — | A program's parent, derived from `Program.parent` |
 | `OWNS` | `(Program)→(Workflow)` | — | A program's workflows, derived from `Program.workflows` |
 | `DERIVED_FROM` | `(Note{inference})→(Note)` | — | Inference note citing its source notes |
+| `FROM_SOURCE` | `(Media)→(MediaSource)` | — | The watched channel or feed an item came from |
+| `RETYPED` | `(MediaSource)→(SourceTypeChange)` | — | A change of the source's tier |
 | `SUBTASK_OF` | `(Task)→(Task)` | — | Sub-task of a parent task |
 | `DEPENDS_ON` | `(Task)→(Task)` | — | Task ordering dependency |
 

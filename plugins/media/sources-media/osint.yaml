@@ -17,31 +17,39 @@ sources:
     kind: article_rss
     ref: https://www.bellingcat.com/feed/
     description: Bellingcat — open-source investigations with published methods.
+    source_type: reporting
   - name: c4ads
     kind: article_rss
     ref: https://c4ads.org/feed/
     description: C4ADS — illicit networks, sanctions evasion, supply chains.
+    source_type: reporting
   - name: citizen-lab
     kind: article_rss
     ref: https://citizenlab.ca/feed/
     description: The Citizen Lab (University of Toronto) — spyware and digital espionage forensics.
+    source_type: primary
   - name: dfrlab
     kind: article_rss
     ref: https://dfrlab.org/feed/
     description: DFRLab (Atlantic Council) — influence operations and disinformation. NATO-aligned institution.
+    source_type: analysis
   - name: 38-north
     kind: article_rss
     ref: https://www.38north.org/feed/
     description: 38 North (Stimson Center) — North Korea, including satellite-imagery analysis.
+    source_type: analysis
   - name: occrp
     kind: article_rss
     ref: https://www.occrp.org/en/feed
     description: OCCRP — organized crime and corruption investigations. High-volume feed.
+    source_type: reporting
   - name: icij
     kind: article_rss
     ref: https://www.icij.org/feed/
     description: ICIJ — cross-border leak investigations.
+    source_type: reporting
   - name: the-record
     kind: article_rss
     ref: https://therecord.media/feed
     description: The Record — cyber and intelligence news. Owned by Recorded Future, a threat-intel vendor.
+    source_type: reporting

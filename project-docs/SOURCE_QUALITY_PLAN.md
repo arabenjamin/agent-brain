@@ -1,6 +1,8 @@
 # Source Quality Plan — the graph is only as good as what enters it
 
-**Status: Phase 0 done (2026-10-06); Phases 1–5 planned, nothing built.**
+**Status: Phase 0 done (2026-10-06). Source tiers set by the owner (§ 3a) and
+Phase 1 built and staged (2026-11-05): channel tiers, extraction per tier,
+re-tiering with history. Next: the re-rank proposal, with Phase 5.**
 
 The model and the code decide how well the brain reasons over its knowledge.
 They cannot fix knowledge that came from the wrong place. This plan is about
@@ -67,6 +69,43 @@ from vetted knowledge.
    rule, a release note or a paper is the thing itself; news is someone's
    account of it.
 
+## 3a. Source tiers (owner, 2026-11-05)
+
+From most to least trusted to assert a fact:
+
+1. **`primary`**: peer-reviewed work or the primary record, i.e. a paper, filing,
+   rule, court record, release note, or the proceedings themselves.
+2. **`reporting`**: original reporting by an outlet with editors and named sources.
+3. **`reference`**: a tertiary summary such as Wikipedia. It's good for orienting
+   and pointing to sources, but it isn't evidence on its own.
+4. **`analysis`** and **`commentary`** (one tier): secondary synthesis, opinion,
+   interviews, entertainment. `analysis` is careful secondary work; `commentary`
+   is someone's argument. They differ only in claim extraction (Phase 1).
+5. **`platform`**: a post on a user platform (Reddit, X, Medium, a press-release
+   wire). It isn't a source, per Principle 3 and the existing `platforms` list.
+
+A tier is stated in the data, never inferred by a model (Principle 4). It has
+four uses:
+
+1. **Retrieval ordering.** Within otherwise equal results, the higher tier
+   ranks first, and every retrieved note shows its tier.
+2. **Corroboration needs a source above commentary.** Evidence that is only
+   `analysis`, `commentary` or `platform` can't make a claim `corroborated`.
+   Measured 2026-11-05: 1 of 1,192 corroborated claims rests only on platforms or
+   Wikipedia, so the tightening costs almost nothing. The real gap is the 433
+   that rest only on *unclassified* domains, which means classifying domains,
+   not channels.
+3. **Notes carry their source type**, from the `:MediaSource` for media and from
+   the domain's class for web evidence.
+4. **Low-tier claims are verified first.** A claim from `analysis` gets
+   verification priority over one from `reporting`, because it is the one most
+   likely to need it.
+5. **A low tier is a lead to a higher one** (owner, todo 8f672eb1). A Wikipedia
+   article, a commentary video or a platform post is read for what it cites:
+   follow its links and references to the paper, filing or report, and store
+   and cite that instead. The verifier does the same with low-tier evidence
+   before it counts it.
+
 ## 3. Phases
 
 ### Phase 0 — Vetted lists for the standing monitors ✅ (2026-10-06)
@@ -80,27 +119,98 @@ Currents/Webz out of the default ladder; GDELT retired; ACLED parked. Verified
 by a live tripwire run: every result from a vetted list, report specific and
 appropriately sceptical.
 
-### Phase 1 — Extraction proportional to source type (largest lever)
+### Phase 1 — Extraction proportional to source type (largest lever) — built 2026-11-05, staged
 
 Problem: commentary, interviews and comedy assert as loudly as reporting, and
 swamp verification.
 
-1. Add `source_type` to `:MediaSource` (and the `sources-media/*.yaml` schema):
-   `reporting` | `primary` | `analysis` | `commentary` | `interview` |
-   `entertainment`. Unset = `commentary` (the conservative default).
-2. Draft a tag for each of the 15 YouTube channels and 8 article feeds, with a
-   one-line reason, **for the user to review** — the watchlist is user-curated
-   and the tags are judgement calls (e.g. C-SPAN = primary, 60 Minutes =
-   reporting, Hasan Minhaj = entertainment, Julian Dorey = interview).
-3. Per type, in `workflows/video-learning.yaml` / `workflows/article-learning.yaml`:
-   `reporting`/`primary` keep claim extraction (3/2); `analysis` 1;
-   `commentary`/`interview`/`entertainment` 0 — still summarised and stored as
-   `source_record`, so nothing is lost, but no claims enter the verification
-   queue. The chain reads the type from the `:Media`→`:MediaSource` link.
-4. Carry `source_type` into the `source_record` label so retrieval shows it.
+1. ✅ `source_type` on `:MediaSource` and in the `sources-media/*.yaml` schema,
+   using the tier names in § 3a: `primary` | `reporting` | `analysis` |
+   `commentary`. (`reference` and `platform` describe web pages, not channels.)
+   Interviews and entertainment are `commentary`: what a guest or a comedian
+   says is that person's claim, and nobody vetted it. Unset = `commentary`, the
+   conservative default, and that includes a chat hand-off of a video from a
+   channel the watchlist doesn't have.
+2. ✅ Tags, decided by the owner on 2026-11-05. They are applied by
+   `scripts/apply_source_types_2026-11-05.cypher` (run after the deploy) and are
+   in the shipped seed files for a fresh install. Items = items ingested in the
+   last 30 days.
 
-Done when: the share of new claims from commentary/interview/entertainment is
-near zero, and the verification attempt rate for new claims rises above 50%.
+   | Source | Kind | Items | Type | Why |
+   |---|---|---|---|---|
+   | c-span | video | 78 | `primary` | The proceedings themselves. Each claim is attributed to its speaker, so a senator's statement is checked as the senator's claim. |
+   | citizen-lab | article | 14 | `primary` | Forensic research reports with published evidence: the finding itself, not someone's account of it (owner). |
+   | 60-minutes | video | 77 | `reporting` | Original investigative reporting with named sources. |
+   | vice-news | video | 8 | `reporting` | Documentary field reporting. |
+   | the-record | article | 82 | `reporting` | Cyber and intel news with its own reporters. Owned by Recorded Future, a threat-intel vendor, so its stories about Recorded Future research aren't independent. |
+   | occrp | article | 79 | `reporting` | Investigations built on documents and published sources. |
+   | icij | article | 0 | `reporting` | Cross-border leak investigations. |
+   | bellingcat | article | 15 | `reporting` | Open-source investigations with published methods. |
+   | c4ads | article | 0 | `reporting` | Data-driven investigations of illicit networks. |
+   | louis-rossmann | video | 32 | `analysis` | Open-source journalism that is also commentary (owner): placed between the two. |
+   | channel-5 | video | 21 | `analysis` | Open-source field journalism that is also commentary (owner): placed between the two. |
+   | cappy-army | video | 40 | `analysis` | Military analysis from public reporting and imagery. |
+   | johnny-harris | video | 2 | `analysis` | Explainer journalism that synthesises others' reporting. |
+   | two-minute-papers | video | 6 | `analysis` | Summaries of papers. The paper itself is primary, and arXiv is registered. |
+   | andrej-karpathy | video | 0 | `analysis` | A practitioner teaching from his own work. |
+   | dfrlab | article | 11 | `analysis` | Think-tank research on influence operations. NATO-aligned (Atlantic Council). |
+   | 38-north | article | 1 | `analysis` | Think-tank analysis, including satellite imagery (Stimson Center). |
+   | news-nation | video | 80 | `commentary` | Mostly commentary (owner): opinion-hour clips. |
+   | adam-kinzinger | video | 66 | `commentary` | A former politician's opinion. |
+   | hasan-minhaj | video | 29 | `commentary` | Political comedy. |
+   | julian-dorey | video | 18 | `commentary` | Long-form interview podcast. Guests' claims aren't vetted. |
+   | ibm-technology | video | 33 | `commentary` | Vendor explainers restating general knowledge. |
+   | deep-learning-ai | video | 9 | `commentary` | Course and explainer content. |
+
+   The inactive sources with no items (elastic, clevercast, air-io, intellipaat,
+   data-school, machine-learning-street-talk, fireship, ken-jee,
+   traversy-media, linking-your-thinking, lex-fridman,
+   learning-from-machine-learning) stay unset. Some video `:Media` has no
+   `FROM_SOURCE` link (Julian Dorey 7, plus one-offs from arXiv, Reuters and
+   PBS), so it reads as unset.
+
+   Effect, estimated from these item counts at today's per-item rates: about
+   1,900 new claims every 30 days falls to about 1,030 (489 from
+   `primary`/`reporting` video, 380 from articles, 113 from `analysis`, and
+   about 47 from the commentary sample). That is well under the verifier's
+   ~2,400 per 30 days, against 13% of claims attempted on 2026-10-06.
+3. ✅ Per type, `claim` extract takes `source_type` (from `ingest_media` /
+   `ingest_article`, which read it through `:Media`→`:MediaSource`) and
+   `limits_by_type` from the workflow. `video-learning`: primary/reporting 3,
+   analysis 1, commentary 0. `article-learning`: 2, 1, 0. A commentary item is
+   still summarised and stored as a `source_record`, so nothing is lost, but
+   only a sample of its claims enters verification: `probe_every: 5` gives one
+   claim from every fifth item, picked by a stable hash of the note. That
+   sample keeps a track record growing for the re-ranking in step 5. Each claim
+   stores the tier it was extracted under (`claim.source_type`), as does its
+   source note.
+4. Show `source_type` in the `source_record` label in retrieval (§ 3a, use 1).
+   **Not built.** The notes carry it now; the label doesn't read it yet.
+5. **Re-ranking as we watch** (owner, 2026-11-05: "There was a time when I had
+   more trust for various outlets… as things change, so does the
+   trustworthiness of the outlet"). A tier is a judgement at a date, not a
+   fixed fact.
+   - ✅ **History is kept.** `manage_media_source` retype changes a tier, needs
+     a reason, runs only on the owner's request, and writes a dated
+     `(:MediaSource)-[:RETYPED]->(:SourceTypeChange {from, to, at, by,
+     reason})`; `history` lists them. A claim keeps the tier it was extracted
+     under, so a source that falls from `reporting` doesn't recast its old
+     claims, and its record can be read by period.
+   - ✅ **Every tier keeps a record.** Commentary yields its 1-in-5 sample;
+     analysis yields 1 an item.
+   - **The proposal** (built with Phase 5's `source-review`, not yet): per
+     source and per tier period, claims attempted, corroborated, contested and
+     owner-confirmed refuted over the last 90 days. When a source's record
+     diverges from its tier, the review files a Feed item proposing a move,
+     with the numbers. Examples: a `reporting` source with owner-confirmed
+     refutations, or corroborating well below its tier's median; or a
+     `commentary` source whose sample corroborates like reporting. The owner
+     answers in the item, and the front door calls retype. Nothing re-ranks
+     itself. Thresholds are set from the first month of tiered claims, not
+     guessed now.
+
+Done when: the share of new claims from commentary is near the 1-in-5 sample,
+and the verification attempt rate for new claims rises above 50%.
 
 ### Phase 2 — Topic → SourceList routing for every search
 
@@ -164,6 +274,8 @@ What surfaced Webz was a question from the user. Make it routine:
 2. Stated, not inferred (Principle 4): every judgement in the report is computed
    in the tool; the local model only arranges it.
 3. Notifies the user, like the dataset review.
+4. Proposes re-tiering a source whose record has moved away from its tier
+   (Phase 1 step 5): a Feed item the owner answers, never a change it makes.
 
 Done when: a bad source is flagged by the report before anyone asks.
 
@@ -176,8 +288,8 @@ unverified knowledge as established; Phase 5 keeps all of it honest; Phase 4
 adds new primary sources once the machinery to judge them is in place.
 
 Open questions for the user:
-- Phase 1: the tag for each channel (draft to be proposed), and whether any
-  channel should leave the watchlist rather than be re-tagged.
+- Phase 1: whether any channel should leave the watchlist rather than sit at
+  `commentary` (tiers decided 2026-11-05).
 - Phase 2: whether chat searches should route by topic too, or only background
   work.
 - Phase 4: which primary feeds first (proposal: GitHub Releases for off-grid and

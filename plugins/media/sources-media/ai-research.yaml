@@ -14,6 +14,7 @@ sources:
     kind: youtube_channel
     ref: UCbfYPyITQ-7l4upoX8nvctg   # channel_id (find via a channel's page source: "channelId")
     description: Two Minute Papers — bite-size AI research summaries.
+    source_type: analysis
 
   # Example playlist form (disabled until you set a real playlist_id):
   # - name: some-course

@@ -133,15 +133,20 @@ steps:
     description: "Store the sourced summary note"
 
   # 8. Claims from the stored note, with ASSERTED_IN back to it via {{_prev.id}}.
-  #    2, not the video chain's 3: verification capacity is ~80 claims/day and
-  #    videos already supply ~50; these feeds add up to ~15 articles/day.
+  #    How many depends on the feed's tier (SOURCE_QUALITY_PLAN.md Phase 1,
+  #    owner 2026-11-05): 2 from primary and reporting, not the video chain's 3
+  #    (these feeds add ~15 articles/day); 1 from analysis; commentary only a
+  #    1-in-5 sample, so its record keeps growing for re-ranking. A feed with no
+  #    tier counts as commentary.
   - tool_name: claim
     arguments:
       action: extract
       text: "{{_prev}}"
       source_note_id: "{{_prev.id}}"
       source_context: article_learning
-      limit: 2
+      source_type: "{{steps.read.source_type}}"
+      limits_by_type: {primary: 2, reporting: 2, analysis: 1, commentary: 0}
+      probe_every: 5
     # Optional: with the epistemics plugin off there is no `claim` tool, and
     # the run goes on without claims (nothing after this reads its result).
     optional: true

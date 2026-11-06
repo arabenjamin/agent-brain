@@ -52,6 +52,29 @@ pub struct MediaSourceRecord {
     pub active: bool,
     /// `yaml` (owned by sources-media/*.yaml) | `runtime` (created via tool/API).
     pub managed_by: String,
+    /// The source's tier (§ 3a of SOURCE_QUALITY_PLAN.md); empty = unset,
+    /// which reads as `commentary`.
+    pub source_type: String,
+    /// When the current `source_type` was set (RFC 3339; empty when unset).
+    pub source_type_since: String,
+}
+
+/// The tiers a channel or feed can hold, most trusted first
+/// (SOURCE_QUALITY_PLAN.md § 3a). `reference` and `platform` describe web
+/// pages, not channels. A source with none set is `commentary`.
+pub const SOURCE_TYPES: &[&str] = &["primary", "reporting", "analysis", "commentary"];
+
+/// What an unset source counts as: the conservative default.
+pub const DEFAULT_SOURCE_TYPE: &str = "commentary";
+
+/// One change of a source's tier, as kept on `(:MediaSource)-[:RETYPED]->(:SourceTypeChange)`.
+#[derive(Debug, Clone)]
+pub struct SourceTypeChange {
+    pub from: String,
+    pub to: String,
+    pub at: String,
+    pub by: String,
+    pub reason: String,
 }
 
 #[derive(Clone)]
@@ -241,6 +264,7 @@ impl Store {
     /// `managed_by = 'yaml'` and the bundle it came from. Returns true when
     /// newly created. The graph owns the node afterwards, so runtime edits
     /// persist across restarts.
+    #[allow(clippy::too_many_arguments)]
     pub async fn seed_media_source_if_absent(
         &self,
         name: &str,
@@ -248,6 +272,7 @@ impl Store {
         reference: &str,
         description: &str,
         active: bool,
+        source_type: Option<&str>,
         plugin: &str,
     ) -> Result<bool> {
         let rows = self
@@ -255,12 +280,15 @@ impl Store {
                 "MERGE (s:MediaSource {name: $name}) \
                  ON CREATE SET s.kind = $kind, s.ref = $ref, s.description = $description, \
                                s.active = $active, s.managed_by = 'yaml', s.plugin = $plugin, \
+                               s.source_type = $source_type, \
+                               s.source_type_since = CASE WHEN $source_type IS NULL THEN null ELSE datetime($now) END, \
                                s.created_at = datetime($now), s.updated_at = datetime($now), \
                                s.__new = true \
                  WITH s, coalesce(s.__new, false) AS created REMOVE s.__new RETURN created",
                 json!({
                     "name": name, "kind": kind, "ref": reference,
                     "description": description, "active": active, "plugin": plugin,
+                    "source_type": source_type,
                     "now": Utc::now().to_rfc3339(),
                 }),
             )
@@ -273,6 +301,8 @@ impl Store {
 
     /// Upsert a `:MediaSource` at runtime (via tool/API). Sets
     /// `managed_by = 'runtime'`, detaching it from any YAML file of the same name.
+    /// Never touches `source_type`: a tier changes only through
+    /// [`Store::retype_media_source`], which keeps the history.
     pub async fn upsert_media_source_runtime(
         &self,
         name: &str,
@@ -294,6 +324,79 @@ impl Store {
         )
         .await?;
         Ok(())
+    }
+
+    /// Change a source's tier and keep the change: a dated
+    /// `(:MediaSource)-[:RETYPED]->(:SourceTypeChange {from, to, at, by, reason})`.
+    /// Trust in an outlet moves over time (owner, 2026-11-05), so the old tier is
+    /// history, not overwritten: a claim keeps the tier it was extracted under
+    /// (`claim.source_type`). Returns the previous tier ("" when unset), or None
+    /// when no source has that name.
+    pub async fn retype_media_source(
+        &self,
+        name: &str,
+        source_type: &str,
+        reason: &str,
+        by: &str,
+    ) -> Result<Option<String>> {
+        let rows = self
+            .q(
+                "MATCH (s:MediaSource {name: $name}) \
+                 WITH s, coalesce(s.source_type, '') AS was \
+                 CREATE (s)-[:RETYPED]->(:SourceTypeChange {from: was, to: $to, at: datetime($now), \
+                                                            by: $by, reason: $reason}) \
+                 SET s.source_type = $to, s.source_type_since = datetime($now), \
+                     s.updated_at = datetime($now) \
+                 RETURN was",
+                json!({
+                    "name": name, "to": source_type, "reason": reason, "by": by,
+                    "now": Utc::now().to_rfc3339(),
+                }),
+            )
+            .await?;
+        Ok(rows
+            .first()
+            .map(|r| r["was"].as_str().unwrap_or_default().to_string()))
+    }
+
+    /// A source's tier changes, newest first.
+    pub async fn source_type_history(&self, name: &str) -> Result<Vec<SourceTypeChange>> {
+        let rows = self
+            .q(
+                "MATCH (:MediaSource {name: $name})-[:RETYPED]->(c:SourceTypeChange) \
+                 RETURN c.from AS from, c.to AS to, toString(c.at) AS at, c.by AS by, \
+                        c.reason AS reason ORDER BY c.at DESC",
+                json!({ "name": name }),
+            )
+            .await?;
+        let s = |r: &Value, k: &str| r[k].as_str().unwrap_or_default().to_string();
+        Ok(rows
+            .iter()
+            .map(|r| SourceTypeChange {
+                from: s(r, "from"),
+                to: s(r, "to"),
+                at: s(r, "at"),
+                by: s(r, "by"),
+                reason: s(r, "reason"),
+            })
+            .collect())
+    }
+
+    /// The tier of the source a `:Media` item came from ("" when it has no
+    /// `FROM_SOURCE` link or the source has none set).
+    pub async fn media_source_type(&self, media_id: &str) -> Result<String> {
+        let rows = self
+            .q(
+                "MATCH (:Media {id: $media_id})-[:FROM_SOURCE]->(s:MediaSource) \
+                 RETURN coalesce(s.source_type, '') AS t LIMIT 1",
+                json!({ "media_id": media_id }),
+            )
+            .await?;
+        Ok(rows
+            .first()
+            .and_then(|r| r["t"].as_str())
+            .unwrap_or_default()
+            .to_string())
     }
 
     /// Delete a `:MediaSource` by name.
@@ -319,7 +422,9 @@ impl Store {
                     "MATCH (s:MediaSource) {filter}\
                      RETURN s.name AS name, s.kind AS kind, s.ref AS ref, \
                             s.description AS description, s.active AS active, \
-                            s.managed_by AS managed_by \
+                            s.managed_by AS managed_by, \
+                            coalesce(s.source_type, '') AS source_type, \
+                            coalesce(toString(s.source_type_since), '') AS source_type_since \
                      ORDER BY s.name"
                 ),
                 json!({}),
@@ -338,5 +443,7 @@ fn row_to_media_source(row: &Value) -> MediaSourceRecord {
         description: s("description"),
         active: row["active"].as_bool().unwrap_or(false),
         managed_by: row["managed_by"].as_str().unwrap_or("runtime").to_string(),
+        source_type: s("source_type"),
+        source_type_since: s("source_type_since"),
     }
 }

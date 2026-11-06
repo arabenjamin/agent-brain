@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::service::{MediaService, Medium, is_unextractable, same_site};
-use crate::store::{MediaRecord, Store};
+use crate::store::{self, MediaRecord, Store};
 use agent_brain_plugin_api::{
     Knowledge, Llm, PluginContext, Skill, Telemetry, ToolCallResult, ToolDefinition, Workflows,
     parse_args,
@@ -130,18 +130,24 @@ impl MediaSkill {
         ToolDefinition {
             name: "manage_media_source".to_string(),
             description:
-                "Manage the :MediaSource watchlist. action=list|upsert|delete. Upsert marks the \
-                 node runtime-owned (managed_by=runtime). Reserved names are graph-owned after seed."
+                "Manage the :MediaSource watchlist. action=list|upsert|delete|retype|history. Upsert \
+                 marks the node runtime-owned (managed_by=runtime). Reserved names are graph-owned \
+                 after seed. retype sets a source's tier (primary > reporting > analysis > \
+                 commentary; unset counts as commentary), which decides how many claims its items \
+                 yield; it needs a reason, runs only on the owner's request, and keeps every past \
+                 tier (history lists them)."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "upsert", "delete"], "description": "Operation (default list)"},
+                    "action": {"type": "string", "enum": ["list", "upsert", "delete", "retype", "history"], "description": "Operation (default list)"},
                     "name": {"type": "string", "description": "Watchlist entry name"},
                     "kind": {"type": "string", "enum": ["youtube_channel", "youtube_playlist", "podcast_rss", "article_rss"]},
                     "ref": {"type": "string", "description": "channel_id / playlist_id / rss_url"},
                     "description": {"type": "string"},
-                    "active": {"type": "boolean", "description": "Whether the watch loop polls it (default true)"}
+                    "active": {"type": "boolean", "description": "Whether the watch loop polls it (default true)"},
+                    "source_type": {"type": "string", "enum": store::SOURCE_TYPES, "description": "retype: the new tier"},
+                    "reason": {"type": "string", "description": "retype: why the tier changes (kept in its history)"}
                 }
             }),
         }
@@ -270,8 +276,16 @@ impl MediaSkill {
             }
         }
 
+        // The tier of the channel it came from, for the claim step: how many
+        // claims an item yields depends on it (SOURCE_QUALITY_PLAN.md Phase 1).
+        let source_type = self
+            .store
+            .media_source_type(&meta.id)
+            .await
+            .unwrap_or_default();
         let mut out = json!({
             "video_id": meta.id,
+            "source_type": source_type,
             "title": meta.title,
             "channel": meta.channel,
             "channel_id": meta.channel_id,
@@ -428,9 +442,15 @@ impl MediaSkill {
         if let Some(ref sm) = source_name {
             let _ = self.store.link_media_from_source(&meta.id, sm).await;
         }
+        let source_type = self
+            .store
+            .media_source_type(&meta.id)
+            .await
+            .unwrap_or_default();
 
         ToolCallResult::success_json(json!({
             "article_id": meta.id,
+            "source_type": source_type,
             "title": meta.title,
             "site": meta.channel,
             "source": source_name,
@@ -832,6 +852,9 @@ impl MediaSkill {
                                 "description": s.description,
                                 "active": s.active,
                                 "managed_by": s.managed_by,
+                                "source_type": if s.source_type.is_empty() { store::DEFAULT_SOURCE_TYPE } else { s.source_type.as_str() },
+                                "source_type_set": !s.source_type.is_empty(),
+                                "source_type_since": s.source_type_since,
                             })
                         })
                         .collect();
@@ -868,6 +891,61 @@ impl MediaSkill {
                         "active": active, "managed_by": "runtime"
                     })),
                     Err(e) => ToolCallResult::error(format!("upsert failed: {e}")),
+                }
+            }
+            "retype" => {
+                let (Some(name), Some(to)) = (input.name.as_deref(), input.source_type.as_deref())
+                else {
+                    return ToolCallResult::error("retype requires 'name' and 'source_type'");
+                };
+                if !store::SOURCE_TYPES.contains(&to) {
+                    return ToolCallResult::error(format!(
+                        "source_type '{to}' is not one of {}",
+                        store::SOURCE_TYPES.join(", ")
+                    ));
+                }
+                let Some(reason) = input.reason.as_deref().filter(|r| !r.trim().is_empty()) else {
+                    return ToolCallResult::error(
+                        "retype requires a 'reason': it is kept in the source's history",
+                    );
+                };
+                // How far a source is trusted is the owner's call (2026-11-05).
+                if !self.llm.started_by_owner() {
+                    return ToolCallResult::error(
+                        "retype runs only on the owner's request. Propose the change to the owner \
+                         (with the source's record) instead.",
+                    );
+                }
+                match self
+                    .store
+                    .retype_media_source(name, to, reason, "owner")
+                    .await
+                {
+                    Ok(Some(was)) => ToolCallResult::success_json(json!({
+                        "retyped": name,
+                        "from": if was.is_empty() { "unset (commentary)".to_string() } else { was },
+                        "to": to,
+                        "reason": reason,
+                        "note": "Claims already extracted keep the tier they were extracted under.",
+                    })),
+                    Ok(None) => ToolCallResult::error(format!("no media source named '{name}'")),
+                    Err(e) => ToolCallResult::error(format!("retype failed: {e}")),
+                }
+            }
+            "history" => {
+                let Some(name) = input.name.as_deref() else {
+                    return ToolCallResult::error("history requires 'name'");
+                };
+                match self.store.source_type_history(name).await {
+                    Ok(h) => ToolCallResult::success_json(json!({
+                        "name": name,
+                        "changes": h.iter().map(|c| json!({
+                            "from": if c.from.is_empty() { "unset" } else { c.from.as_str() },
+                            "to": c.to, "at": c.at, "by": c.by, "reason": c.reason,
+                        })).collect::<Vec<_>>(),
+                        "note": if h.is_empty() { "No tier change on record." } else { "" },
+                    })),
+                    Err(e) => ToolCallResult::error(format!("history failed: {e}")),
                 }
             }
             other => ToolCallResult::error(format!("unknown action '{other}'")),
@@ -1224,6 +1302,10 @@ struct ManageInput {
     description: Option<String>,
     #[serde(default)]
     active: Option<bool>,
+    #[serde(default)]
+    source_type: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[cfg(test)]

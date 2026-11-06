@@ -161,9 +161,14 @@ steps:
       text: "{{_prev}}"
       source_note_id: "{{_prev.id}}"
       source_context: video_learning
-      # 3, not 5: verification capacity is ~80 claims/day and ~16 videos/day
-      # arrive; at 5 the unverified backlog grew without bound.
-      limit: 3
+      # By the channel's tier (SOURCE_QUALITY_PLAN.md Phase 1, owner
+      # 2026-11-05). 3 at most, not 5: at 5 the unverified backlog grew without
+      # bound. Commentary is summarised and kept but yields only a 1-in-5
+      # sample, so its record keeps growing for re-ranking. A video from a
+      # channel with no tier, or none on the watchlist, counts as commentary.
+      source_type: "{{steps.watch.source_type}}"
+      limits_by_type: {primary: 3, reporting: 3, analysis: 1, commentary: 0}
+      probe_every: 5
     # Optional: with the epistemics plugin off there is no `claim` tool, and
     # the run goes on without claims (nothing after this reads its result).
     optional: true

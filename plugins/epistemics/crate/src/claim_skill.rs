@@ -45,6 +45,42 @@ pub struct ClaimSkill {
 
 /// The catalog model for the contradiction second look
 /// (`CLAIM_CONTRADICTION_MODEL`); unset or blank keeps it on the verifier's own.
+/// What a source with no tier counts as (SOURCE_QUALITY_PLAN.md § 3a).
+const DEFAULT_SOURCE_TYPE: &str = "commentary";
+
+/// How many claims to extract from one item of a source of this tier, from the
+/// caller's `limits_by_type` (the workflow owns the numbers). A tier that
+/// yields none still gives one claim from every `probe_every`-th item, picked
+/// by a stable hash of `key` (the source note), so the source keeps a track
+/// record to re-rank it by. Returns (limit, tier, probe).
+fn extraction_limit(
+    source_type: Option<&str>,
+    limits: &serde_json::Map<String, Value>,
+    probe_every: u64,
+    key: &str,
+) -> (usize, String, bool) {
+    // An unresolved `{{steps.x.source_type}}` or an empty one is no tier.
+    let tier = source_type
+        .map(|t| t.trim().to_ascii_lowercase())
+        .filter(|t| !t.is_empty() && !t.starts_with("{{") && t != "null")
+        .unwrap_or_else(|| DEFAULT_SOURCE_TYPE.to_string());
+    let limit = limits
+        .get(&tier)
+        .or_else(|| limits.get(DEFAULT_SOURCE_TYPE))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    if limit == 0 && probe_every > 0 {
+        // FNV-1a: stable across builds, unlike DefaultHasher.
+        let h = key.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        if h % probe_every == 0 {
+            return (1, tier, true);
+        }
+    }
+    (limit, tier, false)
+}
+
 fn contradiction_model() -> Option<String> {
     std::env::var("CLAIM_CONTRADICTION_MODEL")
         .ok()
@@ -103,6 +139,19 @@ impl ClaimSkill {
                         "type": "string",
                         "description": "extract only: fallback attribution (e.g. the channel) when the text does not name a source."
                     },
+                    "source_type": {
+                        "type": "string",
+                        "description": "extract only: the source's tier (primary | reporting | analysis | commentary; empty = commentary). With limits_by_type it sets how many claims to take, and it is stored on each claim and on the source note."
+                    },
+                    "limits_by_type": {
+                        "type": "object",
+                        "additionalProperties": {"type": "integer"},
+                        "description": "extract only: claims to take per tier, e.g. {primary: 3, reporting: 3, analysis: 1, commentary: 0}. Overrides limit."
+                    },
+                    "probe_every": {
+                        "type": "integer",
+                        "description": "extract only, with limits_by_type: a tier that yields 0 still gives 1 claim from every Nth item, so its sources keep a track record."
+                    },
                     "exclude_sections": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -139,7 +188,7 @@ impl ClaimSkill {
         let Some(text) = args["text"].as_str().filter(|t| !t.trim().is_empty()) else {
             return ToolCallResult::error("`text` is required for action=extract");
         };
-        let max = args["limit"].as_u64().unwrap_or(5) as usize;
+        let mut max = args["limit"].as_u64().unwrap_or(5) as usize;
         // An unresolved `{{_prev.id}}` substitutes to the empty string. Treat
         // that as "no source note" rather than passing it down to a MATCH that
         // silently finds nothing — the ASSERTED_IN edge is optional, and a
@@ -149,6 +198,49 @@ impl ClaimSkill {
             .filter(|s| !s.trim().is_empty());
         let source_context = args["source_context"].as_str();
         let fallback_by = args["asserted_by"].as_str();
+
+        // Extraction proportional to the source's tier (SOURCE_QUALITY_PLAN.md
+        // Phase 1): commentary is summarised and kept, but asserts nothing into
+        // the verification queue, except a sample to keep its record.
+        let mut tier: Option<String> = args["source_type"]
+            .as_str()
+            .map(|t| t.trim().to_ascii_lowercase())
+            .filter(|t| !t.is_empty() && !t.starts_with("{{") && t != "null");
+        let mut probe = false;
+        if let Some(limits) = args["limits_by_type"].as_object() {
+            let key = source_note_id.unwrap_or(text);
+            let (n, t, p) = extraction_limit(
+                tier.as_deref(),
+                limits,
+                args["probe_every"].as_u64().unwrap_or(0),
+                key,
+            );
+            max = n;
+            tier = Some(t);
+            probe = p;
+        }
+        if let (Some(t), Some(id)) = (tier.as_deref(), source_note_id) {
+            let _ = self
+                .neo4j
+                .run(
+                    query("MATCH (n:Note {id: $id}) SET n.source_type = $t")
+                        .param("id", id)
+                        .param("t", t),
+                )
+                .await;
+        }
+        if max == 0 {
+            return ToolCallResult::success_json(json!({
+                "stored": 0,
+                "claims": [],
+                "source_type": tier,
+                "answer": text,
+                "note": format!(
+                    "A {} source yields no claims: summarised and kept, not queued for verification.",
+                    tier.as_deref().unwrap_or(DEFAULT_SOURCE_TYPE)
+                ),
+            }));
+        }
 
         // Sections about the brain itself (a brief's "what I did", "system
         // status") are its own bookkeeping, not assertions about the world.
@@ -238,6 +330,7 @@ impl ClaimSkill {
                 embedding,
                 &source,
                 self.ctx.current_task(),
+                tier.as_deref(),
             )
             .await
             {
@@ -261,6 +354,8 @@ impl ClaimSkill {
         ToolCallResult::success_json(json!({
             "stored": stored.len(),
             "claims": stored,
+            "source_type": tier,
+            "probe": probe,
             "repaired": repaired,
             "dropped": dropped,
             "excluded_sections": removed_sections,
@@ -827,5 +922,59 @@ impl Skill for ClaimSkill {
             None => ToolCallResult::error("`action` is required"),
         };
         Some(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extraction_limit;
+    use serde_json::{Value, json};
+
+    fn limits() -> serde_json::Map<String, Value> {
+        json!({"primary": 3, "reporting": 3, "analysis": 1, "commentary": 0})
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn a_tier_takes_its_own_limit() {
+        assert_eq!(extraction_limit(Some("reporting"), &limits(), 0, "n1").0, 3);
+        assert_eq!(extraction_limit(Some("Analysis"), &limits(), 0, "n1").0, 1);
+        assert_eq!(
+            extraction_limit(Some("commentary"), &limits(), 0, "n1").0,
+            0
+        );
+    }
+
+    #[test]
+    fn no_tier_or_an_unresolved_one_counts_as_commentary() {
+        for t in [
+            None,
+            Some(""),
+            Some("{{steps.watch.source_type}}"),
+            Some("null"),
+        ] {
+            let (n, tier, _) = extraction_limit(t, &limits(), 0, "n1");
+            assert_eq!((n, tier.as_str()), (0, "commentary"), "{t:?}");
+        }
+        // A tier the limits do not name falls back to commentary's.
+        assert_eq!(extraction_limit(Some("reference"), &limits(), 0, "n1").0, 0);
+    }
+
+    #[test]
+    fn a_zero_tier_samples_about_one_item_in_n() {
+        let probed = (0..1000)
+            .filter(|i| extraction_limit(Some("commentary"), &limits(), 5, &format!("note-{i}")).2)
+            .count();
+        assert!((150..250).contains(&probed), "{probed} of 1000");
+        // Stable: the same item always decides the same way.
+        let a = extraction_limit(Some("commentary"), &limits(), 5, "note-7");
+        assert_eq!(
+            a,
+            extraction_limit(Some("commentary"), &limits(), 5, "note-7")
+        );
+        // A tier with claims is never "probed".
+        assert!(!extraction_limit(Some("reporting"), &limits(), 5, "note-7").2);
     }
 }
