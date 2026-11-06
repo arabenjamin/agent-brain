@@ -1,0 +1,25 @@
+{
+  "template": ".",
+  "commit": "0ba7a7e0df363260795c0b058fcab8803911fea4",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "harness",
+      "description": "The brain improves its own sub-agents from evidence (Harness\u00b2): probe the agent, write candidates, probe them, compose, record the lesson; the owner adopts.",
+      "kind": "data",
+      "tools": "",
+      "graph_labels": "",
+      "needs_env": "",
+      "__struct": "Harness",
+      "__crate": "agent-brain-plugin-harness",
+      "_template": ".",
+      "_commit": "0ba7a7e0df363260795c0b058fcab8803911fea4"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}
