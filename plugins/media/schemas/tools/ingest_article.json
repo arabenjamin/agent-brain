@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "Article URL, or text containing one"
+    },
+    "force": {
+      "type": "boolean",
+      "description": "Re-summarize even if already ingested (default false)"
+    }
+  },
+  "required": [
+    "url"
+  ]
+}

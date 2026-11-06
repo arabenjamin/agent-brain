@@ -3,6 +3,7 @@
 use super::KnowledgeSkill;
 use agent_brain_chat::agent_runner::UNVERIFIED_MARKER;
 use agent_brain_models::ProvenanceFlag;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -132,46 +133,7 @@ impl KnowledgeSkill {
                          linked to similar notes, and entities extracted when LLM is available. \
                          Long notes (>1500 chars) are semantically chunked into sub-notes."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "Content of the note"
-                    },
-                    "note_type": {
-                        "type": "string",
-                        "enum": ["semantic", "episodic", "reflection", "consolidated", "outcome", "inference", "claim", "source_record", "news", "unsourced_synthesis"],
-                        "description": "Type of note (default: semantic). Use `source_record` for what an external source asserted (web/video), `claim` for a single checkable proposition, `unsourced_synthesis` for your own uncited reasoning. Do not invent a type — an unknown value is stored but never labelled or recalled correctly."
-                    },
-                    "source_context": {
-                        "type": "string",
-                        "description": "Optional source context (e.g. session ID, document URL)"
-                    },
-                    "event_at": {
-                        "type": "string",
-                        "description": "Optional ISO-8601 timestamp of the event this note describes"
-                    },
-                    "lat": {
-                        "type": "number",
-                        "minimum": -90,
-                        "maximum": 90,
-                        "description": "Optional: where what the note describes happened (latitude, WGS 84), with `lon`. Only for a note about an event or observation at a place (a reported incident, a ship's position); a note that merely mentions a place is found near it already."
-                    },
-                    "lon": {
-                        "type": "number",
-                        "minimum": -180,
-                        "maximum": 180,
-                        "description": "Optional: longitude, with `lat`."
-                    },
-                    "provenance": {
-                        "type": "string",
-                        "enum": ["user_input", "synthesis_inference", "core_training"],
-                        "description": "Source authority flag: who/what produced this note. Default: user_input for an outside MCP client, synthesis_inference for the brain's own jobs, chats and agents (which cannot claim user_input)."
-                    }
-                },
-                "required": ["content"]
-            }),
+            input_schema: tool_schema!(core "store_note"),
         }
     }
 

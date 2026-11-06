@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "api": {
+      "type": "string",
+      "description": "Exact ApiContext name, as shown by list_apis (case-sensitive)."
+    }
+  },
+  "required": [
+    "api"
+  ]
+}

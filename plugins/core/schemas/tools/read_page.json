@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "The page's http(s) URL"
+    },
+    "max_chars": {
+      "type": "integer",
+      "minimum": 500,
+      "maximum": "${MAX_MAX_CHARS}",
+      "description": "Most characters of text returned (default 8000)"
+    },
+    "reader": {
+      "type": "string",
+      "description": "Try this reader first (the rest still back it up). Omit: the rotation chooses."
+    }
+  },
+  "required": [
+    "url"
+  ]
+}

@@ -23,6 +23,7 @@ use tracing::{info, warn};
 use crate::bundle_tools::ToolFile;
 use crate::plugins::{self, CORE, CORE_ONLY_KINDS, MERGED_KINDS, Manifest, Plugins, Requires};
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_repository::Neo4jClient;
 
@@ -614,28 +615,7 @@ impl Skill for PluginManagerSkill {
                 A written bundle does NOT run: the owner reviews it in the Feed and enables it via \
                 PLUGINS_ENABLED, effective on restart. Only bundles you wrote can be rewritten or deleted."
                 .into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "enum": ["list", "get", "write", "delete"]},
-                    "name": {"type": "string", "description": "Bundle name, a slug (lowercase, digits, dashes)."},
-                    "description": {"type": "string", "description": "write: what the bundle is for (the owner reviews it by this)."},
-                    "requires": {
-                        "type": "object",
-                        "properties": {
-                            "env": {"type": "array", "items": {"type": "string"}},
-                            "plugins": {"type": "array", "items": {"type": "string"}}
-                        },
-                        "additionalProperties": false
-                    },
-                    "files": {
-                        "type": "object",
-                        "description": "write: \"<kind>/<file>.yaml\" → the file (object or YAML text). The file name of a workflow or tool equals its `name`.",
-                        "additionalProperties": {"type": ["object", "string"]}
-                    }
-                },
-                "required": ["action"]
-            }),
+            input_schema: tool_schema!(core "manage_plugin"),
         }]
     }
 

@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "window_hours": {
+      "type": "integer",
+      "description": "Restrict to the last N hours (default 720, i.e. ~30 days, which matches a monthly quota window). Omit for all time."
+    }
+  }
+}

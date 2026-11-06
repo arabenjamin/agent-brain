@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_repository::Neo4jClient;
 use agent_brain_work::mcp_client::{McpClient, McpServerConfig, content_text};
@@ -188,15 +189,7 @@ impl McpClientSkill {
                           server exposes (its tools/list), to discover tool names and argument \
                           schemas before mcp_call."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server": {
-                        "type": "string",
-                        "description": "Registered server name (omit to list them) or a full https:// URL for a keyless server."
-                    }
-                }
-            }),
+            input_schema: tool_schema!(core "mcp_list_tools"),
         }
     }
 
@@ -212,24 +205,7 @@ impl McpClientSkill {
                           the remote side and require an explicit human-approved token — never \
                           claim such an action succeeded unless the result says so."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server": {
-                        "type": "string",
-                        "description": "Registered server name or a full https:// URL."
-                    },
-                    "tool": {
-                        "type": "string",
-                        "description": "Tool name to call on that server."
-                    },
-                    "arguments": {
-                        "type": "object",
-                        "description": "Arguments object for the remote tool (per its input schema)."
-                    }
-                },
-                "required": ["server", "tool"]
-            }),
+            input_schema: tool_schema!(core "mcp_call"),
         }
     }
 

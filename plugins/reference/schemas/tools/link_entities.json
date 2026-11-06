@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": "${MAX_LIMIT}",
+      "description": "Entities to look up this run (default 20); 0 only refreshes kinds."
+    },
+    "entity_id": {
+      "type": "string",
+      "description": "Look up this one entity, even if it was looked up before."
+    },
+    "on_demand": {
+      "type": "boolean",
+      "description": "The user asked: an entity named only in private notes may be looked up."
+    }
+  }
+}

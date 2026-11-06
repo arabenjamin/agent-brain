@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "directory": {
+      "type": "string",
+      "description": "Subdirectory to list (relative to workspace root, default: root)"
+    },
+    "pattern": {
+      "type": "string",
+      "description": "Filename suffix or substring to filter (e.g. '.py', '.rs')"
+    },
+    "max_results": {
+      "type": "integer",
+      "description": "Maximum files to return (default: 100)"
+    }
+  }
+}

@@ -1,6 +1,7 @@
 //! The `delegate` pseudo-tool and the sub-agent loop engine (`SubagentLoopRunner`).
 
 use super::*;
+use agent_brain_protocol::tool_schema;
 
 /// The pseudo-tool name the orchestrator calls to delegate a sub-task. Never a
 /// registered MCP tool — it runs a nested LLM loop, which ToolHandler cannot.
@@ -46,20 +47,7 @@ pub(super) fn delegate_tool_def(roster: &str) -> agent_brain_protocol::ToolDefin
              into `task`. It returns findings you must then relay to the user, citing any \
              sources it gives. Available agents:\n{roster}"
         ),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "agent": {
-                    "type": "string",
-                    "description": "Which sub-agent to use — one of the names listed above."
-                },
-                "task": {
-                    "type": "string",
-                    "description": "A complete, self-contained instruction for the sub-agent (it has no other context)."
-                }
-            },
-            "required": ["agent", "task"]
-        }),
+        input_schema: tool_schema!(core "delegate"),
     }
 }
 

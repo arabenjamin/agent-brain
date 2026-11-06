@@ -9,9 +9,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::client::{AcledClient, EVENT_TYPES, EventQuery, MAX_LIMIT, summarize_events};
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{PluginContext, Skill, ToolCallResult, ToolDefinition, parse_args};
 
 /// Sample rows returned when the caller names no `sample`.
@@ -90,24 +91,7 @@ impl AcledSkill {
                  raw rows.",
                 EVENT_TYPES.join(", ")
             ),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "country": {
-                        "description": "Country name(s) in ACLED spelling, e.g. \"Ukraine\" or [\"Sudan\", \"Chad\"]. Omit for worldwide.",
-                        "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]
-                    },
-                    "event_type": {"type": "string", "enum": EVENT_TYPES},
-                    "actor": {"type": "string", "description": "Primary actor (actor1), partial match, e.g. \"Wagner\""},
-                    "admin1": {"type": "string", "description": "First-level region, partial match, e.g. \"Donetsk\""},
-                    "location": {"type": "string", "description": "Town or place, partial match"},
-                    "since": {"type": "string", "description": "Start date YYYY-MM-DD (default: `days` before `until`)"},
-                    "until": {"type": "string", "description": "End date YYYY-MM-DD (default: today)"},
-                    "days": {"type": "integer", "minimum": 1, "maximum": 3650, "description": "Window length when `since` is not given (default 30)"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": "Max rows fetched (default 500); a full page is reported as truncated"},
-                    "sample": {"type": "integer", "minimum": 0, "maximum": 50, "description": "Sample events returned (default 15)"}
-                }
-            }),
+            input_schema: tool_schema!(plugin "acled_events", "EVENT_TYPES" => EVENT_TYPES, "MAX_LIMIT" => MAX_LIMIT),
         }
     }
 
@@ -173,6 +157,7 @@ impl Skill for AcledSkill {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn dates_must_be_iso() {

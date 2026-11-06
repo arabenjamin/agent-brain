@@ -1,0 +1,56 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "start",
+        "stop",
+        "tick",
+        "configure"
+      ],
+      "description": "start: enable loop. stop: pause loop. tick: run one tick now. configure: update settings."
+    },
+    "interval_secs": {
+      "type": "integer",
+      "minimum": 10,
+      "description": "Polling interval in seconds (default 300)."
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Enable or disable the loop (configure mode)."
+    },
+    "max_tasks_per_run": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20,
+      "description": "Max tasks dispatched per tick (default 3)."
+    },
+    "error_budget": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Consecutive error limit before auto-pause (default 5)."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Session ID attached to enqueued jobs (null to clear)."
+    },
+    "idle_sleep_after_ticks": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Idle ticks before sleep mode (default 3)."
+    },
+    "sleep_interval_secs": {
+      "type": "integer",
+      "minimum": 60,
+      "description": "Tick interval in sleep mode in seconds (default 1800)."
+    },
+    "local_model": {
+      "type": "string",
+      "description": "Model for background jobs (default: the local engine's generation model)."
+    }
+  },
+  "required": [
+    "action"
+  ]
+}

@@ -2,9 +2,10 @@
 //! (`/api/gpu-lease`, `workspace/finetune/scripts/gpu_lease.sh`).
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 pub struct ModelSkill;
@@ -25,7 +26,7 @@ impl ModelSkill {
                 rate-limit headers seen. Use it to answer why a model was skipped or how much \
                 free-tier quota is left. The historical ledger is `model_usage` (duckdb_query)."
                 .to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
+            input_schema: tool_schema!(core "get_llm_budget"),
         }
     }
 

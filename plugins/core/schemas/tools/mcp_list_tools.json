@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "server": {
+      "type": "string",
+      "description": "Registered server name (omit to list them) or a full https:// URL for a keyless server."
+    }
+  }
+}

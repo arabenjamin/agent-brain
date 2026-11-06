@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use agent_brain_plugin_api::notes::source_reference;
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{
     Llm, PluginContext, Search, Skill, ToolCallResult, ToolDefinition, async_trait,
 };
@@ -115,68 +116,7 @@ impl ClaimSkill {
                  Claims are stored, never filtered: a claim's standing is recorded, not enforced \
                  by exclusion, so contested material stays inspectable."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["extract", "verify", "list", "sources", "contested", "confirm_refutation", "dismiss_refutation"],
-                        "description": "extract: find claims in text. verify: gather evidence. list: show claims. sources: per-source breakdown. contested: claims waiting on the owner's review. confirm_refutation / dismiss_refutation: the owner's verdict on one."
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "extract only: the source text to extract claims from."
-                    },
-                    "source_note_id": {
-                        "type": "string",
-                        "description": "extract only: id of the note the text came from; links each claim via ASSERTED_IN."
-                    },
-                    "source_context": {
-                        "type": "string",
-                        "description": "extract only: provenance label stored on each claim (e.g. 'video_learning')."
-                    },
-                    "asserted_by": {
-                        "type": "string",
-                        "description": "extract only: fallback attribution (e.g. the channel) when the text does not name a source."
-                    },
-                    "source_type": {
-                        "type": "string",
-                        "description": "extract only: the source's tier (primary | reporting | analysis | commentary; empty = commentary). With limits_by_type it sets how many claims to take, and it is stored on each claim and on the source note."
-                    },
-                    "limits_by_type": {
-                        "type": "object",
-                        "additionalProperties": {"type": "integer"},
-                        "description": "extract only: claims to take per tier, e.g. {primary: 3, reporting: 3, analysis: 1, commentary: 0}. Overrides limit."
-                    },
-                    "probe_every": {
-                        "type": "integer",
-                        "description": "extract only, with limits_by_type: a tier that yields 0 still gives 1 claim from every Nth item, so its sources keep a track record."
-                    },
-                    "exclude_sections": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "extract only: Markdown sections to leave out, by heading prefix (case-insensitive), e.g. a brief's self-report sections. Each runs to the next heading."
-                    },
-                    "claim_id": {
-                        "type": "string",
-                        "description": "verify: verify one specific claim (omit to sweep the unverified backlog). confirm_refutation / dismiss_refutation: the contested claim."
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "dismiss_refutation: why the contradiction does not hold (kept on the edge)."
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["unverified", "corroborated", "disputed", "refuted", "contested"],
-                        "description": "list only: filter by epistemic status."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "extract: max claims (default 5). verify: batch size (default 5). list: max rows (default 20)."
-                    }
-                },
-                "required": ["action"]
-            }),
+            input_schema: tool_schema!(plugin "claim"),
         }
     }
 

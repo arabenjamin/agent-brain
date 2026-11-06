@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "agent": {
+      "type": "string",
+      "description": "Which sub-agent to use — one of the names listed above."
+    },
+    "task": {
+      "type": "string",
+      "description": "A complete, self-contained instruction for the sub-agent (it has no other context)."
+    }
+  },
+  "required": [
+    "agent",
+    "task"
+  ]
+}

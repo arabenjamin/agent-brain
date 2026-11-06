@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_repository::{Neo4jClient, RevisionKind, Workflow};
 use agent_brain_scheduler::scheduler::SchedulerService;
@@ -140,55 +141,7 @@ impl SchedulerSkill {
                 action=tick: run one tick now, bypassing the timer; returns tasks found/dispatched. \
                 action=configure: update any combination of runtime settings."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["start", "stop", "tick", "configure"],
-                        "description": "start: enable loop. stop: pause loop. tick: run one tick now. configure: update settings."
-                    },
-                    "interval_secs": {
-                        "type": "integer",
-                        "minimum": 10,
-                        "description": "Polling interval in seconds (default 300)."
-                    },
-                    "enabled": {
-                        "type": "boolean",
-                        "description": "Enable or disable the loop (configure mode)."
-                    },
-                    "max_tasks_per_run": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 20,
-                        "description": "Max tasks dispatched per tick (default 3)."
-                    },
-                    "error_budget": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Consecutive error limit before auto-pause (default 5)."
-                    },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session ID attached to enqueued jobs (null to clear)."
-                    },
-                    "idle_sleep_after_ticks": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Idle ticks before sleep mode (default 3)."
-                    },
-                    "sleep_interval_secs": {
-                        "type": "integer",
-                        "minimum": 60,
-                        "description": "Tick interval in sleep mode in seconds (default 1800)."
-                    },
-                    "local_model": {
-                        "type": "string",
-                        "description": "Model for background jobs (default: the local engine's generation model)."
-                    }
-                },
-                "required": ["action"]
-            }),
+            input_schema: tool_schema!(core "scheduler_control"),
         }
     }
 
@@ -330,43 +283,7 @@ impl SchedulerSkill {
                 disable those whose every step names a dead tool (and re-enable the ones an audit \
                 paused once their tools are live again)."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["list", "get", "run", "upsert", "delete", "history", "revert", "audit"] },
-                    "name": { "type": "string", "description": "The workflow's slug (get/run/upsert/delete)." },
-                    "id": { "type": "string", "description": "get/delete by id instead of name." },
-                    "inputs": {
-                        "description": "run: the input values, e.g. {\"topic\": \"…\"}. upsert: the declared inputs, [{\"name\": \"topic\", \"description\": \"…\"}].",
-                        "type": ["object", "array"]
-                    },
-                    "goal": { "type": "string", "description": "run: what the run is for, as a person reads it in the task list (default: name and inputs)." },
-                    "context": { "type": "string", "description": "run: extra context stored on the run Task." },
-                    "enabled_only": { "type": "boolean", "description": "list: only enabled workflows (default false)." },
-                    "scheduled_only": { "type": "boolean", "description": "list: only workflows with a schedule (default false)." },
-                    "filter": { "type": "string", "description": "list: case-insensitive substring of name or description." },
-                    "verbose": { "type": "boolean", "description": "list: add id, description, ownership, steps, checks. Keep false unless narrowed by `filter`." },
-                    "description": { "type": "string" },
-                    "reason": { "type": "string", "description": "upsert/revert/delete: one line on why. Required when a save changes what the workflow does." },
-                    "based_on": { "type": "integer", "description": "upsert/revert: the `version` get returned. Required when a save changes an existing workflow; refused if it has moved since." },
-                    "version": { "type": "integer", "description": "history: the revision to read in full. revert: the revision to put back." },
-                    "every": { "type": ["string", "null"], "description": "upsert: schedule period (30m, 6h, 1d, 1w); null removes the schedule." },
-                    "steps": { "type": "array", "description": "upsert: the job chain." },
-                    "checks": { "type": "array", "items": { "type": "string", "enum": ["evaluator", "critic"] }, "description": "upsert: opt-in checks around a run." },
-                    "evaluation_rubric": { "type": ["string", "null"] },
-                    "default": { "type": "boolean", "description": "upsert: make this the workflow free-text tasks run." },
-                    "enabled": { "type": "boolean" },
-                    "paused_reason": { "type": ["string", "null"], "description": "upsert: why it is disabled, when that is deliberate." },
-                    "topic": { "type": ["string", "null"], "description": "upsert: the topics/*.yaml topic, or \"\"/null for one that spans topics." },
-                    "kind": { "type": ["string", "null"], "enum": ["monitor", "brief", "learning", "maintenance", "dataset", "", null] },
-                    "data_class": { "type": "string", "enum": ["private", "public"], "description": "upsert: stamped onto steps that set none." },
-                    "paid": { "type": "boolean", "description": "upsert: the owner approves (true) or withdraws (false) paid models for every step. Only the owner may grant it; a model-driven save that adds it is refused." },
-                    "next_run_at": { "type": "string", "description": "upsert: RFC3339 instant of the next scheduled run." },
-                    "managed_by": { "type": "string", "enum": ["yaml", "runtime"] },
-                    "disable_broken": { "type": "boolean", "description": "audit: disable workflows whose every step names a dead tool, and re-enable those an audit paused whose tools are live again." }
-                },
-                "required": ["action"]
-            }),
+            input_schema: tool_schema!(core "manage_workflow"),
         }
     }
 

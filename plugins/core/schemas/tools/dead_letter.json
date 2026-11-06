@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "list",
+        "retry",
+        "delete"
+      ],
+      "description": "The operation to perform"
+    },
+    "job_id": {
+      "type": "string",
+      "description": "Dead letter job ID — required for retry and delete"
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "description": "Max entries to return for list (default 20)"
+    }
+  },
+  "required": [
+    "action"
+  ]
+}

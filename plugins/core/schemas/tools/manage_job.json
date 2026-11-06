@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "cancel",
+        "retry"
+      ],
+      "description": "cancel: halt the job. retry: requeue it."
+    },
+    "job_id": {
+      "type": "string",
+      "description": "The AgentJob ID to act on."
+    }
+  },
+  "required": [
+    "action",
+    "job_id"
+  ]
+}

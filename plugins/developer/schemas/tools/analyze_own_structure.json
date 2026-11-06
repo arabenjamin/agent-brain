@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "store_as_note": {
+      "type": "boolean",
+      "description": "Whether to store the analysis as a semantic note in the knowledge graph (default: false)"
+    }
+  }
+}

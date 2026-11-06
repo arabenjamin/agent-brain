@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": "${MAX_LIMIT}",
+      "description": "Claims to read this run (default 30)."
+    },
+    "note_id": {
+      "type": "string",
+      "description": "Re-read this one claim, even if it was read before."
+    }
+  }
+}

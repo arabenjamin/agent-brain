@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_work::queue::{ChainStep, QueueService};
 
@@ -37,21 +38,7 @@ impl AgentSkill {
                 action=cancel: halt a queued or running job. \
                 action=retry: requeue a failed, dead, or cancelled job for another attempt."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["cancel", "retry"],
-                        "description": "cancel: halt the job. retry: requeue it."
-                    },
-                    "job_id": {
-                        "type": "string",
-                        "description": "The AgentJob ID to act on."
-                    }
-                },
-                "required": ["action", "job_id"]
-            }),
+            input_schema: tool_schema!(core "manage_job"),
         }
     }
 
@@ -65,50 +52,7 @@ impl AgentSkill {
                  If any step exhausts all retries the remaining steps are automatically cancelled. \
                  Returns the list of job IDs in order. Read results with neo4j_query on (:AgentJob {id})."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "steps": {
-                        "type": "array",
-                        "description": "Ordered list of tool calls to execute sequentially.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "tool_name": {
-                                    "type": "string",
-                                    "description": "The MCP tool to invoke"
-                                },
-                                "arguments": {
-                                    "type": "object",
-                                    "description": "Arguments to pass to the tool"
-                                },
-                                "priority": {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 3,
-                                    "description": "0=low, 1=normal (default), 2=high, 3=critical"
-                                },
-                                "max_attempts": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "description": "Maximum execution attempts (default 3)"
-                                },
-                                "provider_hint": {
-                                    "type": "string",
-                                    "description": "Optional LLM provider hint (local/anthropic/gemini)"
-                                }
-                            },
-                            "required": ["tool_name"]
-                        },
-                        "minItems": 1
-                    },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Optional session ID applied to all jobs in the chain"
-                    }
-                },
-                "required": ["steps"]
-            }),
+            input_schema: tool_schema!(core "enqueue_jobs"),
         }
     }
 
@@ -120,27 +64,7 @@ impl AgentSkill {
                 - retry:  re-queue a job for execution (job_id required)\n\
                 - delete: permanently remove an entry (job_id required)"
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "retry", "delete"],
-                        "description": "The operation to perform"
-                    },
-                    "job_id": {
-                        "type": "string",
-                        "description": "Dead letter job ID — required for retry and delete"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 100,
-                        "description": "Max entries to return for list (default 20)"
-                    }
-                },
-                "required": ["action"]
-            }),
+            input_schema: tool_schema!(core "dead_letter"),
         }
     }
 

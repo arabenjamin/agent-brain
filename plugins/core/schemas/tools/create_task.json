@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "goal": {
+      "type": "string",
+      "description": "The main objective of the task"
+    },
+    "context": {
+      "type": "string",
+      "description": "Additional context or constraints"
+    },
+    "success_criteria": {
+      "type": "string",
+      "description": "Measurable definition of done — used by the evaluator to grade output (e.g. 'Returns valid JSON with all required fields')"
+    },
+    "workflow": {
+      "type": "string",
+      "description": "The workflow to run, by name (e.g. fill-knowledge-gap). Omit for the default workflow."
+    },
+    "inputs": {
+      "type": "object",
+      "description": "The workflow's inputs, e.g. {\"topic\": \"…\"}."
+    }
+  },
+  "required": [
+    "goal"
+  ]
+}

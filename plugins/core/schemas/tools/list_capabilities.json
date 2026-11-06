@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "summary",
+        "tools",
+        "agents",
+        "profiles"
+      ],
+      "description": "summary (default): counts + roster + per-skill tallies. tools: every tool name, plus `removed` (tools the brain no longer has, with replaced_by). agents: spawnable agents only. profiles: every context profile, spawnable or not."
+    },
+    "profile": {
+      "type": "string",
+      "description": "Drill down: the tools one context profile is allowed to use."
+    },
+    "skill": {
+      "type": "string",
+      "description": "Drill down: the tools belonging to one skill, with descriptions."
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "connection_id": {
+      "type": "string",
+      "description": "Connection ID returned by ws_connect"
+    },
+    "message": {
+      "type": "string",
+      "description": "Text message to send"
+    }
+  },
+  "required": [
+    "connection_id",
+    "message"
+  ]
+}

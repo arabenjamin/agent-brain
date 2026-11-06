@@ -36,6 +36,7 @@ use agent_brain_chat::agent_runner::{
     verification_failures,
 };
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 /// Tool-use rounds for a background agent. A notch above the chat sub-agent's 6:
@@ -98,98 +99,7 @@ impl AgentRunnerSkill {
                  notes, workspace files). A wrong or non-spawnable `agent` name returns the list \
                  of agents you can use."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "agent": {
-                        "type": "string",
-                        "description": "Which spawnable agent to run (e.g. researcher, code-analyst, knowledge-worker), or \"auto\" to pick the best-fitting agent for the task."
-                    },
-                    "task": {
-                        "type": "string",
-                        "description": "A complete, self-contained instruction for the agent (it has no other context)."
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Run the agent on this model (a catalog model id or name from list_models) instead of its profile's own. Judged by the routing policy; a model that is unknown or not allowed for this work fails the call with the reason, it never falls back."
-                    },
-                    "probe": {
-                        "type": "boolean",
-                        "description": "Run as a probe: every call with effects outside the run (writes, task and todo creation, non-GET requests) is answered with a stub saying what would have happened, and is not executed. The result's `trajectory` shows each call. For trying an agent under a candidate `harness`, or seeing what it would do."
-                    },
-                    "harness": {
-                        "type": ["object", "string"],
-                        "description": "Probe only: run the agent under a candidate harness instead of its profile's: `system_prompt` (the whole prompt) and/or `tools` (its toolset, registry tools only). Other keys are ignored; JSON text is accepted. The result's `harness` is what the run used.",
-                        "properties": {
-                            "system_prompt": { "type": "string" },
-                            "tools": { "type": "array", "items": { "type": "string" } }
-                        }
-                    },
-                    "read_only": {
-                        "type": "boolean",
-                        "description": "Strip the agent's write tools for this run (store_note, write_workspace_file, …), as a chat sub-agent runs. For a draft or an answer that must not be saved anywhere."
-                    },
-                    "max_rounds": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 16,
-                        "description": "Tool-use rounds the agent may take (default 8, capped at 16). Raise it for work that must iterate on a result, such as compiling code and fixing the errors."
-                    },
-                    "verify": {
-                        "type": "object",
-                        "description": "Checked against the agent's real tool trace after it runs. If any requirement is unmet, the answer is prefixed with an `UNVERIFIED — …` line naming what was missing, and store_note then stores it as unsourced_synthesis, never semantic.",
-                        "properties": {
-                            "answer_requires": {
-                                "type": "array",
-                                "description": "Calls a claim in the answer stands for: when `when` (a regex; `^` is a line start) matches the answer, each of `tools` (`tool` or `tool:action`) must have run, e.g. [{\"when\": \"^Source: https?://\", \"tools\": [\"create_task\"]}].",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "when": { "type": "string" },
-                                        "tools": { "type": "array", "items": { "type": "string" } }
-                                    },
-                                    "required": ["when", "tools"]
-                                }
-                            },
-                            "retry": {
-                                "type": "boolean",
-                                "description": "When a requirement is unmet, run the agent once more on the task, told what fell short and which calls already ran; the result is the second run's (`retried_after` lists the first run's failures). Not in a probe."
-                            },
-                            "require_tools": {
-                                "type": "array",
-                                "items": { "type": "string" },
-                                "description": "Tools that must have run and succeeded at least once (e.g. [\"mcp_call\"] to require a page was read); `tool:action` requires that action (e.g. \"manage_plugin:write\"). A probe's stubbed call does not count."
-                            },
-                            "code_requires_tests": {
-                                "type": "boolean",
-                                "description": "If the answer contains a ```rust block, require an execute_code run whose tests all passed (at least one)."
-                            },
-                            "rerun_answer_code": {
-                                "type": "boolean",
-                                "description": "Compile and test the answer's own ```rust code in the sandbox after the run (and clippy it, with code_requires_clippy_clean), instead of trusting the agent's reported runs."
-                            },
-                            "code_requires_clippy_clean": {
-                                "type": "boolean",
-                                "description": "If the answer contains a ```rust block, the last execute_code clippy run must have reported no findings."
-                            },
-                            "cited_paths_exist": {
-                                "type": "boolean",
-                                "description": "Every `path:line` the answer cites must exist in the codebase with at least that many lines."
-                            },
-                            "question": {
-                                "type": "string",
-                                "description": "The question the agent was asked; read by require_code_if_question_mentions."
-                            },
-                            "require_code_if_question_mentions": {
-                                "type": "array",
-                                "items": { "type": "string" },
-                                "description": "If `question` names any of these words (whole word, any case), the answer must contain a ```rust block; with code_requires_tests it must also be backed by a passing test."
-                            }
-                        }
-                    }
-                },
-                "required": ["agent", "task"]
-            }),
+            input_schema: tool_schema!(core "run_agent"),
         }
     }
 
@@ -202,16 +112,7 @@ impl AgentRunnerSkill {
                  a chain step can route to an agent cheaply; then call `run_agent` with the \
                  chosen name, or pass `run_agent` `agent: \"auto\"` to do both in one step."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "goal": {
-                        "type": "string",
-                        "description": "The sub-goal to match an agent against."
-                    }
-                },
-                "required": ["goal"]
-            }),
+            input_schema: tool_schema!(core "select_agent"),
         }
     }
 

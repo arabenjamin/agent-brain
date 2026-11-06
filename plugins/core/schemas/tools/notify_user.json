@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string",
+      "description": "The message to show the user in chat. Empty (or only whitespace) sends nothing, so a workflow can notify only when an earlier step found a change"
+    },
+    "context": {
+      "type": "string",
+      "description": "Optional short context label (e.g. 'Task: deploy app', 'Follow-up on research')"
+    },
+    "related_session_id": {
+      "type": "string",
+      "description": "Optional session ID to resume an existing conversation"
+    },
+    "needs": {
+      "type": "string",
+      "enum": [
+        "action"
+      ],
+      "description": "Set \"action\" when the user must do or decide something (an API needs a key, apply to this job?). It also creates an item for the user in their Feed, with this conversation as its thread. Leave it out for something to read (a brief, a report)."
+    },
+    "ask": {
+      "type": "string",
+      "description": "Required with needs: \"action\". What exactly the user must do or decide, and what is blocked until they do, in one or two sentences — e.g. 'Sign up at https://x.dev and add X_API_KEY to docker-compose.yml; I can ingest the API after that.' The item records which run, workflow or agent sent it by itself."
+    }
+  },
+  "required": [
+    "message"
+  ]
+}

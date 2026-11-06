@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "File path relative to workspace root (e.g. 'scripts/fetch.py' or 'experiments/test.rs')"
+    },
+    "content": {
+      "type": "string",
+      "description": "File content to write"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "overwrite",
+        "append"
+      ],
+      "description": "Write mode: 'overwrite' (default) replaces the file, 'append' adds to end"
+    }
+  },
+  "required": [
+    "path",
+    "content"
+  ]
+}

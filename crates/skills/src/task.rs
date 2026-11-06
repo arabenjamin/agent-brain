@@ -9,6 +9,7 @@ use tracing::{info, warn};
 use agent_brain_llm::LlmProvider;
 use agent_brain_models::TaskStatus;
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 use agent_brain_work::TaskStore;
 
@@ -38,32 +39,7 @@ impl TaskSkill {
                 web. Research that needs the web names fill-knowledge-gap (inputs.topic) or \
                 deep-dive (inputs.question)."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "goal": {
-                        "type": "string",
-                        "description": "The main objective of the task"
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Additional context or constraints"
-                    },
-                    "success_criteria": {
-                        "type": "string",
-                        "description": "Measurable definition of done — used by the evaluator to grade output (e.g. 'Returns valid JSON with all required fields')"
-                    },
-                    "workflow": {
-                        "type": "string",
-                        "description": "The workflow to run, by name (e.g. fill-knowledge-gap). Omit for the default workflow."
-                    },
-                    "inputs": {
-                        "type": "object",
-                        "description": "The workflow's inputs, e.g. {\"topic\": \"…\"}."
-                    }
-                },
-                "required": ["goal"]
-            }),
+            input_schema: tool_schema!(core "create_task"),
         }
     }
 
@@ -75,29 +51,7 @@ impl TaskSkill {
                          next steps or corrections. Persists a reflection Note linked to the task \
                          when task_id is provided."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "goal": {
-                        "type": "string",
-                        "description": "The original goal"
-                    },
-                    "current_state": {
-                        "type": "string",
-                        "description": "What has been achieved so far or current output"
-                    },
-                    "plan": {
-                        "type": "string",
-                        "description": "The original plan (optional)"
-                    },
-                    "task_id": {
-                        "type": "string",
-                        "description": "Optional task ID — when provided, a reflection Note is stored \
-                                        in the graph with a REFLECTS_ON edge to the task"
-                    }
-                },
-                "required": ["goal", "current_state"]
-            }),
+            input_schema: tool_schema!(core "reflect_on_work"),
         }
     }
 
@@ -107,25 +61,7 @@ impl TaskSkill {
             description: "Update a task's status and optionally attach a progress note. \
                          The note is stored as an outcome Note with a REFLECTS_ON edge to the task."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "task_id": {
-                        "type": "string",
-                        "description": "ID of the task to update"
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["in_progress", "completed", "failed", "blocked"],
-                        "description": "New status for the task"
-                    },
-                    "note": {
-                        "type": "string",
-                        "description": "Optional progress note to store alongside the status change"
-                    }
-                },
-                "required": ["task_id", "status"]
-            }),
+            input_schema: tool_schema!(core "update_task"),
         }
     }
 

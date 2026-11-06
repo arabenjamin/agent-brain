@@ -18,6 +18,7 @@ use tracing::{info, warn};
 
 use crate::service::{MediaService, Medium, is_unextractable, same_site};
 use crate::store::{self, MediaRecord, Store};
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{
     Knowledge, Llm, PluginContext, Skill, Telemetry, ToolCallResult, ToolDefinition, Workflows,
     parse_args,
@@ -79,17 +80,7 @@ impl MediaSkill {
                  `url` may be a bare URL or a goal like 'watch video: <url>'. Set store=true to \
                  also persist a linked summary note (default false — chains store separately)."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Video URL, or text containing one"},
-                    "source_context": {"type": "string", "description": "Optional source_context tag for the stored note"},
-                    "store": {"type": "boolean", "description": "Also store a linked summary note (default false)"},
-                    "force": {"type": "boolean", "description": "Re-summarize even if already ingested (default false)"},
-                    "source_media_name": {"type": "string", "description": "Internal: name of the MediaSource that surfaced this video"}
-                },
-                "required": ["url"]
-            }),
+            input_schema: tool_schema!(plugin "ingest_media"),
         }
     }
 
@@ -103,14 +94,7 @@ impl MediaSkill {
                  like 'read article: <url>'. A paywalled or script-rendered page fails and is \
                  recorded so it is not retried."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Article URL, or text containing one"},
-                    "force": {"type": "boolean", "description": "Re-summarize even if already ingested (default false)"}
-                },
-                "required": ["url"]
-            }),
+            input_schema: tool_schema!(plugin "ingest_article"),
         }
     }
 
@@ -122,7 +106,7 @@ impl MediaSkill {
                  'watch video: <url>' Task for each (newest first, at most \
                  MEDIA_WATCH_MAX_PER_SOURCE per source per poll). No-op unless MEDIA_WATCH_ENABLED is set."
                     .to_string(),
-            input_schema: json!({"type": "object", "properties": {}}),
+            input_schema: tool_schema!(plugin "poll_media_sources"),
         }
     }
 
@@ -137,19 +121,7 @@ impl MediaSkill {
                  yield; it needs a reason, runs only on the owner's request, and keeps every past \
                  tier (history lists them)."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "enum": ["list", "upsert", "delete", "retype", "history"], "description": "Operation (default list)"},
-                    "name": {"type": "string", "description": "Watchlist entry name"},
-                    "kind": {"type": "string", "enum": ["youtube_channel", "youtube_playlist", "podcast_rss", "article_rss"]},
-                    "ref": {"type": "string", "description": "channel_id / playlist_id / rss_url"},
-                    "description": {"type": "string"},
-                    "active": {"type": "boolean", "description": "Whether the watch loop polls it (default true)"},
-                    "source_type": {"type": "string", "enum": store::SOURCE_TYPES, "description": "retype: the new tier"},
-                    "reason": {"type": "string", "description": "retype: why the tier changes (kept in its history)"}
-                }
-            }),
+            input_schema: tool_schema!(plugin "manage_media_source", "store::SOURCE_TYPES" => store::SOURCE_TYPES),
         }
     }
 
@@ -162,14 +134,7 @@ impl MediaSkill {
                  feeding the curiosity engine. Side-effect only: echoes `text` back unchanged so \
                  it is safe to drop into a chain without disturbing the {{_prev}} flow."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Analysis text containing a '## FOLLOW UP' section"},
-                    "max": {"type": "integer", "description": "Max gap tasks to create (default 5)"}
-                },
-                "required": ["text"]
-            }),
+            input_schema: tool_schema!(plugin "spawn_gap_tasks"),
         }
     }
 
@@ -183,14 +148,7 @@ impl MediaSkill {
                  transcribed until you activate it. Deduped against existing sources; capped by \
                  MEDIA_DISCOVERY_MAX. No-op unless MEDIA_DISCOVERY_ENABLED is set."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Web-search results (or candidate list) to select sources from"},
-                    "max": {"type": "integer", "description": "Max new sources to stage this run (default MEDIA_DISCOVERY_MAX or 3)"}
-                },
-                "required": ["text"]
-            }),
+            input_schema: tool_schema!(plugin "discover_media_sources"),
         }
     }
 

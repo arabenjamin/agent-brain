@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "WebSocket URL (ws:// or wss://)"
+    },
+    "connection_id": {
+      "type": "string",
+      "description": "Optional stable ID for this connection. Generated if omitted."
+    }
+  },
+  "required": [
+    "url"
+  ]
+}

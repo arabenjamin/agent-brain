@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_repository::{Neo4jClient, TODO_STATUSES};
 use agent_brain_scheduler::items;
@@ -54,7 +55,7 @@ impl TodoSkill {
                 start per call and 3 per item; a run that failed is retried or handed to the user. \
                 Called by the item-dispatch schedule; returns what it started, asked about and held."
                 .to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
+            input_schema: tool_schema!(core "dispatch_due_todos"),
         }
     }
 
@@ -74,33 +75,7 @@ impl TodoSkill {
                 needs an answer, prefer notify_user with needs: \"action\", which also makes \
                 the item."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["list", "get", "upsert", "complete", "deliver"] },
-                    "result": { "type": "string", "description": "deliver: an agent run's answer for the item (its chain's last step)." },
-                    "id": { "type": "string", "description": "get / upsert (update) / complete: the item id." },
-                    "status": {
-                        "type": "string",
-                        "enum": TODO_STATUSES,
-                        "description": "list: only this status (default: every status but done). upsert: set it."
-                    },
-                    "assignee": {
-                        "type": "string",
-                        "description": "list: only items assigned to this ('user', 'agent:<profile>', 'agent:auto'). upsert: 'user' or empty."
-                    },
-                    "include_done": { "type": "boolean", "description": "list: include done items (default false)." },
-                    "program": { "type": "string", "description": "list: only this program's items. upsert: the program it belongs to (manage_program list); a workflow run's items get theirs on their own." },
-                    "title": { "type": "string" },
-                    "description": { "type": "string" },
-                    "priority": { "type": "integer", "minimum": 0, "maximum": 3 },
-                    "due_at": { "type": "string", "description": "RFC 3339 time, or empty to clear." },
-                    "prompt": { "type": "string", "description": "What an agent would be told; defaults to title + description." },
-                    "session_id": { "type": "string", "description": "The item's chat thread." },
-                    "ask": { "type": "string", "description": "upsert: what the user must do or decide, and what waits on it, in one or two sentences (required to create). E.g. 'Get a key at https://x.dev/signup and add X_API_KEY to docker-compose.yml; the weather workflow cannot run until then.'" }
-                },
-                "required": ["action"]
-            }),
+            input_schema: tool_schema!(core "manage_todo", "TODO_STATUSES" => TODO_STATUSES),
         }
     }
 

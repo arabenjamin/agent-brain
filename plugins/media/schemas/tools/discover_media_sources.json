@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "description": "Web-search results (or candidate list) to select sources from"
+    },
+    "max": {
+      "type": "integer",
+      "description": "Max new sources to stage this run (default MEDIA_DISCOVERY_MAX or 3)"
+    }
+  },
+  "required": [
+    "text"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "place": {
+      "type": "string",
+      "description": "The place's name, as specific as you can (\"Strait of Hormuz\", \"Port of Aden\", \"Sevastopol\")."
+    }
+  },
+  "required": [
+    "place"
+  ]
+}

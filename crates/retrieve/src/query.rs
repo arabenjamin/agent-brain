@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_repository::{Neo4jClient, TelemetryClient};
 use agent_brain_work::graph_schema::{self, GraphSchema};
@@ -223,28 +224,7 @@ impl QuerySkill {
                           `WHERE n.created_at >= datetime() - duration({days: 7})`. \
                           Use `toString(n.created_at)` when you want it rendered as text."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "cypher": {
-                        "type": "string",
-                        "description": "Cypher query string"
-                    },
-                    "params": {
-                        "type": "object",
-                        "description": "Query parameters as key-value pairs: strings, numbers, booleans, lists and maps"
-                    },
-                    "readonly": {
-                        "type": "boolean",
-                        "description": "Default true. false is honoured only in a workflow step or an operator's direct call"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum rows to return (default: 100)"
-                    }
-                },
-                "required": ["cypher"]
-            }),
+            input_schema: tool_schema!(core "neo4j_query"),
         }
     }
 
@@ -255,20 +235,7 @@ impl QuerySkill {
                           database (telemetry, model usage stats, interaction logs). \
                           Tables: model_usage, model_registry, interactions, knowledge_gaps."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "sql": {
-                        "type": "string",
-                        "description": "SQL SELECT query"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum rows to return (default: 100)"
-                    }
-                },
-                "required": ["sql"]
-            }),
+            input_schema: tool_schema!(core "duckdb_query"),
         }
     }
 
@@ -282,7 +249,7 @@ impl QuerySkill {
                           an unfamiliar part of the graph, and ALWAYS before claiming a property \
                           or label does not exist — the schema is the ground truth for that."
                 .to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
+            input_schema: tool_schema!(core "describe_graph"),
         }
     }
 
@@ -295,16 +262,7 @@ impl QuerySkill {
                           order by time). Optional `status` filter \
                           (created/in_progress/completed/failed/blocked)."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "limit": { "type": "integer", "description": "How many to return (default 5)" },
-                    "status": {
-                        "type": "string",
-                        "description": "Optional status filter, e.g. completed or failed"
-                    }
-                }
-            }),
+            input_schema: tool_schema!(core "recent_tasks"),
         }
     }
 
@@ -321,7 +279,7 @@ impl QuerySkill {
                           have / know about' — do NOT semantic-search notes for it (that finds \
                           discussion, not the ingested endpoint graph)."
                 .to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
+            input_schema: tool_schema!(core "list_apis"),
         }
     }
 
@@ -335,16 +293,7 @@ impl QuerySkill {
                           and the API name is case-sensitive). Get the exact `api` name from \
                           list_apis first (e.g. `home_assistant`, not `HomeAssistant`)."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "api": {
-                        "type": "string",
-                        "description": "Exact ApiContext name, as shown by list_apis (case-sensitive)."
-                    }
-                },
-                "required": ["api"]
-            }),
+            input_schema: tool_schema!(core "list_endpoints"),
         }
     }
 
@@ -381,26 +330,7 @@ impl QuerySkill {
                           `profile:\"<name>\"` one profile's allowlist, `skill:\"<name>\"` one \
                           skill's tools."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "kind": {
-                        "type": "string",
-                        "enum": ["summary", "tools", "agents", "profiles"],
-                        "description": "summary (default): counts + roster + per-skill tallies. \
-                                        tools: every tool name, plus `removed` (tools the brain no longer has, with replaced_by). agents: spawnable agents only. \
-                                        profiles: every context profile, spawnable or not."
-                    },
-                    "profile": {
-                        "type": "string",
-                        "description": "Drill down: the tools one context profile is allowed to use."
-                    },
-                    "skill": {
-                        "type": "string",
-                        "description": "Drill down: the tools belonging to one skill, with descriptions."
-                    }
-                }
-            }),
+            input_schema: tool_schema!(core "list_capabilities"),
         }
     }
 

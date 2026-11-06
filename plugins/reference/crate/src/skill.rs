@@ -8,10 +8,11 @@
 
 use std::sync::Arc;
 
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{
     Knowledge, Llm as LlmProvider, Skill, ToolCallResult, ToolDefinition, async_trait,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::db::Db;
 
@@ -49,17 +50,7 @@ impl WikiSkill {
                 allows an entity no claim mentions. Reports what it proposed, what had no article, and \
                 how many are still waiting. Needs WIKIMEDIA_CONTACT. Run by the entity-linking schedule."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "limit": { "type": "integer", "minimum": 0, "maximum": MAX_LIMIT,
-                               "description": "Entities to look up this run (default 20); 0 only refreshes kinds." },
-                    "entity_id": { "type": "string",
-                                   "description": "Look up this one entity, even if it was looked up before." },
-                    "on_demand": { "type": "boolean",
-                                   "description": "The user asked: an entity named only in private notes may be looked up." }
-                }
-            }),
+            input_schema: tool_schema!(plugin "link_entities", "MAX_LIMIT" => MAX_LIMIT),
         }
     }
 }
@@ -77,17 +68,7 @@ impl WikiSkill {
                 is also pushed to that working-memory session. Background only: Wikipedia lags recent \
                 events, so search the web as well. Needs WIKIMEDIA_CONTACT."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "question": { "type": "string", "description": "The question being researched." },
-                    "session_id": { "type": "string",
-                                    "description": "Working-memory session to push the background text to (role observation)." },
-                    "condense": { "type": "boolean",
-                                  "description": "Condense the articles to the facts that answer the question, each with its URL, in about 1,500 characters (default true). False returns the leads and sections as they are." }
-                },
-                "required": ["question"]
-            }),
+            input_schema: tool_schema!(plugin "wiki_background"),
         }
     }
 

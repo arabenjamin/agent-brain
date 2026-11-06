@@ -33,6 +33,7 @@ use tracing::{info, warn};
 
 use agent_brain_plugin_api::graph::query;
 use agent_brain_plugin_api::protocol::net_policy;
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{Graph, Skill, ToolCallResult, ToolDefinition, parse_args};
 
 const NOMINATIM: &str = "https://nominatim.openstreetmap.org/search";
@@ -146,16 +147,7 @@ impl GeocodeSkill {
                           `lookup` places_near / notes_near with the lat and lon for what the \
                           brain knows around it."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "place": {
-                        "type": "string",
-                        "description": "The place's name, as specific as you can (\"Strait of Hormuz\", \"Port of Aden\", \"Sevastopol\")."
-                    }
-                },
-                "required": ["place"]
-            }),
+            input_schema: tool_schema!(plugin "geocode"),
         }
     }
 

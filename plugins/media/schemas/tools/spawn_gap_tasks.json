@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "description": "Analysis text containing a '## FOLLOW UP' section"
+    },
+    "max": {
+      "type": "integer",
+      "description": "Max gap tasks to create (default 5)"
+    }
+  },
+  "required": [
+    "text"
+  ]
+}

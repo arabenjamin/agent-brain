@@ -10,6 +10,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 use agent_brain_repository::Neo4jClient;
 use agent_brain_work::WorkingMemoryStore;
@@ -54,24 +55,7 @@ impl WorkingMemorySkill {
             description: "Append an entry to the session working-memory scratchpad. \
                          Entries are ordered by turn_index within a session."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session identifier"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content to store"
-                    },
-                    "role": {
-                        "type": "string",
-                        "description": "Entry role: observation (default), plan, result, error"
-                    }
-                },
-                "required": ["session_id", "content"]
-            }),
+            input_schema: tool_schema!(core "push_context"),
         }
     }
 
@@ -83,33 +67,7 @@ impl WorkingMemorySkill {
                          Use when you need human input, want to report a long-running task result, \
                          or have a follow-up question that requires user action."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "The message to show the user in chat. Empty (or only whitespace) sends nothing, so a workflow can notify only when an earlier step found a change"
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Optional short context label (e.g. 'Task: deploy app', 'Follow-up on research')"
-                    },
-                    "related_session_id": {
-                        "type": "string",
-                        "description": "Optional session ID to resume an existing conversation"
-                    },
-                    "needs": {
-                        "type": "string",
-                        "enum": ["action"],
-                        "description": "Set \"action\" when the user must do or decide something (an API needs a key, apply to this job?). It also creates an item for the user in their Feed, with this conversation as its thread. Leave it out for something to read (a brief, a report)."
-                    },
-                    "ask": {
-                        "type": "string",
-                        "description": "Required with needs: \"action\". What exactly the user must do or decide, and what is blocked until they do, in one or two sentences — e.g. 'Sign up at https://x.dev and add X_API_KEY to docker-compose.yml; I can ingest the API after that.' The item records which run, workflow or agent sent it by itself."
-                    }
-                },
-                "required": ["message"]
-            }),
+            input_schema: tool_schema!(core "notify_user"),
         }
     }
 

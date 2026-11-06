@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "server": {
+      "type": "string",
+      "description": "Registered server name or a full https:// URL."
+    },
+    "tool": {
+      "type": "string",
+      "description": "Tool name to call on that server."
+    },
+    "arguments": {
+      "type": "object",
+      "description": "Arguments object for the remote tool (per its input schema)."
+    }
+  },
+  "required": [
+    "server",
+    "tool"
+  ]
+}

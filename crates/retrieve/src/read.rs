@@ -10,6 +10,7 @@
 //! attempt is a row in the `read_usage` ledger.
 
 use agent_brain_protocol::net_policy;
+use agent_brain_protocol::tool_schema;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -115,15 +116,7 @@ impl ReadSkill {
                  title and up to max_chars of text (default 8000), marked when cut. Not for \
                  calling an API (use http_request)."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "The page's http(s) URL"},
-                    "max_chars": {"type": "integer", "minimum": 500, "maximum": MAX_MAX_CHARS, "description": "Most characters of text returned (default 8000)"},
-                    "reader": {"type": "string", "description": "Try this reader first (the rest still back it up). Omit: the rotation chooses."}
-                },
-                "required": ["url"]
-            }),
+            input_schema: tool_schema!(core "read_page", "MAX_MAX_CHARS" => MAX_MAX_CHARS),
         }
     }
 

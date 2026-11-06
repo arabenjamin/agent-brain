@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "cypher": {
+      "type": "string",
+      "description": "Cypher query string"
+    },
+    "params": {
+      "type": "object",
+      "description": "Query parameters as key-value pairs: strings, numbers, booleans, lists and maps"
+    },
+    "readonly": {
+      "type": "boolean",
+      "description": "Default true. false is honoured only in a workflow step or an operator's direct call"
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Maximum rows to return (default: 100)"
+    }
+  },
+  "required": [
+    "cypher"
+  ]
+}

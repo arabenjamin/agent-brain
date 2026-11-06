@@ -3,6 +3,7 @@
 //! "quiet": the networks are crowdsourced receivers, and an area with none
 //! (the Red Sea, measured 2026-10-21) hears nothing at all.
 
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{Skill, ToolCallResult, ToolDefinition, async_trait, parse_args};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -100,13 +101,7 @@ impl AreaTrafficSkill {
                           collector was off. Call with no area to list the watch areas and the \
                           collectors' state."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "area": {"type": "string", "description": "A watch area's name (call with none to list them)."},
-                    "hours": {"type": "integer", "minimum": 1, "maximum": 336, "default": 24, "description": "How far back, in hours (at most 14 days, the retention)."}
-                }
-            }),
+            input_schema: tool_schema!(plugin "area_traffic"),
         }
     }
 

@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "n": {
+      "type": "integer",
+      "description": "Number of commits to retrieve (default: 10, max: 50)"
+    },
+    "path": {
+      "type": "string",
+      "description": "Limit to commits affecting this path (relative to codebase root)"
+    },
+    "format": {
+      "type": "string",
+      "description": "Optional output format: 'digest' = dated markdown changelog grouped by commit date (deterministic, commit-grounded)."
+    }
+  }
+}

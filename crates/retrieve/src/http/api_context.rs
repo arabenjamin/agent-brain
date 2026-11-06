@@ -2,6 +2,7 @@
 
 use super::{HttpSkill, ParsedEndpoint};
 use crate::api_tags;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_repository::Neo4jClient;
 use serde::Deserialize;
@@ -111,64 +112,7 @@ impl HttpSkill {
                           OpenAPI spec, pass `endpoints`: each GET one is called before \
                           it is saved, and the result reports which answered."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Unique context name (e.g. 'github', 'serpapi')"
-                    },
-                    "base_url": {
-                        "type": "string",
-                        "description": "Base URL for the API (e.g. 'https://api.github.com')"
-                    },
-                    "auth_scheme": {
-                        "type": "string",
-                        "enum": ["bearer", "query_param", "header", "none"],
-                        "description": "How authentication is sent"
-                    },
-                    "auth_param": {
-                        "type": "string",
-                        "description": "Header name (for bearer/header) or query param name (for query_param)"
-                    },
-                    "auth_env_var": {
-                        "type": "string",
-                        "description": "Environment variable name holding the secret (not the value)"
-                    },
-                    "default_headers": {
-                        "type": "object",
-                        "description": "Headers always sent with requests using this context"
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Human-readable description of what this context is for"
-                    },
-                    "kind": {
-                        "type": "string",
-                        "description": "Its data kind, one of the closed list in the graph ((:ApiKind): news-feed, reference-catalog, forecast, dataset, job-postings, device-state, code-hosting, search, advisories). Omit it and pass no topics to let the tagger (nimble) propose tags for an untagged API; \"\" clears."
-                    },
-                    "topics": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "The (:Topic) names it serves (0..n); [] for none (weather, a model catalog). A `search` API serves none. Replaces the stored set."
-                    },
-                    "endpoints": {
-                        "type": "array",
-                        "description": "For an API with no OpenAPI spec: the endpoints you found, saved so list_endpoints shows them. Each GET endpoint is CALLED once before it is saved, and the result says which answered (status, response shape, and `sample`: a few real values from the response, the only values you may quote): that is the proof it works. A path with a {placeholder} needs `example`, a concrete path to call.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "method": { "type": "string", "description": "Default GET" },
-                                "path": { "type": "string", "description": "Relative to base_url, e.g. 'catalog.json' or 'by-kind/{kind}.json'" },
-                                "summary": { "type": "string", "description": "What it returns" },
-                                "example": { "type": "string", "description": "A concrete path to probe when `path` has a {placeholder}, e.g. 'by-kind/CHAT.json'" }
-                            },
-                            "required": ["path"]
-                        }
-                    }
-                },
-                "required": ["name", "base_url"]
-            }),
+            input_schema: tool_schema!(core "define_api_context"),
         }
     }
 

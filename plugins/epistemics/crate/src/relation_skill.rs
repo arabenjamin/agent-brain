@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{Llm, Skill, ToolCallResult, ToolDefinition, async_trait};
 
 use crate::db::Db;
@@ -36,15 +37,7 @@ impl RelationSkill {
                 dropped and why, and how many claims are still waiting. `note_id` re-reads one \
                 claim. Run by the relation-extraction schedule."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT,
-                               "description": "Claims to read this run (default 30)." },
-                    "note_id": { "type": "string",
-                                 "description": "Re-read this one claim, even if it was read before." }
-                }
-            }),
+            input_schema: tool_schema!(plugin "extract_relations", "MAX_LIMIT" => MAX_LIMIT),
         }
     }
 }

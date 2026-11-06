@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{Skill, ToolCallResult, ToolDefinition, async_trait};
 
 use crate::dev_notes::{DevNote, DevNotes, KINDS};
@@ -36,23 +37,7 @@ impl DevDocsSkill {
                 note (`kind`, `subsystem`, `title`, `content`, optional `paths`, `id`) — record \
                 the WHY of a change here, not in a markdown file."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "required": ["action"],
-                "properties": {
-                    "action": { "type": "string", "enum": ["search", "get", "write"] },
-                    "query": { "type": "string", "description": "search: what you want to know." },
-                    "kind": { "type": "string", "enum": KINDS },
-                    "subsystem": { "type": "string",
-                                   "description": "search: substring filter; write: the subsystem." },
-                    "path": { "type": "string", "description": "search: a file path the note names." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT },
-                    "id": { "type": "string", "description": "get: the note; write: replace it (optional)." },
-                    "title": { "type": "string" },
-                    "content": { "type": "string" },
-                    "paths": { "type": "array", "items": { "type": "string" } }
-                }
-            }),
+            input_schema: tool_schema!(plugin "dev_docs", "KINDS" => KINDS, "MAX_LIMIT" => MAX_LIMIT),
         }
     }
 

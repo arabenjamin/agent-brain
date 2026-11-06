@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "connection_id": {
+      "type": "string",
+      "description": "Connection ID returned by ws_connect"
+    }
+  },
+  "required": [
+    "connection_id"
+  ]
+}

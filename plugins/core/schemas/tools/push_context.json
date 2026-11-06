@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "description": "Session identifier"
+    },
+    "content": {
+      "type": "string",
+      "description": "Content to store"
+    },
+    "role": {
+      "type": "string",
+      "description": "Entry role: observation (default), plan, result, error"
+    }
+  },
+  "required": [
+    "session_id",
+    "content"
+  ]
+}

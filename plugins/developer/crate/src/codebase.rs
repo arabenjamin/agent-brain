@@ -19,6 +19,7 @@ use tracing::{info, warn};
 
 use agent_brain_plugin_api::graph::query;
 use agent_brain_plugin_api::protocol::Content;
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{
     Feed, FeedItem, Graph, Introspection, Knowledge, PluginContext, Provenance, Skill,
     ToolCallResult, ToolDefinition, parse_args,
@@ -259,28 +260,7 @@ impl CodebaseSkill {
         ToolDefinition {
             name: "read_codebase_file".to_string(),
             description: "Read a file from the agent's own codebase by path. Path is relative to the codebase root. Returns a WINDOW of lines, not necessarily the whole file: use start_line (1-indexed) with max_lines to page through a large file — the result states which lines you got and the exact start_line to continue from.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path relative to codebase root (e.g. 'src/main.rs' or 'Cargo.toml')"
-                    },
-                    "start_line": {
-                        "type": "integer",
-                        "description": "1-indexed line to start reading from (default: 1). Use the value the previous result's continuation marker names to page through a file larger than max_lines."
-                    },
-                    "max_lines": {
-                        "type": "integer",
-                        "description": "Maximum number of lines to return (default: 500)"
-                    },
-                    "prepend_context": {
-                        "type": "string",
-                        "description": "Optional text to prepend to the output before the file content — useful in chains where {{_prev}} carries prior step output that should be passed forward alongside the file."
-                    }
-                },
-                "required": ["path"]
-            }),
+            input_schema: tool_schema!(plugin "read_codebase_file"),
         }
     }
 
@@ -288,28 +268,7 @@ impl CodebaseSkill {
         ToolDefinition {
             name: "write_codebase_doc".to_string(),
             description: "Write a Markdown (.md) file in the codebase. Restricted to .md files only — cannot modify source code. PREFERRED for automated updates: pass `section` (a heading line like '## Recent Changes') to replace or append just that section, leaving the rest of the document untouched. Whole-file overwrites of existing docs are guarded: the new content must preserve the document's headings and at least half of its existing lines (incremental update, not from-scratch regeneration); force=true bypasses for an intentional full rewrite.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path relative to codebase root (e.g. 'project-docs/env.md'). Must end in .md."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "File content, or the section body when `section` is set (max 8000 bytes in section mode)."
-                    },
-                    "section": {
-                        "type": "string",
-                        "description": "Optional markdown heading line (e.g. '## Recent Changes (auto)'). Replaces that section in place, or appends it if absent. The rest of the document is never touched."
-                    },
-                    "force": {
-                        "type": "boolean",
-                        "description": "Whole-file mode only: bypass the incremental-update guard for an intentional full rewrite (default: false)."
-                    }
-                },
-                "required": ["path", "content"]
-            }),
+            input_schema: tool_schema!(plugin "write_codebase_doc"),
         }
     }
 
@@ -317,32 +276,7 @@ impl CodebaseSkill {
         ToolDefinition {
             name: "search_codebase".to_string(),
             description: "Search the codebase for a regex pattern, like grep. LITERAL match over file contents — NOT semantic search: pass an identifier, symbol, or exact phrase (`max_attempts`, `fn retry`), never a question or description, which will match nothing. Returns matching lines with file and line number context.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Regex or literal string to search for"
-                    },
-                    "file_pattern": {
-                        "type": "string",
-                        "description": "Filename suffix filter (e.g. '.rs', '.yaml')"
-                    },
-                    "context_lines": {
-                        "type": "integer",
-                        "description": "Lines of context before/after each match (default: 0, max: 5)"
-                    },
-                    "case_sensitive": {
-                        "type": "boolean",
-                        "description": "Case-sensitive search (default: false)"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum matches to return (default: 50)"
-                    }
-                },
-                "required": ["query"]
-            }),
+            input_schema: tool_schema!(plugin "search_codebase"),
         }
     }
 
@@ -350,23 +284,7 @@ impl CodebaseSkill {
         ToolDefinition {
             name: "get_git_log".to_string(),
             description: "Get recent git commit history for the codebase. Pass format='digest' for a dated markdown changelog (### date headings + commit-subject bullets), ready to write into a doc section.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "n": {
-                        "type": "integer",
-                        "description": "Number of commits to retrieve (default: 10, max: 50)"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Limit to commits affecting this path (relative to codebase root)"
-                    },
-                    "format": {
-                        "type": "string",
-                        "description": "Optional output format: 'digest' = dated markdown changelog grouped by commit date (deterministic, commit-grounded)."
-                    }
-                }
-            }),
+            input_schema: tool_schema!(plugin "get_git_log"),
         }
     }
 
@@ -374,41 +292,7 @@ impl CodebaseSkill {
         ToolDefinition {
             name: "write_proposal".to_string(),
             description: "Put a structured fix proposal in the user's Feed for review. Use this after diagnosing a bug or improvement — it never touches the source code; the user applies or dismisses it from the Feed.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "Short human-readable title for the proposal"
-                    },
-                    "task_id": {
-                        "type": "string",
-                        "description": "ID of the Task node that triggered this diagnosis"
-                    },
-                    "diagnosis": {
-                        "type": "string",
-                        "description": "Root cause analysis — what is broken and why"
-                    },
-                    "affected_file": {
-                        "type": "string",
-                        "description": "Relative path to the affected source file (or 'unknown')"
-                    },
-                    "proposed_fix": {
-                        "type": "string",
-                        "description": "Plain-English description of the fix"
-                    },
-                    "code_snippet": {
-                        "type": "string",
-                        "description": "Optional diff or replacement code snippet"
-                    },
-                    "severity": {
-                        "type": "string",
-                        "enum": ["low", "medium", "high"],
-                        "description": "Estimated impact severity"
-                    }
-                },
-                "required": ["title", "task_id", "diagnosis", "proposed_fix", "severity"]
-            }),
+            input_schema: tool_schema!(plugin "write_proposal"),
         }
     }
 
@@ -416,25 +300,7 @@ impl CodebaseSkill {
         ToolDefinition {
             name: "write_workspace_file".to_string(),
             description: "Write a file to the agent's writable workspace directory. Use this for generated code, scripts, experiments, or any output that should persist outside the read-only codebase. Path is relative to the workspace root.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path relative to workspace root (e.g. 'scripts/fetch.py' or 'experiments/test.rs')"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "File content to write"
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["overwrite", "append"],
-                        "description": "Write mode: 'overwrite' (default) replaces the file, 'append' adds to end"
-                    }
-                },
-                "required": ["path", "content"]
-            }),
+            input_schema: tool_schema!(plugin "write_workspace_file"),
         }
     }
 
@@ -442,23 +308,7 @@ impl CodebaseSkill {
         ToolDefinition {
             name: "list_workspace_files".to_string(),
             description: "List files in the agent's writable workspace directory.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "directory": {
-                        "type": "string",
-                        "description": "Subdirectory to list (relative to workspace root, default: root)"
-                    },
-                    "pattern": {
-                        "type": "string",
-                        "description": "Filename suffix or substring to filter (e.g. '.py', '.rs')"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum files to return (default: 100)"
-                    }
-                }
-            }),
+            input_schema: tool_schema!(plugin "list_workspace_files"),
         }
     }
 
@@ -475,15 +325,7 @@ impl CodebaseSkill {
                           with the counts. If store_as_note=true, persists the result to the \
                           knowledge graph as a semantic note."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "store_as_note": {
-                        "type": "boolean",
-                        "description": "Whether to store the analysis as a semantic note in the knowledge graph (default: false)"
-                    }
-                }
-            }),
+            input_schema: tool_schema!(plugin "analyze_own_structure"),
         }
     }
 

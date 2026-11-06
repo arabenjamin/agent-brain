@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{Skill, ToolCallResult, ToolDefinition};
 use agent_brain_repository::Neo4jClient;
 use agent_brain_work::programs::{self, PROGRAM_KINDS, PROGRAM_STATUSES};
@@ -47,32 +48,7 @@ impl ProgramSkill {
                 todos tagged with the program and returns the review note; \
                 action=start_due_reviews: start a review run for every program that is due."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["list", "get", "upsert", "delete", "history", "revert", "reset", "audit", "review_context", "record_review", "start_due_reviews"] },
-                    "answer": { "type": "string", "description": "record_review: the program-manager's answer, a JSON object {verdict, summary, findings, proposals}." },
-                    "name": { "type": "string", "description": "The program's slug." },
-                    "reason": { "type": "string", "description": "upsert/revert/delete: one line on why. Required when a save changes the definition." },
-                    "based_on": { "type": "integer", "description": "upsert/revert: the `version` get returned. Required when a save changes an existing program; refused if it has moved since." },
-                    "version": { "type": "integer", "description": "history: the revision to read in full. revert: the revision to put back." },
-                    "label": { "type": "string" },
-                    "kind": { "type": "string", "enum": PROGRAM_KINDS },
-                    "parent": { "type": ["string", "null"], "description": "The program above it; null = top level." },
-                    "status": { "type": "string", "enum": PROGRAM_STATUSES },
-                    "charter": { "type": "string", "description": "What it is for, in a few sentences." },
-                    "success": { "type": "string", "description": "What good output looks like." },
-                    "topics": { "type": "array", "items": { "type": "string" } },
-                    "workflows": { "type": "array", "items": { "type": "string" }, "description": "The whole list (it replaces the stored one)." },
-                    "keep_running": { "type": "array", "items": { "type": "string" }, "description": "Its workflows a pause leaves on." },
-                    "agents": { "type": "array", "items": { "type": "string" } },
-                    "apis": { "type": "array", "items": { "type": "string" } },
-                    "review": { "type": ["object", "null"], "properties": { "every": { "type": "string" } } },
-                    "budget": { "type": ["object", "null"], "properties": { "monthly_usd": { "type": "number" } } },
-                    "finding": { "type": ["string", "null"], "description": "What a closed investigation or case found." }
-                },
-                "required": ["action"]
-            }),
+            input_schema: tool_schema!(core "manage_program", "PROGRAM_KINDS" => PROGRAM_KINDS, "PROGRAM_STATUSES" => PROGRAM_STATUSES),
         }
     }
 

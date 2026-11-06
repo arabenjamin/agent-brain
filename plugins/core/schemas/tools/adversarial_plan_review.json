@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "goal": {
+      "type": "string",
+      "description": "The goal or objective the plan is trying to achieve"
+    },
+    "proposed_plan": {
+      "type": "string",
+      "description": "Description of the proposed plan steps (free text or step list)"
+    },
+    "n_hypotheses": {
+      "type": "integer",
+      "description": "Number of failure hypotheses to generate (default: 3)"
+    },
+    "task_id": {
+      "type": "string",
+      "description": "Optional task ID to link the adversarial review note via REFLECTS_ON"
+    }
+  },
+  "required": [
+    "goal",
+    "proposed_plan"
+  ]
+}

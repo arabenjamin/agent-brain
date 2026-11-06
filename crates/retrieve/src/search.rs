@@ -20,6 +20,7 @@ use crate::search_query::{QuerySpec, Recency};
 use crate::search_rotation::{self, Rung, Standing};
 use agent_brain_knowledge::web_result::is_search_page;
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 use agent_brain_repository::{Neo4jClient, SearchAttempt, TelemetryClient};
 
@@ -407,16 +408,7 @@ impl SearchSkill {
                  quota burn against a free-tier cap. Notes do not record this; never infer it \
                  from them. (LLM models and providers are a different question: get_llm_budget.)"
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "window_hours": {
-                        "type": "integer",
-                        "description": "Restrict to the last N hours (default 720, i.e. ~30 days, \
-                                        which matches a monthly quota window). Omit for all time."
-                    }
-                }
-            }),
+            input_schema: tool_schema!(core "get_search_usage"),
         }
     }
 

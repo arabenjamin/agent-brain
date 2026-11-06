@@ -33,6 +33,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use agent_brain_plugin_api::protocol::net_policy;
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{Skill, ToolCallResult, ToolDefinition, parse_args};
 
 /// Open connections at once; a forgotten one holds a socket until closed.
@@ -128,20 +129,7 @@ impl WsSkill {
                           For streaming feeds and push APIs http_request cannot read. Internal \
                           hosts are refused unless the owner allowed them. Close it when done."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "WebSocket URL (ws:// or wss://)"
-                    },
-                    "connection_id": {
-                        "type": "string",
-                        "description": "Optional stable ID for this connection. Generated if omitted."
-                    }
-                },
-                "required": ["url"]
-            }),
+            input_schema: tool_schema!(plugin "ws_connect"),
         }
     }
 
@@ -151,20 +139,7 @@ impl WsSkill {
             description: "Send a text message over an open WebSocket connection (JSON goes \
                           as its text)."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "connection_id": {
-                        "type": "string",
-                        "description": "Connection ID returned by ws_connect"
-                    },
-                    "message": {
-                        "type": "string",
-                        "description": "Text message to send"
-                    }
-                },
-                "required": ["connection_id", "message"]
-            }),
+            input_schema: tool_schema!(plugin "ws_send"),
         }
     }
 
@@ -203,16 +178,7 @@ impl WsSkill {
         ToolDefinition {
             name: "ws_close".to_string(),
             description: "Close an open WebSocket connection and forget it.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "connection_id": {
-                        "type": "string",
-                        "description": "Connection ID returned by ws_connect"
-                    }
-                },
-                "required": ["connection_id"]
-            }),
+            input_schema: tool_schema!(plugin "ws_close"),
         }
     }
 

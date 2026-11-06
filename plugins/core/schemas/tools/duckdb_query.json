@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "sql": {
+      "type": "string",
+      "description": "SQL SELECT query"
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Maximum rows to return (default: 100)"
+    }
+  },
+  "required": [
+    "sql"
+  ]
+}

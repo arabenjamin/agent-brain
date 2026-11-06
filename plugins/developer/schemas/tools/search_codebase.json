@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "Regex or literal string to search for"
+    },
+    "file_pattern": {
+      "type": "string",
+      "description": "Filename suffix filter (e.g. '.rs', '.yaml')"
+    },
+    "context_lines": {
+      "type": "integer",
+      "description": "Lines of context before/after each match (default: 0, max: 5)"
+    },
+    "case_sensitive": {
+      "type": "boolean",
+      "description": "Case-sensitive search (default: false)"
+    },
+    "max_results": {
+      "type": "integer",
+      "description": "Maximum matches to return (default: 50)"
+    }
+  },
+  "required": [
+    "query"
+  ]
+}

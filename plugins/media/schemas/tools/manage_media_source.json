@@ -1,0 +1,49 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "list",
+        "upsert",
+        "delete",
+        "retype",
+        "history"
+      ],
+      "description": "Operation (default list)"
+    },
+    "name": {
+      "type": "string",
+      "description": "Watchlist entry name"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "youtube_channel",
+        "youtube_playlist",
+        "podcast_rss",
+        "article_rss"
+      ]
+    },
+    "ref": {
+      "type": "string",
+      "description": "channel_id / playlist_id / rss_url"
+    },
+    "description": {
+      "type": "string"
+    },
+    "active": {
+      "type": "boolean",
+      "description": "Whether the watch loop polls it (default true)"
+    },
+    "source_type": {
+      "type": "string",
+      "enum": "${store::SOURCE_TYPES}",
+      "description": "retype: the new tier"
+    },
+    "reason": {
+      "type": "string",
+      "description": "retype: why the tier changes (kept in its history)"
+    }
+  }
+}

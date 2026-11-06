@@ -1,0 +1,48 @@
+{
+  "type": "object",
+  "properties": {
+    "steps": {
+      "type": "array",
+      "description": "Ordered list of tool calls to execute sequentially.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool_name": {
+            "type": "string",
+            "description": "The MCP tool to invoke"
+          },
+          "arguments": {
+            "type": "object",
+            "description": "Arguments to pass to the tool"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3,
+            "description": "0=low, 1=normal (default), 2=high, 3=critical"
+          },
+          "max_attempts": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum execution attempts (default 3)"
+          },
+          "provider_hint": {
+            "type": "string",
+            "description": "Optional LLM provider hint (local/anthropic/gemini)"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "minItems": 1
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Optional session ID applied to all jobs in the chain"
+    }
+  },
+  "required": [
+    "steps"
+  ]
+}

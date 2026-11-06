@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "ID of the task to update"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "in_progress",
+        "completed",
+        "failed",
+        "blocked"
+      ],
+      "description": "New status for the task"
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional progress note to store alongside the status change"
+    }
+  },
+  "required": [
+    "task_id",
+    "status"
+  ]
+}

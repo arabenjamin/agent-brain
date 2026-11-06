@@ -1,0 +1,54 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "infer",
+        "explain",
+        "clarify",
+        "audit",
+        "structured"
+      ],
+      "description": "Mode: infer (default), explain, clarify, audit, or structured"
+    },
+    "question": {
+      "type": "string",
+      "description": "The question/decision/request/action to reason about (required)"
+    },
+    "context": {
+      "type": "string",
+      "description": "Optional raw context text. When provided in infer mode, bypasses RAG and reasons directly over this text — use for live data like search results passed via {{_prev}}. Also used by clarify and audit."
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Max knowledge notes to retrieve (default: 8 for infer/explain)"
+    },
+    "store_inference": {
+      "type": "boolean",
+      "description": "Persist the result as a Note (default: true, infer mode only)"
+    },
+    "task_id": {
+      "type": "string",
+      "description": "Include task-linked reflection notes (explain mode)"
+    },
+    "available_tools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Tools available to the agent (clarify mode)"
+    },
+    "run_critic": {
+      "type": "boolean",
+      "description": "Run adversarial critic pass to stress-test the answer and adjust confidence (structured mode only, default: false)"
+    },
+    "create_gap_tasks": {
+      "type": "boolean",
+      "description": "Create Task nodes for each identified knowledge gap (structured mode only, requires store_inference=true, default: false)"
+    }
+  },
+  "required": [
+    "question"
+  ]
+}

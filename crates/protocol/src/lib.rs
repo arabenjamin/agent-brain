@@ -10,6 +10,7 @@ pub mod secrets;
 pub mod skill;
 pub mod sse_notifier;
 pub mod tool_handler;
+pub mod tool_schema;
 pub mod types;
 
 pub use params::*;

@@ -12,6 +12,7 @@
 //! `ingest_api`, `http/api_context.rs` holds `define_api_context`.
 
 use agent_brain_protocol::net_policy;
+use agent_brain_protocol::tool_schema;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -169,54 +170,7 @@ impl HttpSkill {
                           'by-kind/CHAT.json') is resolved against its base_url. \
                           Use RETURN n.field AS field syntax for Neo4j queries."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "method": {
-                        "type": "string",
-                        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
-                        "description": "HTTP method"
-                    },
-                    "url": {
-                        "type": "string",
-                        "description": "Full URL, or a path relative to the context_name API's base_url"
-                    },
-                    "headers": {
-                        "type": "object",
-                        "description": "Additional HTTP headers as key-value string pairs"
-                    },
-                    "body": {
-                        "type": "object",
-                        "description": "Request body (sent as JSON for POST/PUT/PATCH)"
-                    },
-                    "query_params": {
-                        "type": "object",
-                        "description": "URL query parameters as key-value string pairs"
-                    },
-                    "context_name": {
-                        "type": "string",
-                        "description": "Name of a stored ApiContext (list_apis): injects its auth and resolves a relative url against its base_url"
-                    },
-                    "timeout_ms": {
-                        "type": "integer",
-                        "description": "Request timeout in milliseconds (default: 10000)"
-                    },
-                    "pick": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional list of field paths to KEEP from a JSON response body, \
-                                        projecting away everything else before returning. Shrinks a large \
-                                        payload so a downstream local LLM step does not overflow its context. \
-                                        Path forms: `field` or `a.b` (a top-level/nested value); \
-                                        `arr[].field` or `arr[].a.b` (keep those fields on each element of the \
-                                        array at `arr`); `arr[]` (keep each element whole); `[].field` (the \
-                                        response body is itself an array). Missing paths are skipped silently. \
-                                        Non-JSON bodies are returned unchanged. e.g. \
-                                        [\"total\",\"jobs[].title\",\"jobs[].company_name\",\"jobs[].apply_url\"]."
-                    }
-                },
-                "required": ["method", "url"]
-            }),
+            input_schema: tool_schema!(core "http_request"),
         }
     }
 

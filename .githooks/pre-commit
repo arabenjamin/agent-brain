@@ -40,6 +40,10 @@ cargo test --lib
 echo "✓ Unit tests passed"
 echo ""
 
+# Schema files: each used once, placeholders filled, none written inline
+scripts/check_schemas.sh
+echo ""
+
 # Core size against its budget
 if ! scripts/size_budget.sh >/tmp/size_budget.$$ 2>&1; then
     tail -n 2 /tmp/size_budget.$$

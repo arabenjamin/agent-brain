@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "Video URL, or text containing one"
+    },
+    "source_context": {
+      "type": "string",
+      "description": "Optional source_context tag for the stored note"
+    },
+    "store": {
+      "type": "boolean",
+      "description": "Also store a linked summary note (default false)"
+    },
+    "force": {
+      "type": "boolean",
+      "description": "Re-summarize even if already ingested (default false)"
+    },
+    "source_media_name": {
+      "type": "string",
+      "description": "Internal: name of the MediaSource that surfaced this video"
+    }
+  },
+  "required": [
+    "url"
+  ]
+}

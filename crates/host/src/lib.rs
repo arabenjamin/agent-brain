@@ -8,5 +8,6 @@ pub mod bundle_tools;
 pub mod plugin_host;
 pub mod plugin_manager;
 pub mod plugins;
+mod schema_files;
 pub mod self_model;
 pub mod views;

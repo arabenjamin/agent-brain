@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "goal": {
+      "type": "string",
+      "description": "The original goal"
+    },
+    "current_state": {
+      "type": "string",
+      "description": "What has been achieved so far or current output"
+    },
+    "plan": {
+      "type": "string",
+      "description": "The original plan (optional)"
+    },
+    "task_id": {
+      "type": "string",
+      "description": "Optional task ID — when provided, a reflection Note is stored in the graph with a REFLECTS_ON edge to the task"
+    }
+  },
+  "required": [
+    "goal",
+    "current_state"
+  ]
+}

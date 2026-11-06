@@ -1,6 +1,7 @@
 //! `reason` and its neighbours: `synthesize_knowledge`, `adversarial_plan_review`.
 
 use super::{KnowledgeSkill, default_consolidate_limit};
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -126,54 +127,7 @@ impl KnowledgeSkill {
                          action=\"structured\": full structured output with sources, caveats, follow-up questions, \
                          gaps, inferences, and optional adversarial critic pass."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        // A drafting agent invents modes ("summarize", "classify")
-                        // when only the description names them; the enum lets
-                        // the save check refuse one instead of it silently
-                        // running as infer.
-                        "enum": ["infer", "explain", "clarify", "audit", "structured"],
-                        "description": "Mode: infer (default), explain, clarify, audit, or structured"
-                    },
-                    "question": {
-                        "type": "string",
-                        "description": "The question/decision/request/action to reason about (required)"
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Optional raw context text. When provided in infer mode, bypasses RAG and reasons directly over this text — use for live data like search results passed via {{_prev}}. Also used by clarify and audit."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max knowledge notes to retrieve (default: 8 for infer/explain)"
-                    },
-                    "store_inference": {
-                        "type": "boolean",
-                        "description": "Persist the result as a Note (default: true, infer mode only)"
-                    },
-                    "task_id": {
-                        "type": "string",
-                        "description": "Include task-linked reflection notes (explain mode)"
-                    },
-                    "available_tools": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Tools available to the agent (clarify mode)"
-                    },
-                    "run_critic": {
-                        "type": "boolean",
-                        "description": "Run adversarial critic pass to stress-test the answer and adjust confidence (structured mode only, default: false)"
-                    },
-                    "create_gap_tasks": {
-                        "type": "boolean",
-                        "description": "Create Task nodes for each identified knowledge gap (structured mode only, requires store_inference=true, default: false)"
-                    }
-                },
-                "required": ["question"]
-            }),
+            input_schema: tool_schema!(core "reason"),
         }
     }
 
@@ -420,28 +374,7 @@ Respond with a JSON object only (no markdown, no explanation):
                          score and adjusted plan notes. Results are stored as a semantic note so \
                          future reviews benefit from accumulated failure-pattern knowledge."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "goal": {
-                        "type": "string",
-                        "description": "The goal or objective the plan is trying to achieve"
-                    },
-                    "proposed_plan": {
-                        "type": "string",
-                        "description": "Description of the proposed plan steps (free text or step list)"
-                    },
-                    "n_hypotheses": {
-                        "type": "integer",
-                        "description": "Number of failure hypotheses to generate (default: 3)"
-                    },
-                    "task_id": {
-                        "type": "string",
-                        "description": "Optional task ID to link the adversarial review note via REFLECTS_ON"
-                    }
-                },
-                "required": ["goal", "proposed_plan"]
-            }),
+            input_schema: tool_schema!(core "adversarial_plan_review"),
         }
     }
 
@@ -561,20 +494,7 @@ Respond with a JSON object only (no markdown, no explanation):
                          semantic knowledge note. Use this at the end of a reasoning or research \
                          chain to persist what was actually learned."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "description": "The topic or goal to synthesize knowledge about"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max number of source notes to draw from (default: 10)"
-                    }
-                },
-                "required": ["topic"]
-            }),
+            input_schema: tool_schema!(core "synthesize_knowledge"),
         }
     }
 

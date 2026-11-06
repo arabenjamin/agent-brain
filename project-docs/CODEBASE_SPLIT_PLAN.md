@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06; Phase 1 (schemas) is next.**
+built 2026-11-06. Phase 1 under way: tool schemas moved and checked 2026-11-06; graph, telemetry, seeds and lists next.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -188,11 +188,33 @@ already loaded and checked; it just holds two files today. Inside it:
 | `telemetry/*.sql` | DuckDB tables, per bundle | the file |
 | `lists/*.yaml` | closed lists (claim statuses, source tiers, note types) | the file. Rust and the HBI read it or are generated from it |
 
-1. **Inventory**, by a script, not by hand, with § 1's counts as the
-   baseline.
+1. ✅ **Inventory**, by a script: `scripts/check_schemas.sh --inventory`
+   counts each kind of schema in files and still inline.
 2. **Move by kind**, one commit each: tools first (the most reviewed text,
    the descriptions models read), then graph, telemetry, seeds, lists.
-3. **One check**, `scripts/check_schemas.sh`, run in CI and pre-commit:
+   - ✅ **Tools, built 2026-11-06.** 66 tool schemas moved to
+     `schemas/tools/<tool>.json` in 8 bundles, loaded with `tool_schema!(core
+     "name")` / `tool_schema!(plugin "name")` (`crates/protocol/src/tool_schema.rs`)
+     through `include_str!`, so a missing file fails the build. Seven use
+     placeholders: a value the code owns is written `"${NAME}"` and filled
+     from the Rust constant (`"TODO_STATUSES" => TODO_STATUSES`), so the
+     constant is still the one source. The conversion was proven exact: a
+     temporary test per tool asserted that the old `json!` value and the
+     loaded file are equal (66 of 66), and then it was removed. Five schemas
+     stay in Rust because they're built from data at runtime: `lookup` (the
+     views), `search_web` (the engine seeds), `deep_research` (its
+     processors), `execute_code` (the sandboxes), `ws_receive` (a formatted
+     default). `list_tasks` is a declared tool, and its schema was already in
+     its YAML. Effect: core code went from 728,085 to 714,687 tokens, and
+     `skills` dropped under the own-code limit (62K to 52K). The text now
+     counts as core data, so core's total barely moves; what an agent changing
+     the handler must read shrinks.
+3. **One check**, `scripts/check_schemas.sh`, run in CI and pre-commit.
+   ✅ Built for tools: every file is JSON and loaded by exactly one call, its
+   placeholders are exactly the ones the call fills, and no schema is written
+   inline outside test code except the five listed; each file is checked
+   against the JSON Schema meta-schema by a unit test
+   (`crates/host/src/schema_files.rs`). Still to come, as each kind moves:
    - every file is valid (JSON Schema 2020-12 / Cypher parse / SQL parse);
    - every registered tool has exactly one schema file;
    - every shipped seed file validates against its kind's schema;

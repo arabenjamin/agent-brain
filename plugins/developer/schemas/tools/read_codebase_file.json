@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "File path relative to codebase root (e.g. 'src/main.rs' or 'Cargo.toml')"
+    },
+    "start_line": {
+      "type": "integer",
+      "description": "1-indexed line to start reading from (default: 1). Use the value the previous result's continuation marker names to page through a file larger than max_lines."
+    },
+    "max_lines": {
+      "type": "integer",
+      "description": "Maximum number of lines to return (default: 500)"
+    },
+    "prepend_context": {
+      "type": "string",
+      "description": "Optional text to prepend to the output before the file content — useful in chains where {{_prev}} carries prior step output that should be passed forward alongside the file."
+    }
+  },
+  "required": [
+    "path"
+  ]
+}

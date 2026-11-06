@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "area": {
+      "type": "string",
+      "description": "A watch area's name (call with none to list them)."
+    },
+    "hours": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 336,
+      "default": 24,
+      "description": "How far back, in hours (at most 14 days, the retention)."
+    }
+  }
+}

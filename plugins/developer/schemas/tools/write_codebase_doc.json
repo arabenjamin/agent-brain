@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "File path relative to codebase root (e.g. 'project-docs/env.md'). Must end in .md."
+    },
+    "content": {
+      "type": "string",
+      "description": "File content, or the section body when `section` is set (max 8000 bytes in section mode)."
+    },
+    "section": {
+      "type": "string",
+      "description": "Optional markdown heading line (e.g. '## Recent Changes (auto)'). Replaces that section in place, or appends it if absent. The rest of the document is never touched."
+    },
+    "force": {
+      "type": "boolean",
+      "description": "Whole-file mode only: bypass the incremental-update guard for an intentional full rewrite (default: false)."
+    }
+  },
+  "required": [
+    "path",
+    "content"
+  ]
+}

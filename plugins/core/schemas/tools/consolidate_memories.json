@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "topic": {
+      "type": "string",
+      "description": "Topic to consolidate memories about"
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Max number of source notes to include (default: 10)"
+    }
+  },
+  "required": [
+    "topic"
+  ]
+}

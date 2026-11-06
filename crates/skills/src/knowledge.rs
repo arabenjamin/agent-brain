@@ -12,6 +12,7 @@ use tracing::info;
 use agent_brain_knowledge::KnowledgeStore;
 use agent_brain_llm::LlmProvider;
 use agent_brain_protocol::Skill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 /// Knowledge Skill implementation.
@@ -41,39 +42,7 @@ impl KnowledgeSkill {
                          Protected types (consolidated, reflection) are never deleted. \
                          min_retain (default 50) and max_pct (default 0.30) prevent over-pruning."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "days_stale": {
-                        "type": "integer",
-                        "description": "Legacy: delete notes not accessed in this many days (default: 30)"
-                    },
-                    "min_accesses": {
-                        "type": "integer",
-                        "description": "Legacy: delete notes accessed fewer than this many times (default: 2)"
-                    },
-                    "score_threshold": {
-                        "type": "number",
-                        "description": "Adaptive decay: delete notes with decay score below this value (default: 0.1)"
-                    },
-                    "lambda": {
-                        "type": "number",
-                        "description": "Adaptive decay: exponential decay rate (default: 0.1)"
-                    },
-                    "dry_run": {
-                        "type": "boolean",
-                        "description": "If true, return count of stale notes without deleting (default: false)"
-                    },
-                    "min_retain": {
-                        "type": "integer",
-                        "description": "Never delete below this total note count (default: 50)"
-                    },
-                    "max_pct": {
-                        "type": "number",
-                        "description": "Cap deletions to this fraction of total notes per run (default: 0.30)"
-                    }
-                }
-            }),
+            input_schema: tool_schema!(core "prune_old_notes"),
         }
     }
 
@@ -84,20 +53,7 @@ impl KnowledgeSkill {
                          consolidated summary note. Creates SUMMARIZED_BY edges from source \
                          notes to the consolidated note. Requires LLM."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "description": "Topic to consolidate memories about"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max number of source notes to include (default: 10)"
-                    }
-                },
-                "required": ["topic"]
-            }),
+            input_schema: tool_schema!(core "consolidate_memories"),
         }
     }
 

@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "topic": {
+      "type": "string",
+      "description": "The topic or goal to synthesize knowledge about"
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Max number of source notes to draw from (default: 10)"
+    }
+  },
+  "required": [
+    "topic"
+  ]
+}

@@ -3,6 +3,7 @@
 use super::HttpSkill;
 use crate::api_tags;
 use agent_brain_protocol::net_policy;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_repository::Neo4jClient;
 use serde::Deserialize;
@@ -722,44 +723,7 @@ impl HttpSkill {
                           confidence). Query the result with neo4j_query: \
                           MATCH (c:ApiContext {name:$n})-[:EXPOSES]->(e) RETURN e."
                     .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "spec_url": {
-                        "type": "string",
-                        "description": "URL of an OpenAPI/Swagger document (e.g. https://api.example.com/openapi.json)"
-                    },
-                    "docs_url": {
-                        "type": "string",
-                        "description": "URL of an HTML API-docs page (Swagger UI / Redoc / springdoc). The linked spec is auto-detected and fetched."
-                    },
-                    "codebase_path": {
-                        "type": "string",
-                        "description": "Local directory to search for an existing openapi/swagger spec file (openapi.json/.yaml, swagger.json/.yaml, api-docs.json)."
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "ApiContext name to store under. Defaults to the spec's info.title (slugged), else the host."
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Optional human-readable description. Defaults to the spec's info.title."
-                    },
-                    "kind": {
-                        "type": "string",
-                        "description": "Its data kind, one of the closed list in the graph ((:ApiKind): news-feed, reference-catalog, forecast, dataset, job-postings, device-state, code-hosting, search, advisories). Omit it and pass no topics to let the tagger (nimble) propose tags for an untagged API; \"\" clears."
-                    },
-                    "topics": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "The (:Topic) names it serves (0..n); [] for none (weather, a model catalog). A `search` API serves none. Replaces the stored set."
-                    },
-                    "prune": {
-                        "type": "boolean",
-                        "description": "When true, delete stored endpoints of this API that are NOT present in this ingest — turning re-ingest into a true sync (a route removed from the source disappears). Default false (upsert only). Use for a keep-in-sync schedule."
-                    }
-                }
-            }),
+            input_schema: tool_schema!(core "ingest_api"),
         }
     }
 

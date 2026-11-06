@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "Text search query (BM25 + semantic)"
+    },
+    "entity_name": {
+      "type": "string",
+      "description": "Find notes that mention this named entity (case-insensitive)"
+    },
+    "entity_type": {
+      "type": "string",
+      "description": "Optional entity type filter when using entity_name (e.g. technology, organisation)"
+    },
+    "note_type": {
+      "type": "string",
+      "description": "Filter by note type: semantic, episodic, reflection, consolidated, news, news_raw, outcome. Without a query, ENUMERATES all notes of this type by date."
+    },
+    "source_context": {
+      "type": "string",
+      "description": "The label a set of notes was filed under (e.g. 'resume', 'video_learning', 'daily_brief'). WITHOUT a `query` this ENUMERATES every note carrying that source_context (chunk fragments excluded) and returns a `complete` flag — this is how you retrieve a whole multi-note document. With a `query` it only narrows the ranked search. An enumeration that matches NOTHING returns `available_note_types` / `available_source_contexts` — the labels that actually exist. Retry with one of those; never report absence off a zero here, and never guess a third label without reading that list."
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Max number of results (default: 5). Raise it when enumerating — a multi-note document needs a limit above its note count for `complete` to come back true."
+    },
+    "graph_hops": {
+      "type": "integer",
+      "description": "RELATES_TO hops to expand text-search results (default: 2, 0 to disable)"
+    },
+    "entity_expansion": {
+      "type": "boolean",
+      "description": "Also surface notes that share named entities with text-search results (default: false)"
+    }
+  }
+}

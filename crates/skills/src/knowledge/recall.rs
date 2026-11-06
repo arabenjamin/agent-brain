@@ -1,6 +1,7 @@
 //! `search_notes` and `recall_recent`.
 
 use super::KnowledgeSkill;
+use agent_brain_protocol::tool_schema;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -93,43 +94,7 @@ impl KnowledgeSkill {
                          absence. At least one of `query`, `entity_name`, `note_type`, or \
                          `source_context` must be supplied."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Text search query (BM25 + semantic)"
-                    },
-                    "entity_name": {
-                        "type": "string",
-                        "description": "Find notes that mention this named entity (case-insensitive)"
-                    },
-                    "entity_type": {
-                        "type": "string",
-                        "description": "Optional entity type filter when using entity_name (e.g. technology, organisation)"
-                    },
-                    "note_type": {
-                        "type": "string",
-                        "description": "Filter by note type: semantic, episodic, reflection, consolidated, news, news_raw, outcome. Without a query, ENUMERATES all notes of this type by date."
-                    },
-                    "source_context": {
-                        "type": "string",
-                        "description": "The label a set of notes was filed under (e.g. 'resume', 'video_learning', 'daily_brief'). WITHOUT a `query` this ENUMERATES every note carrying that source_context (chunk fragments excluded) and returns a `complete` flag — this is how you retrieve a whole multi-note document. With a `query` it only narrows the ranked search. An enumeration that matches NOTHING returns `available_note_types` / `available_source_contexts` — the labels that actually exist. Retry with one of those; never report absence off a zero here, and never guess a third label without reading that list."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max number of results (default: 5). Raise it when enumerating — a multi-note document needs a limit above its note count for `complete` to come back true."
-                    },
-                    "graph_hops": {
-                        "type": "integer",
-                        "description": "RELATES_TO hops to expand text-search results (default: 2, 0 to disable)"
-                    },
-                    "entity_expansion": {
-                        "type": "boolean",
-                        "description": "Also surface notes that share named entities with text-search results (default: false)"
-                    }
-                }
-            }),
+            input_schema: tool_schema!(core "search_notes"),
         }
     }
 
@@ -173,35 +138,7 @@ impl KnowledgeSkill {
                  `available_source_contexts` — retry with one of those. A 0 from a filter means \
                  the FILTER is wrong, not that the day was empty: never report absence from it."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "window": {
-                        "type": "string",
-                        "description": "today (default), yesterday, or 'Nd' for the last N days (e.g. 7d, 30d)."
-                    },
-                    "sample_limit": {
-                        "type": "integer",
-                        "description": "Max sample rows per page (default 10; capped at 100). Raising this does NOT get you more notes if the result is being clipped in transit — page with `offset` instead."
-                    },
-                    "full": {
-                        "type": "boolean",
-                        "description": "Set true when the USER asked to SEE the notes themselves — \"show me all X\", \"list everything\", \"I want to see what we learned\". Delivers the COMPLETE matching set straight to the user's screen with whole note content, and gives you only a receipt plus 3 rows. The rows are NOT in your context and do not need to be: the user is already looking at them. Never page or re-query after a full delivery, and never tell the user the list is partial."
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "description": "Rows to skip. This is how you enumerate a set bigger than one tool result: call again with the SAME filter and the `next_offset` the previous result gave you, until `complete` is true. Cite `matched_notes`, never the number of rows you happen to hold."
-                    },
-                    "source_context": {
-                        "type": "string",
-                        "description": "Drill down: return only notes with this source_context, copied verbatim from a by_source_context row (e.g. 'video_learning', 'fill_knowledge_gap', or the literal '(none)'). Counts and sample are both narrowed."
-                    },
-                    "note_type": {
-                        "type": "string",
-                        "description": "Drill down: return only notes of this note_type (e.g. 'source_record', 'claim', 'reflection'). Combines with source_context."
-                    }
-                }
-            }),
+            input_schema: tool_schema!(core "recall_recent"),
         }
     }
 

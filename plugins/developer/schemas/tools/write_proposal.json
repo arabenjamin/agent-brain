@@ -1,0 +1,45 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Short human-readable title for the proposal"
+    },
+    "task_id": {
+      "type": "string",
+      "description": "ID of the Task node that triggered this diagnosis"
+    },
+    "diagnosis": {
+      "type": "string",
+      "description": "Root cause analysis — what is broken and why"
+    },
+    "affected_file": {
+      "type": "string",
+      "description": "Relative path to the affected source file (or 'unknown')"
+    },
+    "proposed_fix": {
+      "type": "string",
+      "description": "Plain-English description of the fix"
+    },
+    "code_snippet": {
+      "type": "string",
+      "description": "Optional diff or replacement code snippet"
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "description": "Estimated impact severity"
+    }
+  },
+  "required": [
+    "title",
+    "task_id",
+    "diagnosis",
+    "proposed_fix",
+    "severity"
+  ]
+}

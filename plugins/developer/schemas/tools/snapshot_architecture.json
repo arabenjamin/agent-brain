@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "dry_run": {
+      "type": "boolean",
+      "description": "Report the diff against the last snapshot without storing a new one."
+    },
+    "trigger": {
+      "type": "string",
+      "description": "Why it was taken, recorded on the snapshot (default: manual)."
+    }
+  }
+}

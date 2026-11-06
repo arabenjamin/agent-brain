@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use agent_brain_plugin_api::protocol::tool_schema;
 use agent_brain_plugin_api::{Graph, Skill, ToolCallResult, ToolDefinition, async_trait};
 use serde_json::{Value, json};
 
@@ -29,19 +30,7 @@ impl SnapshotSkill {
                           what tools were added this week'. With `dry_run:true` it reports the \
                           change without storing a snapshot."
                 .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "dry_run": {
-                        "type": "boolean",
-                        "description": "Report the diff against the last snapshot without storing a new one."
-                    },
-                    "trigger": {
-                        "type": "string",
-                        "description": "Why it was taken, recorded on the snapshot (default: manual)."
-                    }
-                }
-            }),
+            input_schema: tool_schema!(plugin "snapshot_architecture"),
         }
     }
 

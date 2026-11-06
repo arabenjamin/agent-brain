@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "properties": {
+    "window": {
+      "type": "string",
+      "description": "today (default), yesterday, or 'Nd' for the last N days (e.g. 7d, 30d)."
+    },
+    "sample_limit": {
+      "type": "integer",
+      "description": "Max sample rows per page (default 10; capped at 100). Raising this does NOT get you more notes if the result is being clipped in transit — page with `offset` instead."
+    },
+    "full": {
+      "type": "boolean",
+      "description": "Set true when the USER asked to SEE the notes themselves — \"show me all X\", \"list everything\", \"I want to see what we learned\". Delivers the COMPLETE matching set straight to the user's screen with whole note content, and gives you only a receipt plus 3 rows. The rows are NOT in your context and do not need to be: the user is already looking at them. Never page or re-query after a full delivery, and never tell the user the list is partial."
+    },
+    "offset": {
+      "type": "integer",
+      "description": "Rows to skip. This is how you enumerate a set bigger than one tool result: call again with the SAME filter and the `next_offset` the previous result gave you, until `complete` is true. Cite `matched_notes`, never the number of rows you happen to hold."
+    },
+    "source_context": {
+      "type": "string",
+      "description": "Drill down: return only notes with this source_context, copied verbatim from a by_source_context row (e.g. 'video_learning', 'fill_knowledge_gap', or the literal '(none)'). Counts and sample are both narrowed."
+    },
+    "note_type": {
+      "type": "string",
+      "description": "Drill down: return only notes of this note_type (e.g. 'source_record', 'claim', 'reflection'). Combines with source_context."
+    }
+  }
+}
