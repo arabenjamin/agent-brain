@@ -78,6 +78,9 @@ impl Host {
             .clone()
             .map(|t| Arc::new(HostTelemetry(t)) as Arc<dyn Telemetry>);
         ctx.arg_check = Some(Arc::new(HostArgCheck(self.telemetry.clone())));
+        ctx.http = Some(Arc::new(HostHttp(
+            agent_brain_retrieve::http::HttpSkill::new(self.neo4j.clone()),
+        )));
         ctx.reader = Some(Arc::new(HostReader(
             agent_brain_retrieve::read::ReadSkill::new(self.telemetry.clone()),
         )));
@@ -266,6 +269,23 @@ impl agent_brain_plugin_api::Reader for HostReader {
                 reader: p.reader,
                 title: p.title,
                 text: p.text,
+            })
+    }
+}
+
+/// `http_request` as its skill runs it (the call `define_api_context`'s
+/// probe made directly before the tool left the core).
+struct HostHttp(agent_brain_retrieve::http::HttpSkill);
+
+#[async_trait]
+impl agent_brain_plugin_api::Http for HostHttp {
+    async fn request(&self, args: Value) -> agent_brain_plugin_api::ToolCallResult {
+        use agent_brain_protocol::Skill;
+        self.0
+            .execute("http_request", Some(args))
+            .await
+            .unwrap_or_else(|| {
+                agent_brain_plugin_api::ToolCallResult::error("http_request is not offered")
             })
     }
 }

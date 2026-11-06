@@ -55,6 +55,8 @@ pub fn compiled() -> Vec<Arc<dyn Plugin>> {
     plugins.push(Arc::new(agent_brain_plugin_maps::Maps));
     #[cfg(feature = "plugin-mcp-client")]
     plugins.push(Arc::new(agent_brain_plugin_mcp_client::McpClient));
+    #[cfg(feature = "plugin-apis")]
+    plugins.push(Arc::new(agent_brain_plugin_apis::Apis));
     plugins
 }
 

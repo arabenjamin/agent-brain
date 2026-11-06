@@ -345,6 +345,16 @@ pub trait Reader: Send + Sync {
     async fn read(&self, url: &str) -> Result<ReadPage, String>;
 }
 
+/// The core's `http_request`: one outbound call under the network policy,
+/// with a stored `(:ApiContext)`'s auth and `base_url` applied when the
+/// arguments name one (`context_name`).
+#[async_trait]
+pub trait Http: Send + Sync {
+    /// `http_request` with these arguments (its tool schema), its result as
+    /// the tool returns it.
+    async fn request(&self, args: Value) -> ToolCallResult;
+}
+
 /// A page as [`Reader::read`] returns it.
 #[derive(Debug, Clone)]
 pub struct ReadPage {
@@ -445,6 +455,7 @@ pub struct PluginContext {
     pub introspection: Option<Arc<dyn Introspection>>,
     pub search: Option<Arc<dyn Search>>,
     pub reader: Option<Arc<dyn Reader>>,
+    pub http: Option<Arc<dyn Http>>,
     pub arg_check: Option<Arc<dyn ArgCheck>>,
     files: Option<FilesFn>,
     root: Option<PathBuf>,
@@ -470,6 +481,7 @@ impl PluginContext {
             introspection: None,
             search: None,
             reader: None,
+            http: None,
             arg_check: None,
             files: None,
             root: None,

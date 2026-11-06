@@ -135,7 +135,7 @@ on, the ledger has no `ollama-cloud` rows, and the judges have a measured answer
 | Tie | Where | Answer |
 |---|---|---|
 | Embeddings | `llm_providers/ollama.rs` `/api/embeddings`; `build_local_llm_config` pins it | `/v1/embeddings` |
-| Decision calls | `/v1/systemone`: `retrieve/api_tags.rs`, `chat/route.rs` (checker), `alias-judge/judge.rs` | One Rust `decision` module (Phase 2) |
+| Decision calls | `/v1/systemone`: `retrieve/api_tags.rs` (now `plugins/apis`), `chat/route.rs` (checker), `alias-judge/judge.rs` | One Rust `decision` module (Phase 2) |
 | Guardian | `/api/chat` with `think`, `document` role: `epistemics/grounding.rs` | Render the prompt ourselves (Phase 3) |
 | GPU lease | `gpu_lease.rs` `/api/ps`, `keep_alive: 0` | Engine's unload call; llama.cpp router has one (to verify) |
 | Chat wire | `chat/ollama_loop.rs`, `route.rs` Ollama branch | OpenAI wire only |

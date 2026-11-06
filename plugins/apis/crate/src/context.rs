@@ -1,13 +1,14 @@
-//! `define_api_context`: register one API by hand and probe its endpoints.
+//! `define_api_context` (the `apis` plugin): register one API by hand and
+//! probe its endpoints through the core's `http_request` (`ctx.http`).
 
-use super::{HttpSkill, ParsedEndpoint};
-use crate::api_tags;
-use agent_brain_protocol::tool_schema;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
-use agent_brain_repository::Neo4jClient;
+use crate::ingest::ParsedEndpoint;
+use crate::skill::ApisSkill;
+use crate::tags as api_tags;
+use agent_brain_plugin_api::graph::query;
+use agent_brain_plugin_api::protocol::tool_schema;
+use agent_brain_plugin_api::{Graph, ToolCallResult, ToolDefinition};
 use serde::Deserialize;
-use serde_json::{Value, json};
-use std::collections::HashMap;
+use serde_json::{Map, Value, json};
 
 /// An endpoint `define_api_context` is given for an API with no spec.
 #[derive(Debug, Clone, Deserialize)]
@@ -101,8 +102,8 @@ fn body_shape(body: &Value) -> String {
     }
 }
 
-impl HttpSkill {
-    pub(super) fn define_api_context_def() -> ToolDefinition {
+impl ApisSkill {
+    pub(crate) fn define_api_context_def() -> ToolDefinition {
         ToolDefinition {
             name: "define_api_context".to_string(),
             description: "Store or update an API context in Neo4j. The context holds \
@@ -112,11 +113,11 @@ impl HttpSkill {
                           OpenAPI spec, pass `endpoints`: each GET one is called before \
                           it is saved, and the result reports which answered."
                 .to_string(),
-            input_schema: tool_schema!(core "define_api_context"),
+            input_schema: tool_schema!(plugin "define_api_context"),
         }
     }
 
-    pub(super) async fn handle_define_api_context(&self, args: Option<Value>) -> ToolCallResult {
+    pub(crate) async fn handle_define_api_context(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
         struct Input {
             name: String,
@@ -142,11 +143,9 @@ impl HttpSkill {
             Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
 
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
+        let g = self.graph.as_ref();
         // Tags are checked before anything is written.
-        let vocab = match api_tags::Vocab::load(neo4j).await {
+        let vocab = match api_tags::Vocab::load(g).await {
             Ok(v) => v,
             Err(e) => return ToolCallResult::error(e),
         };
@@ -160,7 +159,9 @@ impl HttpSkill {
             .auth_env_var
             .as_deref()
             .filter(|n| !n.trim().is_empty())
-            .and_then(|n| agent_brain_protocol::secrets::resolve(n, &input.base_url).err());
+            .and_then(|n| {
+                agent_brain_plugin_api::protocol::secrets::resolve(n, &input.base_url).err()
+            });
 
         let default_headers_json =
             serde_json::to_string(&input.default_headers.unwrap_or_default())
@@ -176,9 +177,9 @@ impl HttpSkill {
                           c.created_at      = coalesce(c.created_at, datetime()), \
                           c.updated_at      = datetime()";
 
-        if let Err(e) = neo4j
+        if let Err(e) = g
             .run(
-                neo4rs::query(cypher)
+                query(cypher)
                     .param("name", input.name.clone())
                     .param("base_url", input.base_url.clone())
                     .param(
@@ -208,7 +209,7 @@ impl HttpSkill {
             })
             .collect();
         let text = api_tags::api_text(&input.name, &description, &summaries);
-        let tags = api_tags::apply(neo4j, &input.name, &input.tags, &vocab, &text).await;
+        let tags = api_tags::apply(g, &input.name, &input.tags, &vocab, &text).await;
         if input.endpoints.is_empty() {
             let mut out = json!({
                 "stored": true,
@@ -222,7 +223,7 @@ impl HttpSkill {
             return ToolCallResult::success_json(out);
         }
         self.store_probed_endpoints(
-            neo4j,
+            g,
             &input.name,
             &input.base_url,
             &description,
@@ -237,7 +238,7 @@ impl HttpSkill {
     /// The probe is the tool's, not the caller's choice: the result is the proof.
     async fn store_probed_endpoints(
         &self,
-        neo4j: &Neo4jClient,
+        g: &dyn Graph,
         name: &str,
         base_url: &str,
         description: &str,
@@ -252,11 +253,13 @@ impl HttpSkill {
             let probe = match probe_target(&method, &path, ep.example.as_deref()) {
                 Err(why) => json!({ "method": method, "path": path, "probed": false, "why": why }),
                 Ok(target) => {
-                    let r = self
-                        .handle_http_request(Some(json!({
-                            "method": "GET", "url": target, "context_name": name,
-                        })))
-                        .await;
+                    let args = json!({ "method": "GET", "url": target, "context_name": name });
+                    let r = match &self.http {
+                        Some(http) => http.request(args).await,
+                        None => ToolCallResult::error(
+                            "http_request is not available to the apis plugin",
+                        ),
+                    };
                     let text = r.model_text();
                     match (
                         r.is_error == Some(true),
@@ -289,7 +292,7 @@ impl HttpSkill {
 
         let stored = self
             .persist_endpoints(
-                neo4j,
+                g,
                 name,
                 base_url,
                 "",
@@ -307,19 +310,19 @@ impl HttpSkill {
 
         // Stamp each endpoint with its probe, so a later reader sees whether it
         // was ever shown to work, and when.
-        let rows: Vec<neo4rs::BoltType> = probes
+        let rows: Vec<Value> = probes
             .iter()
             .map(|p| {
-                let mut row: HashMap<String, neo4rs::BoltType> = HashMap::new();
-                row.insert("method".into(), p["method"].as_str().unwrap_or("").into());
-                row.insert("path".into(), p["path"].as_str().unwrap_or("").into());
-                row.insert("verdict".into(), probe_verdict(p).into());
-                neo4rs::BoltType::from(row)
+                let mut row = Map::new();
+                row.insert("method".into(), json!(p["method"].as_str().unwrap_or("")));
+                row.insert("path".into(), json!(p["path"].as_str().unwrap_or("")));
+                row.insert("verdict".into(), json!(probe_verdict(p)));
+                Value::Object(row)
             })
             .collect();
-        let _ = neo4j
+        let _ = g
             .run(
-                neo4rs::query(
+                query(
                     "UNWIND $rows AS r \
                      MATCH (e:ApiEndpoint {api_name: $name, method: r.method, path: r.path}) \
                      SET e.probe = r.verdict, e.probed_at = datetime()",

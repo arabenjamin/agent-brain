@@ -253,37 +253,6 @@ impl QuerySkill {
         }
     }
 
-    fn list_apis_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_apis".to_string(),
-            description: "Every API known to the graph: each (:ApiContext) with its base_url, \
-                          provenance, how many (:ApiEndpoint)s have been ingested via \
-                          [:EXPOSES], its tags (`kind` from the closed (:ApiKind) list, the \
-                          `topics` it serves, `tags_by`: caller, nimble, seed or owner), and \
-                          `used_by`: the enabled and disabled workflows whose steps call it \
-                          (by context_name or base_url). An empty used_by is an API nothing \
-                          uses. This is the deterministic answer to 'what APIs do we \
-                          have / know about' — do NOT semantic-search notes for it (that finds \
-                          discussion, not the ingested endpoint graph)."
-                .to_string(),
-            input_schema: tool_schema!(core "list_apis"),
-        }
-    }
-
-    fn list_endpoints_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_endpoints".to_string(),
-            description: "Every endpoint (method, path, summary, and `probe`: whether define_api_context ever called it and what it got) an API exposes, for a given \
-                          API name. This is the deterministic answer to 'what endpoints does \
-                          <API> have' / 'list the endpoints for <API>' — do NOT hand-write \
-                          Cypher for it (the graph has more than one endpoint-shaped structure, \
-                          and the API name is case-sensitive). Get the exact `api` name from \
-                          list_apis first (e.g. `home_assistant`, not `HomeAssistant`)."
-                .to_string(),
-            input_schema: tool_schema!(core "list_endpoints"),
-        }
-    }
-
     /// The deterministic answer to "how many tools / what agents do you have".
     ///
     /// The meta-graph (`(:ToolDef)`, `(:ContextProfile)`, `[:ALLOWS]`) is
@@ -343,97 +312,6 @@ impl QuerySkill {
             None => ToolCallResult::error(
                 "Graph schema unavailable (Neo4j not reachable or empty).".to_string(),
             ),
-        }
-    }
-
-    async fn handle_list_apis(&self) -> ToolCallResult {
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
-        // used_by: a step names the context, or calls a URL under its base_url.
-        let cypher = "MATCH (c:ApiContext) \
-             OPTIONAL MATCH (c)-[:EXPOSES]->(e:ApiEndpoint) \
-             WITH c, count(e) AS endpoints \
-             OPTIONAL MATCH (c)-[:SERVES]->(t:Topic) \
-             WITH c, endpoints, collect(t.name) AS topics \
-             OPTIONAL MATCH (w:Workflow) \
-               WHERE w.steps CONTAINS ('\"context_name\":\"' + c.name + '\"') \
-                  OR (coalesce(c.base_url, '') <> '' AND w.steps CONTAINS c.base_url) \
-             WITH c, endpoints, topics, \
-                  collect(CASE WHEN w IS NULL THEN null \
-                               ELSE w.name + CASE WHEN w.enabled THEN '' ELSE ' (disabled)' END END) AS used_by \
-             RETURN c.name AS name, coalesce(c.base_url, '') AS base_url, \
-                    coalesce(c.source, '') AS source, endpoints, \
-                    c.api_kind AS kind, topics, c.tags_by AS tags_by, used_by \
-             ORDER BY endpoints DESC, name ASC";
-        match neo4j.execute(neo4rs::query(cypher)).await {
-            Ok(rows) => {
-                let result = Self::rows_to_json(rows);
-                let count = result.len();
-                // Named, not counted: each is drillable to its row above.
-                let names = |f: &dyn Fn(&Value) -> bool| -> Vec<Value> {
-                    result
-                        .iter()
-                        .filter(|r| f(r))
-                        .map(|r| r["name"].clone())
-                        .collect()
-                };
-                let untagged = names(&|r| r["kind"].is_null() && r["tags_by"].is_null());
-                let unused =
-                    names(&|r| r["used_by"].as_array().is_none_or(std::vec::Vec::is_empty));
-                ToolCallResult::success_json(json!({
-                    "apis": result, "count": count, "untagged": untagged, "used_by_no_workflow": unused,
-                }))
-            }
-            Err(e) => ToolCallResult::error(format!("list_apis query failed: {e}")),
-        }
-    }
-
-    async fn handle_list_endpoints(&self, args: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input {
-            api: String,
-        }
-        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
-            Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
-        };
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
-        // The one correct structure: (:ApiContext)-[:EXPOSES]->(:ApiEndpoint).
-        // Baking it here is the point — a hand-written query can pick the wrong
-        // endpoint-shaped path or mis-case the name and silently return zero.
-        let cypher = "MATCH (c:ApiContext {name: $api})-[:EXPOSES]->(e:ApiEndpoint) \
-             RETURN e.method AS method, e.path AS path, coalesce(e.summary, '') AS summary, \
-                    CASE WHEN e.probe IS NULL THEN 'never called' \
-                         ELSE e.probe + ' on ' + toString(date(e.probed_at)) END AS probe \
-             ORDER BY e.path, e.method";
-        match neo4j
-            .execute(neo4rs::query(cypher).param("api", input.api.clone()))
-            .await
-        {
-            Ok(rows) => {
-                let result = Self::rows_to_json(rows);
-                let count = result.len();
-                let mut response = json!({
-                    "api": input.api,
-                    "endpoints": result,
-                    "count": count,
-                });
-                // Zero is almost always a wrong/mis-cased name, not an API with
-                // no endpoints — point at list_apis rather than let the caller
-                // conclude the endpoints "aren't stored".
-                if count == 0 {
-                    response["hint"] = json!(
-                        "0 endpoints — the api name is case-sensitive and must match an \
-                         ApiContext exactly. Call list_apis to get the exact names (e.g. \
-                         `home_assistant`, not `HomeAssistant`), then retry."
-                    );
-                }
-                ToolCallResult::success_json(response)
-            }
-            Err(e) => ToolCallResult::error(format!("list_endpoints query failed: {e}")),
         }
     }
 
@@ -869,8 +747,6 @@ impl Skill for QuerySkill {
         let mut tools = vec![
             Self::neo4j_query_def(),
             Self::describe_graph_def(),
-            Self::list_apis_def(),
-            Self::list_endpoints_def(),
             Self::list_capabilities_def(),
         ];
         if self.telemetry.is_some() {
@@ -884,8 +760,6 @@ impl Skill for QuerySkill {
             "neo4j_query" => Some(self.handle_neo4j_query(args).await),
             "duckdb_query" => Some(self.handle_duckdb_query(args).await),
             "describe_graph" => Some(self.handle_describe_graph().await),
-            "list_apis" => Some(self.handle_list_apis().await),
-            "list_endpoints" => Some(self.handle_list_endpoints(args).await),
             "list_capabilities" => Some(self.handle_list_capabilities(args).await),
             _ => None,
         }
@@ -999,8 +873,6 @@ mod tests {
         // The read/introspection tools do not need telemetry; duckdb does.
         assert!(names.contains(&"neo4j_query".to_string()));
         assert!(names.contains(&"describe_graph".to_string()));
-        assert!(names.contains(&"list_apis".to_string()));
-        assert!(names.contains(&"list_endpoints".to_string()));
         assert!(!names.contains(&"duckdb_query".to_string()));
     }
 

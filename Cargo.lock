@@ -161,6 +161,7 @@ dependencies = [
  "agent-brain-models",
  "agent-brain-plugin-alias-judge",
  "agent-brain-plugin-api",
+ "agent-brain-plugin-apis",
  "agent-brain-plugin-developer",
  "agent-brain-plugin-epistemics",
  "agent-brain-plugin-maps",
@@ -268,6 +269,23 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "agent-brain-plugin-apis"
+version = "0.1.0"
+dependencies = [
+ "agent-brain-plugin-api",
+ "anyhow",
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -469,7 +487,6 @@ dependencies = [
 name = "agent-brain-retrieve"
 version = "0.1.0"
 dependencies = [
- "agent-brain-decision",
  "agent-brain-graph",
  "agent-brain-knowledge",
  "agent-brain-llm",

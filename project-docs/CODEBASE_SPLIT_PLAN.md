@@ -560,7 +560,7 @@ removed (4.9K measured: core 787,284 → 782,378), recorded in `plugins/core/arc
 | Subsystem | Size | Edge into core | Uses | Recommendation |
 |---|---|---|---|---|
 | **HBI backend**: the `api` crate plus its route table in `app/mcp/http_transport.rs` | ~74.5K | only `app` depends on it; it calls deep into `work` and `scheduler` | the HBI only | **make it optional** (an `hbi` feature, its routes moved into the `api` crate), so core builds and runs without it, the way it does without plugins. It isn't a plugin (it needs more than `plugin-api`), but nothing in core needs it. Measured apart from core |
-| **APIs**: `ingest_api`, `define_api_context`, `list_apis`, `list_endpoints` (`retrieve/http/ingest.rs`, `api_context.rs`, part of `query.rs`) | ~18K | only `retrieve/http.rs`; `http_request` stays core and reads `(:ApiContext)` from the graph | api-integrator, `brain-api-sync`; 96 calls | **move** to an `apis` plugin |
+| **APIs**: `ingest_api`, `define_api_context`, `list_apis`, `list_endpoints` (`retrieve/http/ingest.rs`, `api_context.rs`, part of `query.rs`; moved 2026-11-06) | ~18K | only `retrieve/http.rs`; `http_request` stays core and reads `(:ApiContext)` from the graph | api-integrator, `brain-api-sync`; 96 calls | **move** to an `apis` plugin |
 | **MCP client**: `mcp_call`, `mcp_list_tools`, the `:McpServer` seeding (`retrieve/mcp_client.rs`, `work/mcp_client.rs`; moved 2026-11-06) | ~6.5K | `brain_core`, `retrieve` | `ai-dev-board-job-search`, job-applicant; 183 calls | **move** to an `mcp-client` plugin |
 | **Programs** (`work/programs.rs`, `skills/program.rs`, `api/programs.rs`) | ~21.7K | ten files in five crates (revisions, workflows, scheduler items, plugin manager); pausing a program pauses workflows | `program-review`; 179 calls | **keep for now**: moving it first needs host capabilities the plugin API doesn't have (pause a workflow, revisions), which would grow every plugin's contract |
 
@@ -600,7 +600,18 @@ Built:
   `mcp-servers/`. Core profiles that name `mcp_call` (researcher,
   deep-diver) lose it when the plugin is off, as with `deep_research`.
   On by default. Core 782,378 → 775,914; the plugin is 6.5K own, 32K reach.
-- Next: the `apis` plugin, the `hbi` feature, then the lower budget.
+- **The `apis` plugin** (2026-11-06): `ingest_api`, `define_api_context`,
+  `list_apis`, `list_endpoints`, the API tags (`api_tags.rs`) and the
+  `api-integrator` agent, out of `retrieve` into `plugins/apis`. The core
+  keeps `http_request` (with `request_url`, which it had borrowed from
+  `ingest.rs`), the `apis/*.yaml` seeds and `api-retire-check`, which reads
+  the graph only. `define_api_context` proved endpoints by calling
+  `http_request` directly; the plugin API gained `Http` (`ctx.http`, the
+  core's `http_request` as its skill runs it), the same kind of capability
+  as `search` and `reader`. On by default. Core 775,914 → 752,086 (23.8K,
+  more than the 18K estimate: the tags code and the agent moved too); the
+  plugin is 21.6K own, 47K reach.
+- Next: the `hbi` feature, then the lower budget.
 
 ### Phase 4: one process boundary, piloted and measured
 

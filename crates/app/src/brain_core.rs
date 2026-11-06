@@ -570,11 +570,8 @@ impl BrainCore {
             self.storage.telemetry.clone(),
         ));
         skills.push(query_skill.clone());
-        // http_request + ApiContext management.
-        skills.push(Arc::new(HttpSkill::new(
-            self.storage.neo4j.clone(),
-            Some(Arc::clone(&llm)),
-        )));
+        // http_request (ApiContext auth; the apis plugin manages the contexts).
+        skills.push(Arc::new(HttpSkill::new(self.storage.neo4j.clone())));
         skills.push(Arc::new(ModelSkill));
 
         if let Some(neo4j) = &self.storage.neo4j {

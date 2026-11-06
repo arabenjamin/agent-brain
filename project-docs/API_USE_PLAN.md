@@ -115,7 +115,7 @@ catalog" candidates.
     on every start.
   - `define_api_context` / `ingest_api` take `kind` and `topics`, checked before
     anything is saved. With neither, an untagged API is tagged by nimble
-    (`crates/retrieve/src/api_tags.rs`, `API_TAGGER_MODEL`): kind first,
+    (`crates/retrieve/src/api_tags.rs`, since 2026-11-06 `plugins/apis/crate/src/tags.rs`; `API_TAGGER_MODEL`): kind first,
     a `search` API serves no topic, only answers ≥ 0.7 are stored.
   - `list_apis` shows `kind`, `topics`, `tags_by` and `used_by` (steps naming
     the context or calling under its `base_url`), and lists the untagged and

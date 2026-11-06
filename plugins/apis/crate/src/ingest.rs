@@ -1,27 +1,26 @@
-//! `ingest_api`: turn an OpenAPI spec, a docs page or a source tree into a registered API and its endpoints.
+//! `ingest_api` (the `apis` plugin): turn an OpenAPI spec, a docs page or a source tree into a registered API and its endpoints.
 
-use super::HttpSkill;
-use crate::api_tags;
-use agent_brain_protocol::net_policy;
-use agent_brain_protocol::tool_schema;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
-use agent_brain_repository::Neo4jClient;
+use crate::skill::ApisSkill;
+use crate::tags as api_tags;
+use agent_brain_plugin_api::graph::query;
+use agent_brain_plugin_api::protocol::net_policy;
+use agent_brain_plugin_api::protocol::tool_schema;
+use agent_brain_plugin_api::{Graph, ToolCallResult, ToolDefinition};
 use serde::Deserialize;
-use serde_json::{Value, json};
-use std::collections::HashMap;
+use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
 /// One parsed operation from an OpenAPI/Swagger spec. String-valued so it maps
 /// straight onto Neo4j properties (nested params/security/tags are JSON strings,
 /// the same convention `default_headers`/`steps` use elsewhere).
-pub(super) struct ParsedEndpoint {
-    pub(super) method: String,
-    pub(super) path: String,
-    pub(super) summary: String,
-    pub(super) operation_id: String,
-    pub(super) parameters: String,
-    pub(super) security: String,
-    pub(super) tags: String,
+pub(crate) struct ParsedEndpoint {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) summary: String,
+    pub(crate) operation_id: String,
+    pub(crate) parameters: String,
+    pub(crate) security: String,
+    pub(crate) tags: String,
 }
 
 struct ParsedSpec {
@@ -230,41 +229,6 @@ fn derive_api_name(spec: &Value, spec_url: &str) -> String {
 }
 
 /// Parse spec text as JSON, then YAML (many specs are served as .yaml).
-/// The URL a request goes to: `url` when it is absolute, else `url` as a path
-/// under the context's `base_url` (a leading `/` stays under the base path, as
-/// "relative to the API" means). `Err` says what to pass instead.
-pub(super) fn request_url(
-    url: &str,
-    base: Option<&str>,
-    context: Option<&str>,
-) -> Result<String, String> {
-    let url = url.trim();
-    if url::Url::parse(url).is_ok_and(|u| u.has_host()) {
-        return Ok(url.to_string());
-    }
-    let Some(base) = base else {
-        return Err(match context {
-            Some(c) => format!(
-                "url '{url}' is not a full URL, and ApiContext '{c}' has no base_url to \
-                 resolve it against. Pass a full URL. Nothing was requested."
-            ),
-            None => format!(
-                "url '{url}' is not a full URL. Pass one (https://…), or a context_name \
-                 whose base_url it is a path under. Nothing was requested."
-            ),
-        });
-    };
-    let base = if base.ends_with('/') {
-        base.to_string()
-    } else {
-        format!("{base}/")
-    };
-    url::Url::parse(&base)
-        .and_then(|b| b.join(url.trim_start_matches('/')))
-        .map(|u| u.to_string())
-        .map_err(|e| format!("could not resolve '{url}' against base_url '{base}': {e}"))
-}
-
 /// A GitHub file page (`github.com/o/r/blob/<ref>/path`) as its raw file:
 /// the page is HTML around the spec, so fetching it reads as "not a spec".
 fn raw_github_url(url: &str) -> String {
@@ -700,8 +664,8 @@ fn find_route_files(root: &Path) -> Vec<PathBuf> {
     scored.into_iter().map(|(_, p)| p).collect()
 }
 
-impl HttpSkill {
-    pub(super) fn ingest_api_def() -> ToolDefinition {
+impl ApisSkill {
+    pub(crate) fn ingest_api_def() -> ToolDefinition {
         ToolDefinition {
             name: "ingest_api".to_string(),
             description:
@@ -723,7 +687,7 @@ impl HttpSkill {
                           confidence). Query the result with neo4j_query: \
                           MATCH (c:ApiContext {name:$n})-[:EXPOSES]->(e) RETURN e."
                     .to_string(),
-            input_schema: tool_schema!(core "ingest_api"),
+            input_schema: tool_schema!(plugin "ingest_api"),
         }
     }
 
@@ -778,13 +742,11 @@ impl HttpSkill {
 
     /// `ingest_api` with its tags: checked before anything is fetched, applied
     /// to the context the ingest wrote (API_USE_PLAN Phase 1).
-    pub(super) async fn handle_ingest_api(&self, args: Option<Value>) -> ToolCallResult {
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
+    pub(crate) async fn handle_ingest_api(&self, args: Option<Value>) -> ToolCallResult {
+        let g = self.graph.as_ref();
         let req: api_tags::Requested =
             serde_json::from_value(args.clone().unwrap_or_default()).unwrap_or_default();
-        let vocab = match api_tags::Vocab::load(neo4j).await {
+        let vocab = match api_tags::Vocab::load(g).await {
             Ok(v) => v,
             Err(e) => return ToolCallResult::error(e),
         };
@@ -801,9 +763,9 @@ impl HttpSkill {
         let Some(name) = v["api_name"].as_str().map(String::from) else {
             return result;
         };
-        let rows = neo4j
+        let rows = g
             .execute(
-                neo4rs::query(
+                query(
                     "MATCH (c:ApiContext {name: $name}) \
                      OPTIONAL MATCH (c)-[:EXPOSES]->(e:ApiEndpoint) WITH c, e ORDER BY e.path \
                      RETURN coalesce(c.description, '') AS d, \
@@ -823,7 +785,7 @@ impl HttpSkill {
             })
             .unwrap_or_default();
         let text = api_tags::api_text(&name, &desc, &eps);
-        v["tags"] = api_tags::apply(neo4j, &name, &req, &vocab, &text).await;
+        v["tags"] = api_tags::apply(g, &name, &req, &vocab, &text).await;
         ToolCallResult::success_json(v)
     }
 
@@ -849,9 +811,7 @@ impl HttpSkill {
             Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
         };
 
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
+        let g = self.graph.as_ref();
 
         // Exactly one source.
         let set = [
@@ -911,7 +871,7 @@ impl HttpSkill {
                     None => {
                         return self
                             .ingest_html_via_llm(
-                                neo4j,
+                                g,
                                 &docs_url,
                                 &html,
                                 input.name,
@@ -927,7 +887,7 @@ impl HttpSkill {
                     // No spec file — build from route definitions with the LLM.
                     return self
                         .ingest_codebase_via_llm(
-                            neo4j,
+                            g,
                             &path,
                             input.name,
                             input.description,
@@ -950,7 +910,7 @@ impl HttpSkill {
             };
 
         self.persist_spec(
-            neo4j,
+            g,
             &spec,
             &origin_url,
             input.name,
@@ -967,7 +927,7 @@ impl HttpSkill {
     #[allow(clippy::too_many_arguments)]
     async fn persist_spec(
         &self,
-        neo4j: &Neo4jClient,
+        g: &dyn Graph,
         spec: &Value,
         origin_url: &str,
         name_override: Option<String>,
@@ -995,7 +955,7 @@ impl HttpSkill {
             .unwrap_or_default();
 
         self.persist_endpoints(
-            neo4j,
+            g,
             &name,
             &parsed.base_url,
             &parsed.version,
@@ -1015,9 +975,9 @@ impl HttpSkill {
     /// together — no cross-connection MATCH — and a RETURN count confirms the
     /// write landed rather than trusting Ok(())).
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn persist_endpoints(
+    pub(crate) async fn persist_endpoints(
         &self,
-        neo4j: &Neo4jClient,
+        g: &dyn Graph,
         name: &str,
         base_url: &str,
         version: &str,
@@ -1029,18 +989,20 @@ impl HttpSkill {
         prune: bool,
     ) -> ToolCallResult {
         let ts = chrono::Utc::now().to_rfc3339();
-        let mut batch: Vec<neo4rs::BoltType> = Vec::with_capacity(endpoints.len());
-        for ep in endpoints {
-            let mut row: HashMap<String, neo4rs::BoltType> = HashMap::new();
-            row.insert("method".into(), ep.method.clone().into());
-            row.insert("path".into(), ep.path.clone().into());
-            row.insert("summary".into(), ep.summary.clone().into());
-            row.insert("operation_id".into(), ep.operation_id.clone().into());
-            row.insert("parameters".into(), ep.parameters.clone().into());
-            row.insert("security".into(), ep.security.clone().into());
-            row.insert("tags".into(), ep.tags.clone().into());
-            batch.push(neo4rs::BoltType::from(row));
-        }
+        let batch: Vec<Value> = endpoints
+            .iter()
+            .map(|ep| {
+                let mut row = Map::new();
+                row.insert("method".into(), json!(ep.method));
+                row.insert("path".into(), json!(ep.path));
+                row.insert("summary".into(), json!(ep.summary));
+                row.insert("operation_id".into(), json!(ep.operation_id));
+                row.insert("parameters".into(), json!(ep.parameters));
+                row.insert("security".into(), json!(ep.security));
+                row.insert("tags".into(), json!(ep.tags));
+                Value::Object(row)
+            })
+            .collect();
 
         let cypher = r"
         MERGE (c:ApiContext {name: $name})
@@ -1065,9 +1027,9 @@ impl HttpSkill {
         RETURN count(e) AS n
         ";
 
-        let rows = match neo4j
+        let rows = match g
             .execute(
-                neo4rs::query(cypher)
+                query(cypher)
                     .param("name", name.to_string())
                     .param("base_url", base_url.to_string())
                     .param("description", description.to_string())
@@ -1109,9 +1071,9 @@ impl HttpSkill {
             DETACH DELETE e
             RETURN count(e) AS pruned
             ";
-            match neo4j
+            match g
                 .execute(
-                    neo4rs::query(prune_cypher)
+                    query(prune_cypher)
                         .param("name", name.to_string())
                         .param("ts", ts),
                 )
@@ -1162,7 +1124,7 @@ impl HttpSkill {
     #[allow(clippy::too_many_arguments)]
     async fn ingest_html_via_llm(
         &self,
-        neo4j: &Neo4jClient,
+        g: &dyn Graph,
         docs_url: &str,
         html: &str,
         name_override: Option<String>,
@@ -1242,7 +1204,7 @@ impl HttpSkill {
         let description = description_override.unwrap_or_default();
 
         self.persist_endpoints(
-            neo4j,
+            g,
             &name,
             &base_url,
             "html_llm_extracted",
@@ -1263,7 +1225,7 @@ impl HttpSkill {
     #[allow(clippy::too_many_arguments)]
     async fn ingest_codebase_via_llm(
         &self,
-        neo4j: &Neo4jClient,
+        g: &dyn Graph,
         codebase_path: &str,
         name_override: Option<String>,
         description_override: Option<String>,
@@ -1365,7 +1327,7 @@ impl HttpSkill {
         let description = description_override.unwrap_or_default();
 
         self.persist_endpoints(
-            neo4j,
+            g,
             &name,
             &base_url,
             "codebase_generated",
@@ -1383,41 +1345,6 @@ impl HttpSkill {
 #[cfg(test)]
 mod ingest_api_tests {
     use super::*;
-
-    #[test]
-    fn a_relative_url_resolves_under_the_context_base_path() {
-        let base = Some("https://openviglet.github.io/model-catalog/");
-        let want = "https://openviglet.github.io/model-catalog/by-kind/CHAT.json";
-        assert_eq!(
-            request_url("by-kind/CHAT.json", base, Some("c")).unwrap(),
-            want
-        );
-        // A leading slash stays under the base path, and a base without a
-        // trailing slash keeps its last segment.
-        assert_eq!(
-            request_url("/by-kind/CHAT.json", base, Some("c")).unwrap(),
-            want
-        );
-        assert_eq!(
-            request_url(
-                "by-kind/CHAT.json",
-                Some("https://openviglet.github.io/model-catalog"),
-                Some("c")
-            )
-            .unwrap(),
-            want
-        );
-        // An absolute url is used as given, base or not.
-        assert_eq!(
-            request_url("https://example.com/x", base, Some("c")).unwrap(),
-            "https://example.com/x"
-        );
-        // No base to resolve against: say so, instead of a "builder error".
-        let e = request_url("by-kind/CHAT.json", None, None).unwrap_err();
-        assert!(e.contains("not a full URL"), "{e}");
-        let e = request_url("x.json", None, Some("c")).unwrap_err();
-        assert!(e.contains("has no base_url"), "{e}");
-    }
 
     #[test]
     fn a_github_file_page_is_read_as_its_raw_file() {

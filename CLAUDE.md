@@ -54,7 +54,7 @@ graph/      plugin bundles, logging, clock, entity resolution, topics, snapshots
 knowledge/  notes, hybrid retrieval, reasoning, consolidation, store traits
 work/       queue + ToolHandler, workflows, validation, profiles/context, MCP client
 scheduler/  scheduler, items, run repair      chat/  ChatService round loop + sub-agents
-retrieve/   search, http/ingest_api, MCP tools, queries   skills/  other core tools
+retrieve/   search, http_request, read_page, queries   skills/  other core tools
 api/        HBI REST      host/  plugin host, manage_plugin, self-model
 app/src/    main, cli, config, brain_core, mcp/ (server, transports); `services::`,
             `skills::`, `clients::` re-export the crates above at their old paths

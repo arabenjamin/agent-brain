@@ -1,0 +1,6 @@
+# Register and understand outside APIs: ingest_api reads an OpenAPI spec, a docs page or a source tree into an ApiContext and its endpoints; define_api_context registers one by hand and probes its GET endpoints; list_apis and list_endpoints answer what is registered; the api-integrator agent. http_request, in core, calls them.
+# Stamped from templates/plugin (scripts/plugin_template.sh); .cruft.json
+# records the template commit it is current with.
+name: apis
+version: 1
+description: "Register and understand outside APIs: ingest_api reads an OpenAPI spec, a docs page or a source tree into an ApiContext and its endpoints; define_api_context registers one by hand and probes its GET endpoints; list_apis and list_endpoints answer what is registered; the api-integrator agent. http_request, in core, calls them."

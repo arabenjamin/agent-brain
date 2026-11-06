@@ -4,7 +4,6 @@
 //! CORE_AND_PLUGINS_PLAN 6f; the app re-exports each module at its old
 //! `skills::` path.
 
-pub mod api_tags;
 pub mod http;
 pub mod page_readers;
 pub mod query;

@@ -1,0 +1,26 @@
+{
+  "template": ".",
+  "commit": "0aabaf193d086335811713c7ac2e27f2a13e213a",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "apis",
+      "description": "Register and understand outside APIs: ingest_api reads an OpenAPI spec, a docs page or a source tree into an ApiContext and its endpoints; define_api_context registers one by hand and probes its GET endpoints; list_apis and list_endpoints answer what is registered; the api-integrator agent. http_request, in core, calls them.",
+      "kind": "rust",
+      "tools": "ingest_api,define_api_context,list_apis,list_endpoints",
+      "graph_labels": "",
+      "needs_env": "",
+      "__struct": "Apis",
+      "__crate": "agent-brain-plugin-apis",
+      "_template": ".",
+      "_commit": "0aabaf193d086335811713c7ac2e27f2a13e213a"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "README.md",
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}

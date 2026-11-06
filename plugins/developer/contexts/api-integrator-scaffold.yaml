@@ -1,6 +1,6 @@
-# Adds when-to-draft-a-plugin rules for scaffold_plugin to the core
+# Adds when-to-draft-a-plugin rules for scaffold_plugin to the apis plugin's
 # `api-integrator` profile (whose allowlist names the tool). Rendered only
-# while the developer plugin is loaded and the tool registered
+# while both plugins are loaded and the tool registered
 # (CODEBASE_SPLIT_PLAN Phase 2 step 5).
 extends: api-integrator
 description: When an integration needs its own plugin bundle, and how to draft one.

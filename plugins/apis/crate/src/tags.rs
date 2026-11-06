@@ -1,4 +1,4 @@
-//! API tags (API_USE_PLAN Phase 1): what an `(:ApiContext)` is about and what
+//! API tags (API_USE_PLAN Phase 1; in the `apis` plugin since 2026-11-06): what an `(:ApiContext)` is about and what
 //! kind of data it gives, from two closed lists in the graph — `(:Topic)` and
 //! `(:ApiKind)` (`apis/_kinds.yaml`). Stored as `api_kind`, `tags_by`,
 //! `tagged_at` and `(:ApiContext)-[:SERVES]->(:Topic)`.
@@ -9,11 +9,11 @@
 //! kind 12 of 12; topics right once kind `search` serves none. A tag below
 //! 0.7 is left off, never guessed.
 
-use agent_brain_decision::{self as decision, Question};
+use agent_brain_plugin_api::decision::{self, Question};
+use agent_brain_plugin_api::graph::query;
+use agent_brain_plugin_api::{Graph, engine};
 use serde_json::{Value, json};
 use tracing::warn;
-
-use agent_brain_repository::Neo4jClient;
 
 /// The confidence a nimble answer needs to become a tag (Phase 0, as the alias judge).
 const SURE: f64 = 0.7;
@@ -30,9 +30,9 @@ pub struct Vocab {
 }
 
 impl Vocab {
-    pub async fn load(neo4j: &Neo4jClient) -> Result<Self, String> {
-        let kinds = neo4j
-            .execute(neo4rs::query(
+    pub async fn load(g: &dyn Graph) -> Result<Self, String> {
+        let kinds = g
+            .execute(query(
                 "MATCH (k:ApiKind) RETURN k.name AS name, coalesce(k.description, '') AS d ORDER BY name",
             ))
             .await
@@ -40,8 +40,8 @@ impl Vocab {
             .iter()
             .filter_map(|r| Some((r.get::<String>("name").ok()?, r.get::<String>("d").unwrap_or_default())))
             .collect();
-        let topics = neo4j
-            .execute(neo4rs::query(
+        let topics = g
+            .execute(query(
                 "MATCH (t:Topic) RETURN t.name AS name, coalesce(t.label, t.name) AS label, \
                  coalesce(t.description, '') AS d ORDER BY name",
             ))
@@ -115,12 +115,12 @@ pub fn check(req: &Requested, vocab: &Vocab) -> Result<(), String> {
 
 /// The API's stored tags: `(kind, topics, tags_by)`.
 pub async fn stored(
-    neo4j: &Neo4jClient,
+    g: &dyn Graph,
     name: &str,
 ) -> Option<(Option<String>, Vec<String>, Option<String>)> {
-    let rows = neo4j
+    let rows = g
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (c:ApiContext {name: $name}) OPTIONAL MATCH (c)-[:SERVES]->(t:Topic) \
                  RETURN c.api_kind AS kind, c.tags_by AS by, collect(t.name) AS topics",
             )
@@ -138,15 +138,15 @@ pub async fn stored(
 
 /// Write tags. `topics: Some` replaces the SERVES set; `kind: Some("")` clears it.
 pub async fn store(
-    neo4j: &Neo4jClient,
+    g: &dyn Graph,
     name: &str,
     kind: Option<&str>,
     topics: Option<&[String]>,
     by: &str,
     detail: Option<&Value>,
 ) -> Result<(), String> {
-    let err = |e: agent_brain_repository::RepositoryError| format!("storing tags failed: {e}");
-    let q = neo4rs::query(
+    let err = |e: anyhow::Error| format!("storing tags failed: {e}");
+    let q = query(
         "MATCH (c:ApiContext {name: $name}) \
          SET c.tags_by = $by, c.tagged_at = datetime(), \
              c.api_kind = CASE WHEN $set_kind THEN (CASE WHEN $kind = '' THEN null ELSE $kind END) ELSE c.api_kind END, \
@@ -157,33 +157,31 @@ pub async fn store(
     .param("set_kind", kind.is_some())
     .param("kind", kind.unwrap_or_default())
     .param("detail", detail.map(Value::to_string).unwrap_or_default());
-    neo4j.run(q).await.map_err(err)?;
+    g.run(q).await.map_err(err)?;
     let Some(topics) = topics else {
         return Ok(());
     };
-    neo4j
-        .run(
-            neo4rs::query("MATCH (:ApiContext {name: $name})-[s:SERVES]->(:Topic) DELETE s")
-                .param("name", name),
-        )
-        .await
-        .map_err(err)?;
-    neo4j
-        .run(
-            neo4rs::query(
-                "MATCH (c:ApiContext {name: $name}) UNWIND $topics AS t \
+    g.run(
+        query("MATCH (:ApiContext {name: $name})-[s:SERVES]->(:Topic) DELETE s")
+            .param("name", name),
+    )
+    .await
+    .map_err(err)?;
+    g.run(
+        query(
+            "MATCH (c:ApiContext {name: $name}) UNWIND $topics AS t \
                  MATCH (topic:Topic {name: t}) MERGE (c)-[:SERVES]->(topic)",
-            )
-            .param("name", name)
-            .param("topics", topics.to_vec()),
         )
-        .await
-        .map_err(err)
+        .param("name", name)
+        .param("topics", topics.to_vec()),
+    )
+    .await
+    .map_err(err)
 }
 
 /// The tagger model: the decision role, `None` when it is off.
 fn tagger_model() -> Option<String> {
-    agent_brain_llm::engine::model(agent_brain_llm::engine::Role::Decision)
+    engine::model(engine::Role::Decision)
 }
 
 /// The text nimble reads: name, description, up to 15 endpoint summaries
@@ -286,27 +284,16 @@ pub async fn propose(text: &str, vocab: &Vocab) -> Result<Proposal, String> {
 /// Tag an API after it is saved, and say what was done (the result's `tags`).
 /// Passed tags win; else an untagged API is offered to nimble; else the
 /// stored tags stay. Never fails the save it follows.
-pub async fn apply(
-    neo4j: &Neo4jClient,
-    name: &str,
-    req: &Requested,
-    vocab: &Vocab,
-    text: &str,
-) -> Value {
+pub async fn apply(g: &dyn Graph, name: &str, req: &Requested, vocab: &Vocab, text: &str) -> Value {
     if req.given() {
         let topics = req.topics.as_deref();
-        return match store(neo4j, name, req.kind.as_deref(), topics, "caller", None).await {
-            Ok(()) => describe(neo4j, name, "set from this call").await,
+        return match store(g, name, req.kind.as_deref(), topics, "caller", None).await {
+            Ok(()) => describe(g, name, "set from this call").await,
             Err(e) => json!({ "error": e }),
         };
     }
-    if let Some((Some(_), _, _)) = stored(neo4j, name).await {
-        return describe(
-            neo4j,
-            name,
-            "kept: already tagged; pass kind/topics to change",
-        )
-        .await;
+    if let Some((Some(_), _, _)) = stored(g, name).await {
+        return describe(g, name, "kept: already tagged; pass kind/topics to change").await;
     }
     match propose(text, vocab).await {
         Ok(p) if p.kind.is_none() => json!({
@@ -315,7 +302,7 @@ pub async fn apply(
             "scores": p.scores,
         }),
         Ok(p) => match store(
-            neo4j,
+            g,
             name,
             p.kind.as_deref(),
             Some(&p.topics),
@@ -326,7 +313,7 @@ pub async fn apply(
         {
             Ok(()) => {
                 let mut d = describe(
-                    neo4j,
+                    g,
                     name,
                     "proposed by nimble (>= 0.7); pass kind/topics to correct",
                 )
@@ -343,8 +330,8 @@ pub async fn apply(
     }
 }
 
-async fn describe(neo4j: &Neo4jClient, name: &str, how: &str) -> Value {
-    match stored(neo4j, name).await {
+async fn describe(g: &dyn Graph, name: &str, how: &str) -> Value {
+    match stored(g, name).await {
         Some((kind, topics, by)) => {
             json!({ "kind": kind, "topics": topics, "tags_by": by, "note": how })
         }

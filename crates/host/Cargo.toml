@@ -27,6 +27,7 @@ agent-brain-plugin-sandbox = { path = "../../plugins/sandbox/crate", optional = 
 agent-brain-plugin-websocket = { path = "../../plugins/websocket/crate", optional = true }
 agent-brain-plugin-maps = { path = "../../plugins/maps/crate", optional = true }
 agent-brain-plugin-mcp-client = { path = "../../plugins/mcp-client/crate", optional = true }
+agent-brain-plugin-apis = { path = "../../plugins/apis/crate", optional = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
@@ -43,7 +44,7 @@ uuid = { workspace = true }
 [features]
 # Each compiled plugin is optional, so core must build without them (CI checks it).
 default = ["plugins"]
-plugins = ["plugin-osint-data", "plugin-research", "plugin-media", "plugin-alias-judge", "plugin-reference", "plugin-developer", "plugin-epistemics", "plugin-sandbox", "plugin-websocket", "plugin-maps", "plugin-mcp-client"]
+plugins = ["plugin-osint-data", "plugin-research", "plugin-media", "plugin-alias-judge", "plugin-reference", "plugin-developer", "plugin-epistemics", "plugin-sandbox", "plugin-websocket", "plugin-maps", "plugin-mcp-client", "plugin-apis"]
 plugin-osint-data = ["dep:agent-brain-plugin-osint-data"]
 plugin-research = ["dep:agent-brain-plugin-research"]
 plugin-media = ["dep:agent-brain-plugin-media"]
@@ -55,6 +56,7 @@ plugin-sandbox = ["dep:agent-brain-plugin-sandbox"]
 plugin-websocket = ["dep:agent-brain-plugin-websocket"]
 plugin-maps = ["dep:agent-brain-plugin-maps"]
 plugin-mcp-client = ["dep:agent-brain-plugin-mcp-client"]
+plugin-apis = ["dep:agent-brain-plugin-apis"]
 
 [dev-dependencies]
 # Seed-schema test (CODEBASE_SPLIT_PLAN Phase 1).

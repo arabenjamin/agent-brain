@@ -8,7 +8,6 @@ description = "Agent Brain's retrieval tools: web search, HTTP and API ingest, M
 agent-brain-repository = { path = "../repository" }
 agent-brain-protocol = { path = "../protocol" }
 agent-brain-llm = { path = "../llm" }
-agent-brain-decision = { path = "../decision" }
 agent-brain-graph = { path = "../graph" }
 agent-brain-knowledge = { path = "../knowledge" }
 agent-brain-work = { path = "../work" }

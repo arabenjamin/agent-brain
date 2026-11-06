@@ -27,7 +27,7 @@ template change in as a diff to review.
 | `workflows/capability-mining.yaml` | weekly: failing tasks grouped by capability, reasoned into workflow, plugin or skill candidates (a reflection note) |
 | `workflows/codebase.yaml`, `diagnose.yaml` | self-analysis of the code; a failure's diagnosis staged as a proposal |
 | `contexts/code-analyst.yaml`, `self-analyst.yaml` | the agents that work on the code and on the brain itself |
-| `contexts/api-integrator-scaffold.yaml` | adds to the core `api-integrator` when to draft a plugin with `scaffold_plugin` |
+| `contexts/api-integrator-scaffold.yaml` | adds to the apis plugin's `api-integrator` when to draft a plugin with `scaffold_plugin` |
 
 Graph access is in `dev_notes.rs` and `arch.rs`. The plugin reads code (`CODEBASE_DIR`) and writes only the workspace and the dev notes: it never changes a repo file.
 

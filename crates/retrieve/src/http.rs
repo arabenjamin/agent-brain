@@ -5,16 +5,13 @@
 //! are resolved from the environment variable named in `auth_env_var` — secrets
 //! never touch the database.
 //!
-//! `define_api_context` manages the `ApiContext` nodes that power auth injection.
-//! Use `neo4j_query` to inspect contexts: MATCH (c:ApiContext) RETURN c
-//!
-//! This file holds `http_request` and the tool dispatch. `http/ingest.rs` holds
-//! `ingest_api`, `http/api_context.rs` holds `define_api_context`.
+//! The `apis` plugin's `define_api_context` and `ingest_api` write the
+//! `ApiContext` nodes; `apis/*.yaml` seeds them. Inspect them with `list_apis`
+//! (that plugin) or `neo4j_query`: MATCH (c:ApiContext) RETURN c
 
 use agent_brain_protocol::net_policy;
 use agent_brain_protocol::tool_schema;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -22,14 +19,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::debug;
 
-use agent_brain_llm::LlmProvider;
 use agent_brain_protocol::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_repository::Neo4jClient;
-
-mod api_context;
-mod ingest;
-use ingest::*;
 
 // ── Response field projection (http_request `pick`) ─────────────────────────
 //
@@ -136,15 +128,10 @@ fn project_body(body: &Value, picks: &[String]) -> Value {
 pub struct HttpSkill {
     neo4j: Option<Neo4jClient>,
     client: reqwest::Client,
-    /// Used only by `ingest_api`'s HTML-with-no-spec fallback (extract endpoints
-    /// from a docs page's text). `None` disables that fallback cleanly. Every
-    /// deterministic path (spec_url, docs_url with a linked spec, codebase_path)
-    /// works without it.
-    llm: Option<Arc<dyn LlmProvider>>,
 }
 
 impl HttpSkill {
-    pub fn new(neo4j: Option<Neo4jClient>, llm: Option<Arc<dyn LlmProvider>>) -> Self {
+    pub fn new(neo4j: Option<Neo4jClient>) -> Self {
         Self {
             neo4j,
             // Under the network policy: a model's URL reaches public hosts only
@@ -154,7 +141,6 @@ impl HttpSkill {
                 .user_agent("agent-brain/1.0")
                 .build()
                 .expect("Failed to build HTTP client"),
-            llm,
         }
     }
 
@@ -402,6 +388,37 @@ impl HttpSkill {
     }
 }
 
+/// The URL a request goes to: `url` when it is absolute, else `url` as a path
+/// under the context's `base_url` (a leading `/` stays under the base path, as
+/// "relative to the API" means). `Err` says what to pass instead.
+fn request_url(url: &str, base: Option<&str>, context: Option<&str>) -> Result<String, String> {
+    let url = url.trim();
+    if url::Url::parse(url).is_ok_and(|u| u.has_host()) {
+        return Ok(url.to_string());
+    }
+    let Some(base) = base else {
+        return Err(match context {
+            Some(c) => format!(
+                "url '{url}' is not a full URL, and ApiContext '{c}' has no base_url to \
+                 resolve it against. Pass a full URL. Nothing was requested."
+            ),
+            None => format!(
+                "url '{url}' is not a full URL. Pass one (https://…), or a context_name \
+                 whose base_url it is a path under. Nothing was requested."
+            ),
+        });
+    };
+    let base = if base.ends_with('/') {
+        base.to_string()
+    } else {
+        format!("{base}/")
+    };
+    url::Url::parse(&base)
+        .and_then(|b| b.join(url.trim_start_matches('/')))
+        .map(|u| u.to_string())
+        .map_err(|e| format!("could not resolve '{url}' against base_url '{base}': {e}"))
+}
+
 // Internal type used during auth injection
 struct ApiContext {
     base_url: Option<String>,
@@ -418,21 +435,54 @@ impl Skill for HttpSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        let mut tools = vec![Self::http_request_def()];
-        if self.neo4j.is_some() {
-            tools.push(Self::define_api_context_def());
-            tools.push(Self::ingest_api_def());
-        }
-        tools
+        vec![Self::http_request_def()]
     }
 
     async fn execute(&self, name: &str, args: Option<Value>) -> Option<ToolCallResult> {
         match name {
             "http_request" => Some(self.handle_http_request(args).await),
-            "define_api_context" => Some(self.handle_define_api_context(args).await),
-            "ingest_api" => Some(self.handle_ingest_api(args).await),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod request_url_tests {
+    use super::request_url;
+
+    #[test]
+    fn a_relative_url_resolves_under_the_context_base_path() {
+        let base = Some("https://openviglet.github.io/model-catalog/");
+        let want = "https://openviglet.github.io/model-catalog/by-kind/CHAT.json";
+        assert_eq!(
+            request_url("by-kind/CHAT.json", base, Some("c")).unwrap(),
+            want
+        );
+        // A leading slash stays under the base path, and a base without a
+        // trailing slash keeps its last segment.
+        assert_eq!(
+            request_url("/by-kind/CHAT.json", base, Some("c")).unwrap(),
+            want
+        );
+        assert_eq!(
+            request_url(
+                "by-kind/CHAT.json",
+                Some("https://openviglet.github.io/model-catalog"),
+                Some("c")
+            )
+            .unwrap(),
+            want
+        );
+        // An absolute url is used as given, base or not.
+        assert_eq!(
+            request_url("https://example.com/x", base, Some("c")).unwrap(),
+            "https://example.com/x"
+        );
+        // No base to resolve against: say so, instead of a "builder error".
+        let e = request_url("by-kind/CHAT.json", None, None).unwrap_err();
+        assert!(e.contains("not a full URL"), "{e}");
+        let e = request_url("x.json", None, Some("c")).unwrap_err();
+        assert!(e.contains("has no base_url"), "{e}");
     }
 }
 

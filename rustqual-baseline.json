@@ -692,68 +692,68 @@
     },
     {
       "name": "check",
-      "file": "crates/retrieve/src/api_tags.rs",
+      "file": "plugins/apis/crate/src/tags.rs",
       "line": 88
     },
     {
       "name": "body_sample",
-      "file": "crates/retrieve/src/http/api_context.rs",
-      "line": 56
+      "file": "plugins/apis/crate/src/context.rs",
+      "line": 58
     },
     {
-      "name": "HttpSkill::handle_define_api_context",
-      "file": "crates/retrieve/src/http/api_context.rs",
-      "line": 175
+      "name": "ApisSkill::handle_define_api_context",
+      "file": "plugins/apis/crate/src/context.rs",
+      "line": 120
     },
     {
-      "name": "HttpSkill::store_probed_endpoints",
-      "file": "crates/retrieve/src/http/api_context.rs",
-      "line": 294
+      "name": "ApisSkill::store_probed_endpoints",
+      "file": "plugins/apis/crate/src/context.rs",
+      "line": 239
     },
     {
       "name": "parse_api_spec",
-      "file": "crates/retrieve/src/http/ingest.rs",
+      "file": "plugins/apis/crate/src/ingest.rs",
       "line": 40
     },
     {
       "name": "extract_security",
-      "file": "crates/retrieve/src/http/ingest.rs",
+      "file": "plugins/apis/crate/src/ingest.rs",
       "line": 151
     },
     {
       "name": "detect_spec_url_in_html",
-      "file": "crates/retrieve/src/http/ingest.rs",
-      "line": 437
+      "file": "plugins/apis/crate/src/ingest.rs",
+      "line": 402
     },
     {
       "name": "find_js_refs",
-      "file": "crates/retrieve/src/http/ingest.rs",
-      "line": 500
+      "file": "plugins/apis/crate/src/ingest.rs",
+      "line": 465
     },
     {
       "name": "find_route_files",
-      "file": "crates/retrieve/src/http/ingest.rs",
-      "line": 644
+      "file": "plugins/apis/crate/src/ingest.rs",
+      "line": 609
     },
     {
-      "name": "HttpSkill::find_linked_spec",
-      "file": "crates/retrieve/src/http/ingest.rs",
-      "line": 801
+      "name": "ApisSkill::find_linked_spec",
+      "file": "plugins/apis/crate/src/ingest.rs",
+      "line": 729
     },
     {
-      "name": "HttpSkill::handle_ingest_api",
-      "file": "crates/retrieve/src/http/ingest.rs",
-      "line": 817
+      "name": "ApisSkill::handle_ingest_api",
+      "file": "plugins/apis/crate/src/ingest.rs",
+      "line": 745
     },
     {
-      "name": "HttpSkill::ingest_api_untagged",
-      "file": "crates/retrieve/src/http/ingest.rs",
-      "line": 866
+      "name": "ApisSkill::ingest_api_untagged",
+      "file": "plugins/apis/crate/src/ingest.rs",
+      "line": 792
     },
     {
-      "name": "HttpSkill::ingest_codebase_via_llm",
-      "file": "crates/retrieve/src/http/ingest.rs",
-      "line": 1300
+      "name": "ApisSkill::ingest_codebase_via_llm",
+      "file": "plugins/apis/crate/src/ingest.rs",
+      "line": 1226
     },
     {
       "name": "set_path",
@@ -806,14 +806,14 @@
       "line": 192
     },
     {
-      "name": "QuerySkill::handle_list_apis",
-      "file": "crates/retrieve/src/query.rs",
-      "line": 478
+      "name": "ApisSkill::handle_list_apis",
+      "file": "plugins/apis/crate/src/skill.rs",
+      "line": 78
     },
     {
-      "name": "QuerySkill::handle_list_endpoints",
-      "file": "crates/retrieve/src/query.rs",
-      "line": 521
+      "name": "ApisSkill::handle_list_endpoints",
+      "file": "plugins/apis/crate/src/skill.rs",
+      "line": 118
     },
     {
       "name": "QuerySkill::handle_list_capabilities",
