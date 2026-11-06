@@ -1,0 +1,25 @@
+{
+  "template": ".",
+  "commit": "2eaf1f3cd8e3eef46ca21c48658062d33ae7de96",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "maps",
+      "description": "Places and spatial questions: geocode (a place name to a point: the brain's own located entities first, then a cache, then OpenStreetMap's Nominatim, public names only), the views places_near and notes_near, map layers (layers/*.yaml, read-only queries the HBI's Map panel draws) with places added by hand, and ship (aisstream.io) and aircraft (OpenSky) tracks over watch areas (areas/*.yaml) with area_traffic, every count with its coverage.",
+      "kind": "rust",
+      "tools": "area_traffic,geocode",
+      "graph_labels": "Place,WatchArea",
+      "needs_env": "",
+      "__struct": "Maps",
+      "__crate": "agent-brain-plugin-maps",
+      "_template": ".",
+      "_commit": "2eaf1f3cd8e3eef46ca21c48658062d33ae7de96"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}

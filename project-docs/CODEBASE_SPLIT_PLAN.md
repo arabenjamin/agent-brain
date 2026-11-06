@@ -436,8 +436,8 @@ called with no arguments, a real tool may go to the network.
 
 Linked 2026-11-06, in four commits: `websocket`; the data plugins `github`,
 `harness`, `ml-lab`; the small Rust ones `alias-judge`, `osint-data`,
-`sandbox`, `research`, `reference`; then `developer`, `epistemics`. Left, one
-commit each: maps, media.
+`sandbox`, `research`, `reference`; then `developer`, `epistemics`, `maps`.
+Left: media.
 
 Done when: a new plugin is one command, every plugin passes
 `plugin_template.sh check`, and none was hand-built.
