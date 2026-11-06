@@ -1,0 +1,25 @@
+{
+  "template": ".",
+  "commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "osint-data",
+      "description": "ACLED conflict-event data (acled_events): live queries, summarised, with ACLED's attribution.",
+      "kind": "rust",
+      "tools": "acled_events",
+      "graph_labels": "",
+      "needs_env": "ACLED_EMAIL,ACLED_PASSWORD",
+      "__struct": "OsintData",
+      "__crate": "agent-brain-plugin-osint-data",
+      "_template": ".",
+      "_commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}

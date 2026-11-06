@@ -25,3 +25,17 @@ impl Plugin for OsintData {
             .unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_matches_plugin_yaml() {
+        let want = format!("name: {}", OsintData.name());
+        assert!(
+            include_str!("../../plugin.yaml").lines().any(|l| l == want),
+            "plugin.yaml has no `{want}` line"
+        );
+    }
+}

@@ -1,0 +1,25 @@
+{
+  "template": ".",
+  "commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "reference",
+      "description": "Reference links (link_entities, the entity-linking workflow), entity kinds from Wikidata classes (kinds.yaml, type questions), and Wikipedia background (wiki_background), with their HBI routes.",
+      "kind": "rust",
+      "tools": "link_entities,wiki_background",
+      "graph_labels": "",
+      "needs_env": "",
+      "__struct": "Reference",
+      "__crate": "agent-brain-plugin-reference",
+      "_template": ".",
+      "_commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}

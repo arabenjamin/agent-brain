@@ -1,0 +1,25 @@
+{
+  "template": ".",
+  "commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "alias-judge",
+      "description": "Alias verdicts: judges each entity merge candidate (same / related / different, with probabilities) on idle time, so the merge review sorts the likely ones first. The person still decides every merge.",
+      "kind": "rust",
+      "tools": "",
+      "graph_labels": "",
+      "needs_env": "",
+      "__struct": "AliasJudge",
+      "__crate": "agent-brain-plugin-alias-judge",
+      "_template": ".",
+      "_commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}

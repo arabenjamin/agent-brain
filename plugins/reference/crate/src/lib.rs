@@ -83,3 +83,17 @@ impl Plugin for Reference {
         })))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_matches_plugin_yaml() {
+        let want = format!("name: {}", Reference.name());
+        assert!(
+            include_str!("../../plugin.yaml").lines().any(|l| l == want),
+            "plugin.yaml has no `{want}` line"
+        );
+    }
+}

@@ -1,0 +1,25 @@
+{
+  "template": ".",
+  "commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "sandbox",
+      "description": "Run Python or Rust in an isolated, offline sandbox (execute_code): compute an answer instead of asserting it, or compile and test a crate.",
+      "kind": "rust",
+      "tools": "execute_code",
+      "graph_labels": "",
+      "needs_env": "",
+      "__struct": "Sandbox",
+      "__crate": "agent-brain-plugin-sandbox",
+      "_template": ".",
+      "_commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}

@@ -434,9 +434,10 @@ above:
 The template's dispatch test (call every tool) isn't added to older plugins:
 called with no arguments, a real tool may go to the network.
 
-Linked: `websocket`, then `github`, `harness`, `ml-lab` (2026-11-06). Left:
-alias-judge, developer, epistemics, maps, media, osint-data, reference,
-research, sandbox.
+Linked 2026-11-06, in four commits: `websocket`; the data plugins `github`,
+`harness`, `ml-lab`; the small Rust ones `alias-judge`, `osint-data`,
+`sandbox`, `research`, `reference`. Left, one commit each: developer,
+epistemics, maps, media.
 
 Done when: a new plugin is one command, every plugin passes
 `plugin_template.sh check`, and none was hand-built.

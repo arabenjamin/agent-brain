@@ -1,0 +1,25 @@
+{
+  "template": ".",
+  "commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "research",
+      "description": "Deep research (deep_research): a cited multi-source report from Parallel's Task API, capped by a monthly spend ledger (:ResearchRun), and the deep-research workflow.",
+      "kind": "rust",
+      "tools": "deep_research",
+      "graph_labels": "ResearchRun",
+      "needs_env": "PARALLEL_API_KEY",
+      "__struct": "Research",
+      "__crate": "agent-brain-plugin-research",
+      "_template": ".",
+      "_commit": "9bab18327c4bd0f1930b94950a30447e3b7ccbaf"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}
