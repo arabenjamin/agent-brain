@@ -260,7 +260,7 @@ pub struct NoteSpec {
     /// Words the content must all contain (any case).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<String>,
-    /// A claim's standing: `unverified`, `corroborated` or `refuted`.
+    /// A claim's standing: `unverified`, `corroborated`, `refuted` or `contested`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
@@ -284,7 +284,7 @@ pub const NOTE_SLOTS: &[&str] = &[
     "window", "on", "kinds", "from", "topic", "entity", "words", "status", "as", "order", "limit",
 ];
 
-const STATUSES: &[&str] = &["unverified", "corroborated", "refuted"];
+const STATUSES: &[&str] = &["unverified", "corroborated", "refuted", "contested"];
 
 impl NoteSpec {
     fn set_slots(&self) -> Vec<&'static str> {

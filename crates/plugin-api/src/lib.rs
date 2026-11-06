@@ -288,6 +288,31 @@ pub trait Llm: Send + Sync {
         required_keys: &[&str],
         max_retries: u32,
     ) -> anyhow::Result<Value>;
+
+    /// `generate_json` on one named model from the catalog (`models.yaml`),
+    /// for this call only, admitted by the routing policy exactly as a
+    /// workflow step's pinned model is (purpose, data class, who started the
+    /// work, spend caps). `Err` says why it could not run; the caller decides
+    /// whether to fall back to `generate_json`. A host without a catalog
+    /// refuses.
+    async fn generate_json_on(
+        &self,
+        model: &str,
+        prompt: &str,
+        system: Option<&str>,
+        required_keys: &[&str],
+        max_retries: u32,
+    ) -> anyhow::Result<Value> {
+        let _ = (prompt, system, required_keys, max_retries);
+        anyhow::bail!("this host cannot run a named model ({model})")
+    }
+
+    /// Whether the work this call runs in was started by the owner (an
+    /// authenticated chat turn or HBI action: the routing policy's initiator).
+    /// A workflow, even one approved for paid models, is not the owner.
+    fn started_by_owner(&self) -> bool {
+        false
+    }
 }
 
 /// The core's web search (`search_web`'s engines and ranking).

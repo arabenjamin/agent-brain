@@ -51,6 +51,7 @@ services:
       - LOCAL_EMBED_MODEL=${LOCAL_EMBED_MODEL:-}
       - LOCAL_DECISION_MODEL=${LOCAL_DECISION_MODEL:-}
       - LOCAL_GROUNDING_MODEL=${LOCAL_GROUNDING_MODEL:-}
+      - CLAIM_CONTRADICTION_MODEL=${CLAIM_CONTRADICTION_MODEL:-z-ai/glm-5.3-flash}
       # deploy/local-timeout-secs-why-the-local-model-has-its-own-budget
       - LOCAL_TIMEOUT_SECS=${LOCAL_TIMEOUT_SECS:-600}
       - LLM_MODEL=ministral-14b-latest

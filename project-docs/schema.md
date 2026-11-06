@@ -228,7 +228,8 @@ Claim notes (`note_type: 'claim'`, written by the epistemics plugin: `plugins/ep
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `claim_status` / `claim_kind` / `asserted_by` / `asserted_at` | | Epistemic status, see `subsystem-rules.md` § Epistemics |
+| `claim_status` / `claim_kind` / `asserted_by` / `asserted_at` | | Epistemic status, see `subsystem-rules.md` § Epistemics. `claim_status` is `unverified`, `corroborated`, `contested` (a contradiction passed the gate and waits on the owner's review, from 2026-11-05), `refuted` or `disputed` (only an owner-confirmed contradiction refutes or disputes) |
+| `corroborating_count` / `contradicting_count` / `contested_count` | Int | Supporting edges; owner-confirmed contradictions; contradictions waiting on review. Dismissed ones count in none |
 | `about` | String[] | The named things the claim is about, as the claim names them. Extraction and the rewrite check that each is named in the claim (`standalone_problems`) |
 | `verify_skipped` | String? | Why the verification sweep never searches it: `internal` (about the brain itself) or `said_here` (an attribution that someone in the recording said it, `plugins/epistemics/said-here-claims.yaml`; labelled "said in its source, not web-checked") |
 | `last_verify_attempt_at` / `reset_reason` | DateTime? / String? | The sweep's cursor; why a reset put the claim back in the queue |
@@ -635,6 +636,7 @@ One node, `{id: 'scheduler'}`: the scheduler's last tick, so the HBI shows when 
 | `SUMMARIZED_BY` | `(Note)→(Note)` | — | Source note pointing to its consolidated summary |
 | `REFLECTS_ON` | `(Note)→(Task)` | — | Reflection or outcome note linked to its task |
 | `PART_OF` | `(Note)→(Note)` | — | Semantic chunk pointing to its parent note |
+| `CONTRADICTED_BY` | `(claim Note)→(evidence Note)` | `sources`, `domains`, `found_at`, `quote`, `conflict`, `judged_by`, `grounding`; `confirmed_at`/`confirmed_by` or `dismissed_at`/`dismissed_by`/`dismiss_reason` | A contradiction that passed the gate. Pending (neither stamp) makes the claim `contested`; the owner's `confirm_refutation` stamps `confirmed_at` (it refutes), `dismiss_refutation` stamps `dismissed_at` (it counts for nothing, and its sources are not raised again for that claim). `judged_by` is the second look's model (`CLAIM_CONTRADICTION_MODEL`) |
 | `MENTIONS` | `(Note)→(Entity)` | `count: int`, `surface: string` (as written), `type: string` (as extracted), `via: string?` (the name it resolved or was merged through, including a demonym: "chinese" on a mention of China), `merged_from: string?`, `absorbed: ["<entity id>:<count>"]?` (counts folded in from a merged entity the note also mentioned) | Entity mention extracted from note content. `via`/`absorbed` are what an unmerge reverses |
 | `ALIAS_OF` | `(EntityAlias)→(Entity)` | — | The alias's canonical entity |
 | `IN_TOPIC` | `(Note)→(Topic)` | `rank: int` (1 = main topic, 2 = as central), `method: 'llm' \| 'rule' \| 'manual'`, `assigned_at: datetime` | Written by the topic assigner (`llm`, or `rule` for an `assign: rules` topic's member rule), or by the user (`manual`, with the note `topics_locked`); an unlocked note's edges are replaced whenever it is classified again |

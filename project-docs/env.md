@@ -21,6 +21,7 @@ Copy `.env.example` to `.env` and configure:
 | `LOCAL_EMBED_MODEL` | the entry's `models.embeddings` | Embeddings, for every provider. Required |
 | `LOCAL_DECISION_MODEL` | the entry's `models.decision` | The alias judge, API tags and the router checker, one fixed choice with probabilities. `off` turns it off; so does an engine with no `logprobs` |
 | `LOCAL_GROUNDING_MODEL` | the entry's `models.grounding` | The check on every "supports" and contradiction verdict in claim verification, on the cited results (`plugins/epistemics/crate/src/grounding.rs`). `off` turns it off; so does an engine with no `completions` |
+| `CLAIM_CONTRADICTION_MODEL` | `z-ai/glm-5.3-flash` (compose) | The catalog model for claim verification's contradiction second look (`claims::confirm_contradiction`), for that one call. It is paid, so it runs because `claim-verification` is `paid: true` (owner, 2026-11-05); refused or down, the look falls back to the verifier's own model and `judged_by` on the edge says which. Blank keeps it local. Measured in `workspace/refutation-eval/` |
 | `LOCAL_ENGINE_PRESET` | `gpu-8gb` | The file in `llamacpp/presets/` the router loads: `gpu-8gb` (measured), `gpu-24gb` (not measured), `cpu`. Set by `install.sh` |
 | `LOCAL_ENGINE_INSTALLED` | - | The engine `install.sh` set up. Startup warns when `LOCAL_ENGINE` differs |
 | `LLAMA_BUILD_IMAGE`, `LLAMA_RUN_IMAGE`, `LLAMA_GGML_CUDA`, `LLAMA_CUDA_ARCH` | the 3060 Ti's (CUDA 12.2.2, `ON`, `86`) | Build args of `llamacpp/Dockerfile`. Set by `install.sh` from `nvidia-smi` |

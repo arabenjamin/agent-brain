@@ -43,6 +43,15 @@ pub struct ClaimSkill {
     ctx: PluginContext,
 }
 
+/// The catalog model for the contradiction second look
+/// (`CLAIM_CONTRADICTION_MODEL`); unset or blank keeps it on the verifier's own.
+fn contradiction_model() -> Option<String> {
+    std::env::var("CLAIM_CONTRADICTION_MODEL")
+        .ok()
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+}
+
 impl ClaimSkill {
     pub fn new(neo4j: Db, llm: Arc<dyn Llm>, ctx: PluginContext) -> Self {
         Self {
@@ -63,6 +72,10 @@ impl ClaimSkill {
                  whether it supports or contradicts them — never edits the claim itself. \
                  action=list: list claims by status. \
                  action=sources: per-source claim counts by status. \
+                 action=contested: claims a contradiction passed the gate for, waiting on the \
+                 owner's review, with the quote and conflict. \
+                 action=confirm_refutation / dismiss_refutation (`claim_id`, `reason`): the \
+                 owner's verdict on a contested claim; only an owner request may give it. \
                  Claims are stored, never filtered: a claim's standing is recorded, not enforced \
                  by exclusion, so contested material stays inspectable."
                 .to_string(),
@@ -71,8 +84,8 @@ impl ClaimSkill {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["extract", "verify", "list", "sources"],
-                        "description": "extract: find claims in text. verify: gather evidence. list: show claims. sources: per-source breakdown."
+                        "enum": ["extract", "verify", "list", "sources", "contested", "confirm_refutation", "dismiss_refutation"],
+                        "description": "extract: find claims in text. verify: gather evidence. list: show claims. sources: per-source breakdown. contested: claims waiting on the owner's review. confirm_refutation / dismiss_refutation: the owner's verdict on one."
                     },
                     "text": {
                         "type": "string",
@@ -97,11 +110,15 @@ impl ClaimSkill {
                     },
                     "claim_id": {
                         "type": "string",
-                        "description": "verify only: verify one specific claim. Omit to sweep the unverified backlog."
+                        "description": "verify: verify one specific claim (omit to sweep the unverified backlog). confirm_refutation / dismiss_refutation: the contested claim."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "dismiss_refutation: why the contradiction does not hold (kept on the edge)."
                     },
                     "status": {
                         "type": "string",
-                        "enum": ["unverified", "corroborated", "disputed", "refuted"],
+                        "enum": ["unverified", "corroborated", "disputed", "refuted", "contested"],
                         "description": "list only: filter by epistemic status."
                     },
                     "limit": {
@@ -462,16 +479,32 @@ impl ClaimSkill {
         // still worth surfacing), but the judge alone filed "the evidence does
         // not mention it" as contradicts: 53 of 68 refutations were wrong
         // (2026-10-22). Anything that fails stays unverified, never refuted.
+        // What passes makes the claim contested, not refuted: the owner
+        // confirms or dismisses it (`claim action=contested`, weekly review).
         let mut contradiction: Option<claims::Contradiction> = None;
         if verdict.verdict == "contradicts" {
             let document = grounding::cited_document(&evidence_text, &cited);
+            let dismissed = claims::dismissed_sources(&self.neo4j, claim_id)
+                .await
+                .unwrap_or_default();
             let why = if document.is_empty() {
                 Some(format!(
                     "cited sources {:?} are not among the search results' links",
                     verdict.sources
                 ))
+            } else if let Some(s) = cited.iter().find(|c| dismissed.contains(*c)) {
+                Some(format!(
+                    "the owner already dismissed a refutation of this claim from {s}"
+                ))
             } else {
-                match claims::confirm_contradiction(self.llm.as_ref(), claim_text, &document).await
+                let model = contradiction_model();
+                match claims::confirm_contradiction(
+                    self.llm.as_ref(),
+                    model.as_deref(),
+                    claim_text,
+                    &document,
+                )
+                .await
                 {
                     Ok(Some(c)) => if let Some(model) = grounding::model() {
                         match grounding::is_grounded(&model, &document, claim_text).await {
@@ -699,6 +732,63 @@ impl ClaimSkill {
         }
     }
 
+    async fn handle_contested(&self, args: &Value) -> ToolCallResult {
+        let limit = args["limit"].as_u64().unwrap_or(30) as usize;
+        match claims::contested_claims(&self.neo4j, limit).await {
+            Ok(items) => ToolCallResult::success_json(json!({
+                "count": items.len(),
+                "claims": items,
+                "note": "Each waits on the owner: claim action=confirm_refutation lets it refute; \
+                         action=dismiss_refutation (with a reason) when the evidence does not contradict it."
+            })),
+            Err(e) => ToolCallResult::error(format!("Could not list contested claims: {e}")),
+        }
+    }
+
+    /// The owner's verdict on a contested claim. Owner-only: the second look
+    /// was right about half the time on what it let through (2026-11-05), so a
+    /// refutation needs a person, and no agent or workflow may stand in.
+    async fn handle_review(&self, args: &Value, confirm: bool) -> ToolCallResult {
+        let action = if confirm {
+            "confirm_refutation"
+        } else {
+            "dismiss_refutation"
+        };
+        if !self.llm.started_by_owner() {
+            return ToolCallResult::error(format!(
+                "{action} is the owner's decision: it runs only on an owner request (an \
+                 authenticated chat turn or HBI action), not from an agent or a workflow."
+            ));
+        }
+        let Some(id) = args["claim_id"].as_str().filter(|s| !s.is_empty()) else {
+            return ToolCallResult::error(format!("{action} needs `claim_id`"));
+        };
+        let reason = args["reason"].as_str().unwrap_or("").trim();
+        if !confirm && reason.is_empty() {
+            return ToolCallResult::error(
+                "dismiss_refutation needs a `reason`: why the evidence does not contradict the claim",
+            );
+        }
+        match claims::review_contradictions(&self.neo4j, id, confirm, reason).await {
+            Ok(0) => ToolCallResult::error(format!(
+                "Claim {id} has no contradiction waiting on review (claim action=contested lists them)"
+            )),
+            Ok(n) => {
+                let status = claims::recompute_status(&self.neo4j, id).await.map_or_else(
+                    |e| format!("not recomputed: {e}"),
+                    |s| s.as_str().to_string(),
+                );
+                ToolCallResult::success_json(json!({
+                    "claim_id": id,
+                    "reviewed": n,
+                    "verdict": if confirm { "confirmed" } else { "dismissed" },
+                    "status": status
+                }))
+            }
+            Err(e) => ToolCallResult::error(format!("{action} failed for {id}: {e}")),
+        }
+    }
+
     async fn handle_sources(&self) -> ToolCallResult {
         match claims::source_claim_profile(&self.neo4j).await {
             Ok(v) => ToolCallResult::success_json(v),
@@ -727,8 +817,12 @@ impl Skill for ClaimSkill {
             Some("verify") => self.handle_verify(&args).await,
             Some("list") => self.handle_list(&args).await,
             Some("sources") => self.handle_sources().await,
+            Some("contested") => self.handle_contested(&args).await,
+            Some("confirm_refutation") => self.handle_review(&args, true).await,
+            Some("dismiss_refutation") => self.handle_review(&args, false).await,
             Some(other) => ToolCallResult::error(format!(
-                "Unknown action `{other}`. Use extract, verify, list, or sources."
+                "Unknown action `{other}`. Use extract, verify, list, sources, contested, \
+                 confirm_refutation or dismiss_refutation."
             )),
             None => ToolCallResult::error("`action` is required"),
         };

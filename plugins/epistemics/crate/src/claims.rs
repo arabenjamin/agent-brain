@@ -34,7 +34,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use agent_brain_plugin_api::Llm;
@@ -54,6 +54,11 @@ pub enum ClaimStatus {
     Disputed,
     /// Independent sources contradict it, none support.
     Refuted,
+    /// A contradiction passed the gate but nobody has confirmed it: the owner
+    /// reviews it (weekly, `claim-refutation-review`) before it can refute.
+    /// The second look measured right only about half the time on the cases
+    /// it let through (2026-11-05), and a wrong refutation is worse than none.
+    Contested,
 }
 
 impl ClaimStatus {
@@ -63,15 +68,20 @@ impl ClaimStatus {
             ClaimStatus::Corroborated => "corroborated",
             ClaimStatus::Disputed => "disputed",
             ClaimStatus::Refuted => "refuted",
+            ClaimStatus::Contested => "contested",
         }
     }
 
     /// Derive status from evidence counts. The only place status is decided.
-    pub fn from_evidence(corroborating: usize, contradicting: usize) -> Self {
-        match (corroborating, contradicting) {
-            (0, 0) => ClaimStatus::Unverified,
-            (_, 0) => ClaimStatus::Corroborated,
-            (0, _) => ClaimStatus::Refuted,
+    /// `contradicting` counts contradictions the owner confirmed; `pending`
+    /// those that passed the gate and wait for that review (dismissed ones
+    /// count in neither). Only a confirmed contradiction refutes or disputes.
+    pub fn from_evidence(corroborating: usize, contradicting: usize, pending: usize) -> Self {
+        match (corroborating, contradicting, pending) {
+            (0, 0, 0) => ClaimStatus::Unverified,
+            (_, 0, p) if p > 0 => ClaimStatus::Contested,
+            (_, 0, _) => ClaimStatus::Corroborated,
+            (0, _, _) => ClaimStatus::Refuted,
             _ => ClaimStatus::Disputed,
         }
     }
@@ -775,21 +785,24 @@ pub async fn recompute_status(neo4j: &Db, claim_id: &str) -> Result<ClaimStatus>
                 "MATCH (c:Note {id: $id}) \
                  OPTIONAL MATCH (c)-[cor:CORROBORATED_BY]->() \
                  WITH c, count(cor) AS corroborating \
-                 OPTIONAL MATCH (c)-[con:CONTRADICTED_BY]->() \
-                 RETURN corroborating, count(con) AS contradicting",
+                 OPTIONAL MATCH (c)-[con:CONTRADICTED_BY]->() WHERE con.dismissed_at IS NULL \
+                 RETURN corroborating, \
+                        count(CASE WHEN con.confirmed_at IS NOT NULL THEN 1 END) AS contradicting, \
+                        count(CASE WHEN con IS NOT NULL AND con.confirmed_at IS NULL THEN 1 END) AS pending",
             )
             .param("id", claim_id),
         )
         .await?;
 
-    let (cor, con) = rows.first().map_or((0, 0), |r| {
+    let (cor, con, pending) = rows.first().map_or((0, 0, 0), |r| {
         (
             r.get::<i64>("corroborating").unwrap_or(0) as usize,
             r.get::<i64>("contradicting").unwrap_or(0) as usize,
+            r.get::<i64>("pending").unwrap_or(0) as usize,
         )
     });
 
-    let status = ClaimStatus::from_evidence(cor, con);
+    let status = ClaimStatus::from_evidence(cor, con, pending);
 
     // Describe WHO corroborated, not just how many. Collected from the domains
     // recorded on the supporting edges.
@@ -827,6 +840,7 @@ pub async fn recompute_status(neo4j: &Db, claim_id: &str) -> Result<ClaimStatus>
                 "MATCH (c:Note {id: $id}) \
                  SET c.claim_status = $status, c.verified_at = datetime($now), \
                      c.corroborating_count = $cor, c.contradicting_count = $con, \
+                     c.contested_count = $pending, \
                      c.corroboration_tier = $tier, c.corroborating_domains = $domains",
             )
             .param("id", claim_id)
@@ -834,12 +848,13 @@ pub async fn recompute_status(neo4j: &Db, claim_id: &str) -> Result<ClaimStatus>
             .param("now", chrono::Utc::now().to_rfc3339())
             .param("cor", cor as i64)
             .param("con", con as i64)
+            .param("pending", pending as i64)
             .param("tier", tier.as_str())
             .param("domains", domains.clone()),
         )
         .await?;
 
-    info!(claim_id = %claim_id, status = status.as_str(), corroborating = cor, contradicting = con, tier = %tier, "Claim status recomputed");
+    info!(claim_id = %claim_id, status = status.as_str(), corroborating = cor, contradicting = con, pending, tier = %tier, "Claim status recomputed");
     Ok(status)
 }
 
@@ -1343,6 +1358,9 @@ pub async fn assess_evidence(
 pub struct Contradiction {
     pub quote: String,
     pub conflict: String,
+    /// The model that made the second look (`CLAIM_CONTRADICTION_MODEL`, or
+    /// the verifier's own when that one could not run).
+    pub judged_by: String,
 }
 
 /// A quote shorter than this (normalised) proves nothing: "2024", "no".
@@ -1364,8 +1382,16 @@ pub fn quote_in(document: &str, quote: &str) -> bool {
 /// the conflicting words copied from them; on the same 68 it kept 8 of the 15
 /// real refutations and passed 7 wrong ones (5 once the grounding check
 /// vetoes a claim the results ground). `Ok(None)` is "not a contradiction".
+///
+/// `model` names a catalog model for this one look (`CLAIM_CONTRADICTION_MODEL`).
+/// On the 20 refutations of 2026-10-22..11-05, three tries each, GLM 5.3 Flash
+/// passed 11 of 24 tries on wrong ones and kept 22 of 27 on real ones, where
+/// the local E4B passed 21 and kept 24 (`workspace/refutation-eval/`). When the
+/// named model cannot run (the routing policy refuses it, an outage), the look
+/// falls back to `llm` and says so in `judged_by`.
 pub async fn confirm_contradiction(
     llm: &dyn Llm,
+    model: Option<&str>,
     claim: &str,
     document: &str,
 ) -> Result<Option<Contradiction>> {
@@ -1386,14 +1412,30 @@ pub async fn confirm_contradiction(
          \"claim says X; evidence says Y, in one sentence, or empty\"}}\n\n\
          CLAIM:\n{claim}\n\nEVIDENCE:\n{document}"
     );
-    let value = llm
-        .generate_json(
-            &prompt,
-            Some("You check evidence. You answer only from the evidence given, never from prior knowledge."),
-            &["contradicts"],
-            2,
-        )
-        .await?;
+    let system = Some(
+        "You check evidence. You answer only from the evidence given, never from prior knowledge.",
+    );
+    let named = match model {
+        Some(m) => match llm
+            .generate_json_on(m, &prompt, system, &["contradicts"], 2)
+            .await
+        {
+            Ok(v) => Some((v, m.to_string())),
+            Err(e) => {
+                warn!(model = %m, error = %e, "Contradiction check: named model could not run; using the verifier's own");
+                None
+            }
+        },
+        None => None,
+    };
+    let (value, judged_by) = match named {
+        Some(v) => v,
+        None => (
+            llm.generate_json(&prompt, system, &["contradicts"], 2)
+                .await?,
+            llm.model_name(),
+        ),
+    };
     let field = |k: &str| {
         value
             .get(k)
@@ -1407,7 +1449,13 @@ pub async fn confirm_contradiction(
         .get("contradicts")
         .and_then(agent_brain_plugin_api::Value::as_bool)
         == Some(true);
-    Ok((says && quote_in(document, &quote)).then_some(Contradiction { quote, conflict }))
+    Ok(
+        (says && quote_in(document, &quote)).then_some(Contradiction {
+            quote,
+            conflict,
+            judged_by,
+        }),
+    )
 }
 
 /// Attach an evidence note to a claim with the given verdict.
@@ -1436,14 +1484,17 @@ pub async fn attach_evidence(
     // instead of hidden behind a one-word status. `grounding` says whether
     // the grounding check passed it (`grounded`), could not run (`unchecked:
     // <why>`), or was off (absent); see `grounding.rs`. A contradiction
-    // keeps the words it rests on (`quote`, `conflict`), so a refutation can
-    // be read without re-running it.
+    // keeps the words it rests on (`quote`, `conflict`) and the model that
+    // made the second look (`judged_by`), so a refutation can be read without
+    // re-running it. It refutes only once the owner confirms it
+    // (`confirmed_at`, `confirm_refutation`); until then the claim is contested.
     let cypher = format!(
         "MATCH (c:Note {{id: $cid}}), (e:Note {{id: $eid}}) \
          MERGE (c)-[r:{rel}]->(e) \
          ON CREATE SET r.source = $source, r.sources = $sources, \
                        r.found_at = datetime($now), r.domains = $domains, \
-                       r.grounding = $grounding, r.quote = $quote, r.conflict = $conflict"
+                       r.grounding = $grounding, r.quote = $quote, r.conflict = $conflict, \
+                       r.judged_by = $judged_by"
     );
     neo4j
         .run(
@@ -1456,10 +1507,98 @@ pub async fn attach_evidence(
                 .param("grounding", grounding.map(String::from))
                 .param("quote", contradiction.map(|c| c.quote.clone()))
                 .param("conflict", contradiction.map(|c| c.conflict.clone()))
+                .param("judged_by", contradiction.map(|c| c.judged_by.clone()))
                 .param("now", chrono::Utc::now().to_rfc3339()),
         )
         .await?;
     Ok(true)
+}
+
+/// Contested claims for the owner's review, oldest first: each with the
+/// contradictions waiting on them (`quote`, `conflict`, cited `sources`, the
+/// model that judged, when it was found) and where the claim came from.
+pub async fn contested_claims(neo4j: &Db, limit: usize) -> Result<Vec<serde_json::Value>> {
+    let rows = neo4j
+        .execute(
+            query(
+                "MATCH (c:Note {note_type: 'claim', claim_status: 'contested'})-[r:CONTRADICTED_BY]->() \
+                 WHERE r.confirmed_at IS NULL AND r.dismissed_at IS NULL \
+                 WITH c, collect({quote: r.quote, conflict: r.conflict, sources: r.sources, \
+                                  judged_by: r.judged_by, found_at: toString(r.found_at)}) AS pending, \
+                      min(r.found_at) AS first \
+                 RETURN c.id AS id, c.content AS claim, coalesce(c.asserted_by, '') AS asserted_by, \
+                        coalesce(c.source_title, '') AS source_title, coalesce(c.source_url, '') AS source_url, \
+                        coalesce(c.corroborating_count, 0) AS corroborating, pending \
+                 ORDER BY first ASC LIMIT $limit",
+            )
+            .param("limit", limit as i64),
+        )
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.get::<String>("id").unwrap_or_default(),
+                "claim": r.get::<String>("claim").unwrap_or_default(),
+                "asserted_by": r.get::<String>("asserted_by").unwrap_or_default(),
+                "source_title": r.get::<String>("source_title").unwrap_or_default(),
+                "source_url": r.get::<String>("source_url").unwrap_or_default(),
+                "corroborating": r.get::<i64>("corroborating").unwrap_or(0),
+                "contradictions": r.get::<serde_json::Value>("pending").unwrap_or_default(),
+            })
+        })
+        .collect())
+}
+
+/// The owner's verdict on a contested claim's waiting contradictions:
+/// `confirm` stamps them `confirmed_at` (they refute, or dispute a supported
+/// claim); otherwise they are stamped `dismissed_at` with the reason and
+/// count for nothing. Returns how many were stamped; the caller recomputes.
+pub async fn review_contradictions(
+    neo4j: &Db,
+    claim_id: &str,
+    confirm: bool,
+    reason: &str,
+) -> Result<i64> {
+    let set = if confirm {
+        "r.confirmed_at = datetime($now), r.confirmed_by = 'owner'"
+    } else {
+        "r.dismissed_at = datetime($now), r.dismissed_by = 'owner', r.dismiss_reason = $reason"
+    };
+    let rows = neo4j
+        .execute(
+            query(&format!(
+                "MATCH (c:Note {{id: $id, note_type: 'claim'}})-[r:CONTRADICTED_BY]->() \
+                 WHERE r.confirmed_at IS NULL AND r.dismissed_at IS NULL \
+                 SET {set} RETURN count(r) AS n"
+            ))
+            .param("id", claim_id)
+            .param("reason", reason)
+            .param("now", chrono::Utc::now().to_rfc3339()),
+        )
+        .await?;
+    Ok(rows
+        .first()
+        .and_then(|r| r.get::<i64>("n").ok())
+        .unwrap_or(0))
+}
+
+/// Links the owner dismissed as a refutation of this claim: a later
+/// contradiction citing one of them is not raised again.
+pub async fn dismissed_sources(neo4j: &Db, claim_id: &str) -> Result<Vec<String>> {
+    let rows = neo4j
+        .execute(
+            query(
+                "MATCH (c:Note {id: $id})-[r:CONTRADICTED_BY]->() WHERE r.dismissed_at IS NOT NULL \
+                 UNWIND coalesce(r.sources, []) AS s RETURN collect(DISTINCT s) AS sources",
+            )
+            .param("id", claim_id),
+        )
+        .await?;
+    Ok(rows
+        .first()
+        .and_then(|r| r.get::<Vec<String>>("sources").ok())
+        .unwrap_or_default())
 }
 
 /// Take a claim out of the verification sweep for good, saying why
@@ -2249,9 +2388,23 @@ mod tests {
 
     #[test]
     fn status_is_derived_from_evidence_counts() {
-        assert_eq!(ClaimStatus::from_evidence(0, 0), ClaimStatus::Unverified);
-        assert_eq!(ClaimStatus::from_evidence(3, 0), ClaimStatus::Corroborated);
-        assert_eq!(ClaimStatus::from_evidence(0, 2), ClaimStatus::Refuted);
+        assert_eq!(ClaimStatus::from_evidence(0, 0, 0), ClaimStatus::Unverified);
+        assert_eq!(
+            ClaimStatus::from_evidence(3, 0, 0),
+            ClaimStatus::Corroborated
+        );
+        assert_eq!(ClaimStatus::from_evidence(0, 2, 0), ClaimStatus::Refuted);
+    }
+
+    #[test]
+    fn an_unconfirmed_contradiction_contests_and_never_refutes() {
+        // Passed the gate, not yet confirmed by the owner: contested, with or
+        // without support. Only a confirmed one refutes.
+        assert_eq!(ClaimStatus::from_evidence(0, 0, 1), ClaimStatus::Contested);
+        assert_eq!(ClaimStatus::from_evidence(4, 0, 1), ClaimStatus::Contested);
+        assert_eq!(ClaimStatus::from_evidence(0, 1, 2), ClaimStatus::Refuted);
+        assert_eq!(ClaimStatus::from_evidence(2, 1, 1), ClaimStatus::Disputed);
+        assert_eq!(ClaimStatus::Contested.as_str(), "contested");
     }
 
     #[test]
@@ -2259,9 +2412,9 @@ mod tests {
         // Never collapses to a verdict, and never resolves by majority —
         // laundering a contested question into a settled one is the failure
         // mode this whole module exists to prevent.
-        assert_eq!(ClaimStatus::from_evidence(1, 1), ClaimStatus::Disputed);
-        assert_eq!(ClaimStatus::from_evidence(9, 1), ClaimStatus::Disputed);
-        assert_eq!(ClaimStatus::from_evidence(1, 9), ClaimStatus::Disputed);
+        assert_eq!(ClaimStatus::from_evidence(1, 1, 0), ClaimStatus::Disputed);
+        assert_eq!(ClaimStatus::from_evidence(9, 1, 0), ClaimStatus::Disputed);
+        assert_eq!(ClaimStatus::from_evidence(1, 9, 0), ClaimStatus::Disputed);
     }
 
     #[test]

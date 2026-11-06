@@ -20,6 +20,9 @@ const TONES: Record<string, Tone> = {
   dead: "red",
   dead_letter: "red",
   refuted: "red",
+  // A contradiction waiting on the owner's review: not yet a refutation.
+  contested: "yellow",
+  disputed: "purple",
 };
 
 export function statusTone(status: string | null | undefined): Tone {

@@ -67,10 +67,12 @@ impl Host {
                 neo4j: self.neo4j.clone(),
             }) as Arc<dyn Knowledge>
         });
-        ctx.llm = self
-            .llm
-            .clone()
-            .map(|l| Arc::new(HostLlm(l)) as Arc<dyn Llm>);
+        ctx.llm = self.llm.clone().map(|l| {
+            Arc::new(HostLlm {
+                provider: l,
+                telemetry: self.telemetry.clone(),
+            }) as Arc<dyn Llm>
+        });
         ctx.telemetry = self
             .telemetry
             .clone()
@@ -174,7 +176,12 @@ impl Knowledge for HostKnowledge {
     }
 }
 
-struct HostLlm(Arc<dyn LlmProvider>);
+struct HostLlm {
+    provider: Arc<dyn LlmProvider>,
+    /// The model catalog lives in the telemetry store; without it no model
+    /// can be named.
+    telemetry: Option<TelemetryClient>,
+}
 
 #[async_trait]
 impl Llm for HostLlm {
@@ -183,11 +190,11 @@ impl Llm for HostLlm {
             .try_with(|v| v.as_ref().map(|c| c.model.clone()))
             .ok()
             .flatten()
-            .unwrap_or_else(|| self.0.model_name().to_string())
+            .unwrap_or_else(|| self.provider.model_name().to_string())
     }
 
     async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String> {
-        self.0.generate(prompt, system).await
+        self.provider.generate(prompt, system).await
     }
 
     async fn generate_json(
@@ -197,13 +204,51 @@ impl Llm for HostLlm {
         required_keys: &[&str],
         max_retries: u32,
     ) -> anyhow::Result<Value> {
-        self.0
+        self.provider
             .generate_json(prompt, system, required_keys, max_retries)
             .await
     }
 
+    async fn generate_json_on(
+        &self,
+        model: &str,
+        prompt: &str,
+        system: Option<&str>,
+        required_keys: &[&str],
+        max_retries: u32,
+    ) -> anyhow::Result<Value> {
+        let Some(telemetry) = self.telemetry.as_ref() else {
+            anyhow::bail!("no model catalog to find '{model}' in");
+        };
+        let rows = agent_brain_llm::model_router::catalog_models(telemetry);
+        // The same check a workflow step's pinned model gets, under the
+        // context this call runs in (who started the work, its data class).
+        let cfg = agent_brain_llm::model_router::pinned_config(
+            &rows,
+            model,
+            &agent_brain_llm::LlmConfig::default(),
+            agent_brain_llm::routing::RouteContext::current(),
+        )
+        .map_err(|reason| anyhow::anyhow!(reason))?;
+        agent_brain_llm::ctx::PINNED_STEP
+            .scope(
+                true,
+                agent_brain_llm::ctx::SELECTED_LLM.scope(
+                    Some(cfg),
+                    self.provider
+                        .generate_json(prompt, system, required_keys, max_retries),
+                ),
+            )
+            .await
+    }
+
     async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        self.0.embed(text).await
+        self.provider.embed(text).await
+    }
+
+    fn started_by_owner(&self) -> bool {
+        agent_brain_llm::routing::RouteContext::current().initiator
+            == agent_brain_llm::routing::Initiator::Owner
     }
 }
 

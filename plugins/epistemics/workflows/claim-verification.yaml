@@ -4,6 +4,12 @@ description: "Works through the unverified claim backlog in batches: searches fo
 # topic: none — spans topics on purpose
 kind: maintenance
 every: 6h  # every 6h
+# Approved for paid models (owner, 2026-11-05) for one call: the contradiction
+# second look runs on CLAIM_CONTRADICTION_MODEL (GLM 5.3 Flash, ~$0.0002 a look,
+# capped by openrouter-paid's spend). Every step stays on the local engine; only
+# that look names a model. Measured on 20 refutations: GLM passed 11 of 24 tries
+# on wrong ones where the local E4B passed 21 (workspace/refutation-eval/).
+paid: true
 
 steps:
   # 1. Verify a batch. Small by design — six hourly batches of 8 clears ~32

@@ -1,0 +1,64 @@
+# The owner's review of contested claims (owner, 2026-11-05). A contradiction
+# that passes the gate makes a claim `contested`, never `refuted`: replayed on
+# the 20 refutations of 2026-10-22..11-05, even the best second look tried (GLM
+# 5.3 Flash) let through about half of the wrong ones (workspace/refutation-eval/).
+# So a person decides: one Feed item a week lists them, the owner answers in its
+# chat, and the front door calls claim confirm_refutation / dismiss_refutation,
+# which run only on an owner request. A week with none files nothing.
+name: claim-refutation-review
+description: "Weekly: the claims a contradiction passed the gate for (contested), each with the evidence's own words, as one Feed item the owner answers: confirm to refute, dismiss with a reason. Nothing is refuted until the owner confirms it. Files nothing in a week with none."
+kind: maintenance
+every: 1w
+data_class: private
+steps:
+  - id: list
+    tool_name: claim
+    arguments:
+      action: contested
+      limit: 30
+    priority: 1
+    max_attempts: 2
+    provider_hint: local
+    description: "The contested claims, oldest first"
+
+  # Written in code, so every claim id and quote reaches the item exactly.
+  - id: message
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 15000
+      code: |
+        import json
+        data = json.loads(r"""{{steps.list}} """.strip())
+        claims = data.get("claims") or []
+        if claims:
+            print(f"{len(claims)} claim(s) a contradiction passed the gate for. Each stays contested, never refuted, until you decide.")
+            print()
+            for i, c in enumerate(claims, 1):
+                src = c.get("source_title") or c.get("asserted_by") or "unknown source"
+                print(f"{i}. {c['claim']}")
+                print(f"   From: {src}" + (f" ({c['source_url']})" if c.get("source_url") else "") + (f"; {c['corroborating']} corroborating" if c.get("corroborating") else ""))
+                for x in c.get("contradictions") or []:
+                    links = ", ".join((x.get("sources") or [])[:3])
+                    print(f"   Evidence says: \"{x.get('quote') or ''}\"")
+                    if x.get("conflict"):
+                        print(f"   Conflict: {x['conflict']}")
+                    print(f"   Sources: {links}; judged by {x.get('judged_by') or 'unknown'}")
+                print(f"   claim_id: {c['id']}")
+                print()
+            print("Reply in this item's chat: \"confirm 1\" to let it refute, or \"dismiss 2, <why>\" when the evidence does not contradict it.")
+    priority: 1
+    max_attempts: 2
+    provider_hint: local
+    description: "The item's text, made in code (no model)"
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{steps.message.stdout}}"
+      context: "Contested claims {{date}}"
+      needs: action
+      ask: "Decide each contested claim: \"confirm N\" lets it refute; \"dismiss N, <why>\" when the evidence does not contradict it. Until then each stays contested, never refuted."
+    priority: 2
+    max_attempts: 2
+    provider_hint: local
+    description: "One Feed item, only in a week with contested claims"
