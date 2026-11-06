@@ -1,0 +1,26 @@
+{
+  "template": ".",
+  "commit": "f2f0b3851535fe1a8e9d1a17bc2b5aaa928701f8",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "media",
+      "description": "Media learning: ingest_media / ingest_article (yt-dlp captions or Whisper, summarised in-tool), the :MediaSource watchlist (manage_media_source, poll_media_sources, discover_media_sources), spawn_gap_tasks, and the video-learning, article-learning, media-watch and discover-media-sources workflows.",
+      "kind": "rust",
+      "tools": "discover_media_sources,ingest_article,ingest_media,manage_media_source,poll_media_sources,spawn_gap_tasks",
+      "graph_labels": "MediaSource,Media",
+      "needs_env": "",
+      "__struct": "Media",
+      "__crate": "agent-brain-plugin-media",
+      "_template": ".",
+      "_commit": "f2f0b3851535fe1a8e9d1a17bc2b5aaa928701f8"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "README.md",
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}

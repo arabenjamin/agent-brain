@@ -6,7 +6,8 @@
 
 Stamped from `templates/plugin`; `.cruft.json` records the template commit.
 `scripts/plugin_template.sh update {{ cookiecutter.name }}` brings a later
-template change in as a diff to review.
+template change in as a diff to review. This README is the plugin's own: an
+update never touches it.
 
 ## Layout
 
@@ -25,8 +26,12 @@ template change in as a diff to review.
 {%- endif %}
 
 Seeds go in the directories the brain reads (`workflows/`, `contexts/`,
-`views/`, …); `scripts/check_schemas.sh` lists the kinds it knows. Graph
+`views/`, …); `scripts/check_schemas.sh` lists the kinds it knows.
+{%- if cookiecutter.kind == 'rust' %} Graph
 access goes in `crate/src/store.rs`.
+{%- else %} A data
+plugin has no Rust: its workflows use the brain's own tools.
+{%- endif %}
 
 ## Enable and check
 

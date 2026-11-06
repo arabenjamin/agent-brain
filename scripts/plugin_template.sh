@@ -23,8 +23,9 @@
 #     Fail when a stamped plugin is behind the template: templates/plugin
 #     changed after the commit its .cruft.json records. CI runs this. (cruft's
 #     own `check` compares commit hashes, so with the template in this repo
-#     every commit would flag every plugin.) Also fails on a bundle with no
-#     .cruft.json that is not in NOT_YET_LINKED.
+#     every commit would flag every plugin.) A change only to files the
+#     plugin's .cruft.json skips does not count. Also fails on a bundle other
+#     than core with no .cruft.json.
 #
 # The template is this repo (".", with directory templates/plugin), so cruft
 # runs from the repo root and reads the template as committed: commit a
@@ -37,12 +38,6 @@ CRUFT_VERSION=2.16.0
 cruft() { uvx --quiet --from "cruft==$CRUFT_VERSION" --with "cookiecutter==$CC_VERSION" cruft "$@"; }
 
 die() { echo "plugin_template: $*" >&2; exit 1; }
-
-# Bundles built before the template and not yet linked to it (Phase 2 step
-# 4). A bundle leaves this list in the commit that links it; a new one is
-# stamped. `core` is the brain's own bundle, not a plugin, and is never
-# stamped.
-NOT_YET_LINKED="media"
 
 # The template must be committed: cruft clones it from HEAD.
 template_committed() {
@@ -61,8 +56,8 @@ d = json.load(open(p))
 d["template"] = "."
 d["context"]["cookiecutter"]["_template"] = "."
 # The plugin's own once written: an update never patches these (a template
-# change to the skeleton tool would only conflict with the real one).
-d["skip"] = ["crate/src/skill.rs", "schemas/tools", "schemas/graph"]
+# change to the skeleton would only conflict with the real one).
+d["skip"] = ["README.md", "crate/src/skill.rs", "schemas/tools", "schemas/graph"]
 with open(p + ".new", "w") as f:
     f.write(json.dumps(d, indent=2) + "\n")
 import os
@@ -266,7 +261,33 @@ cmd_link() {
     rm -rf "$tmp"
   fi
   echo "linked plugins/$name: $(jq -c . <<<"$ctx")"
-  echo "next: edit plugins/$name/README.md's layout to its real modules; add the template's name test to crate/src/lib.rs; drop $name from NOT_YET_LINKED"
+  echo "next: edit plugins/$name/README.md's layout to its real modules; add the template's name test to crate/src/lib.rs"
+}
+
+# The template files changed since a plugin's recorded commit that reach it:
+# a file under the rendered directory counts unless the plugin skips it (or
+# it is Rust and the plugin is data); the answers and hooks
+# (cookiecutter.json, hooks/) always count.
+changed_for() {
+  local cruft_json=$1 commit=$2 path rel s skipped
+  local root='templates/plugin/{{cookiecutter.name}}/'
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [[ "$path" == "$root"* ]]; then
+      rel=${path#"$root"}
+      # A data plugin has no crate (the hook drops it, and schemas/ with it).
+      if [ ! -d "$(dirname "$cruft_json")/crate" ] && [[ "$rel" == crate/* || "$rel" == schemas/* ]]; then
+        continue
+      fi
+      skipped=0
+      while IFS= read -r s; do
+        [ -n "$s" ] || continue
+        if [ "$rel" = "$s" ] || [[ "$rel" == "$s/"* ]]; then skipped=1; fi
+      done < <(jq -r '.skip[]?' "$cruft_json")
+      [ "$skipped" = 1 ] && continue
+    fi
+    echo "$path"
+  done < <(git diff --name-only "$commit" HEAD -- templates/plugin)
 }
 
 cmd_check() {
@@ -277,27 +298,22 @@ cmd_check() {
     commit=$(jq -r .commit "$f")
     if ! git cat-file -e "$commit^{commit}" 2>/dev/null; then
       behind+=("$dir records commit ${commit:0:12}, which this clone lacks (CI: checkout with fetch-depth 0)")
-    elif ! git diff --quiet "$commit" HEAD -- templates/plugin; then
-      behind+=("$dir is behind templates/plugin (changed since ${commit:0:12}): scripts/plugin_template.sh update $(basename "$dir")")
+    elif [ -n "$(changed_for "$f" "$commit")" ]; then
+      behind+=("$dir is behind templates/plugin (changed since ${commit:0:12}: $(changed_for "$f" "$commit" | tr '\n' ' ')): scripts/plugin_template.sh update $(basename "$dir")")
     fi
   done
-  local pending=0
   for b in plugins/*/; do
     b=$(basename "$b")
     [ "$b" = core ] && continue
     [ -f "plugins/$b/plugin.yaml" ] || continue
-    if [[ " $NOT_YET_LINKED " == *" $b "* ]]; then
-      pending=$((pending + 1))
-      [ -f "plugins/$b/.cruft.json" ] && behind+=("plugins/$b is linked: drop it from NOT_YET_LINKED (scripts/plugin_template.sh)")
-    elif [ ! -f "plugins/$b/.cruft.json" ]; then
+    [ -f "plugins/$b/.cruft.json" ] ||
       behind+=("plugins/$b has no .cruft.json: stamp it (scripts/plugin_template.sh new) or link it (link)")
-    fi
   done
   if [ ${#behind[@]} -gt 0 ]; then
     printf '%s\n' "${behind[@]}" >&2
     exit 1
   fi
-  echo "plugin template: $n stamped plugins, all current with templates/plugin; $pending still to link"
+  echo "plugin template: $n plugins on templates/plugin, all current"
 }
 
 case "${1:-}" in

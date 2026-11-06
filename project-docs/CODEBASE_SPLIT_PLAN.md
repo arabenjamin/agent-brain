@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 under way: the template, its script and its check built 2026-11-06; linking the 13 older plugins to it started the same day (websocket first).**
+built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 steps 1–4 built 2026-11-06: the template, its script and its check, and all 13 older plugins linked to it. Left: step 5, the brain's own use.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -409,15 +409,15 @@ keeping the plugin's own edit; a data plugin got only `plugin.yaml`,
 `store_note` were each refused as taken. The Dockerfile edit was checked as
 text, not built.
 
-**Step 4, started 2026-11-06: link, don't re-stamp.** A plugin built before
+✅ **Step 4, built 2026-11-06: link, don't re-stamp.** A plugin built before
 the template is put on it by `plugin_template.sh link <name>`. That reads its
 answers from its own files (plugin.yaml's description and env, the tools with
 a schema file or an inline one, the labels its graph file names), records them
 with `cruft link`, and adds the template's `README.md`. It changes no other
 file. Then by hand: the README's layout table lists the real modules, and
-`lib.rs` gets the template's `name_matches_plugin_yaml` test. `check` fails on
-a bundle with neither a `.cruft.json` nor a place in the script's
-`NOT_YET_LINKED`, which loses one name per commit. Two changes from the text
+`lib.rs` gets the template's `name_matches_plugin_yaml` test. `check` now
+fails on any bundle but `core` without a `.cruft.json` (while linking, a
+`NOT_YET_LINKED` list in the script held the rest). Two changes from the text
 above:
 - **No module or seed-directory renames.** Dev notes and history cite paths
   such as `plugins/epistemics/crate/src/claims.rs`, and the seed kinds
@@ -425,19 +425,24 @@ above:
   would break those for a name. The README's layout table says where each
   thing is instead.
 - **What's the plugin's own is skipped by updates.** Every `.cruft.json`
-  (stamped or linked) lists `crate/src/skill.rs`, `schemas/tools` and
-  `schemas/graph` in cruft's `skip`. Once written they're the plugin's, and a
-  template change to the skeleton would only conflict. Tried in a scratch
-  clone: a template change to `skill.rs` and `README.md` reached the README
-  and left the linked plugin's `skill.rs` alone.
+  (stamped or linked) lists `README.md`, `crate/src/skill.rs`, `schemas/tools`
+  and `schemas/graph` in cruft's `skip`. Once written they're the plugin's,
+  and a template change to the skeleton would only conflict (every linked
+  README is hand-written). Tried in a scratch clone: a template change to
+  `skill.rs` left the linked plugin's `skill.rs` alone. `check` counts only
+  template changes that reach a plugin: not a skipped file, and not a Rust
+  file for a data plugin. Tried: a README-only template change flagged none,
+  a change to the template's `Cargo.toml` flagged the 10 Rust plugins and
+  not the 3 data ones.
 
 The template's dispatch test (call every tool) isn't added to older plugins:
 called with no arguments, a real tool may go to the network.
 
-Linked 2026-11-06, in four commits: `websocket`; the data plugins `github`,
+Linked 2026-11-06, in seven commits: `websocket`; the data plugins `github`,
 `harness`, `ml-lab`; the small Rust ones `alias-judge`, `osint-data`,
-`sandbox`, `research`, `reference`; then `developer`, `epistemics`, `maps`.
-Left: media.
+`sandbox`, `research`, `reference`; then `developer`, `epistemics`, `maps`
+and `media`, one each. Each README was checked against its modules' doc
+comments and files; seven rows were wrong on the first draft and fixed.
 
 Done when: a new plugin is one command, every plugin passes
 `plugin_template.sh check`, and none was hand-built.

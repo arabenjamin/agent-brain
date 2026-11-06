@@ -18,6 +18,7 @@
   },
   "directory": "templates/plugin",
   "skip": [
+    "README.md",
     "crate/src/skill.rs",
     "schemas/tools",
     "schemas/graph"

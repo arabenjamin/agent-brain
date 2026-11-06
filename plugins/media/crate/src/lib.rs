@@ -211,6 +211,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn name_matches_plugin_yaml() {
+        let want = format!("name: {}", Media.name());
+        assert!(
+            include_str!("../../plugin.yaml").lines().any(|l| l == want),
+            "plugin.yaml has no `{want}` line"
+        );
+    }
+
+    #[test]
     fn shipped_source_files_parse() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../sources-media");
         let mut n = 0;
