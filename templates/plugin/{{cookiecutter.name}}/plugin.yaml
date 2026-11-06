@@ -1,0 +1,11 @@
+{%- set env = cookiecutter.needs_env.split(',') | map('trim') | reject('equalto', '') | list -%}
+# {{ cookiecutter.description }}
+# Stamped from templates/plugin (scripts/plugin_template.sh); .cruft.json
+# records the template commit it is current with.
+name: {{ cookiecutter.name }}
+version: 1
+description: "{{ cookiecutter.description }}"
+{%- if env %}
+requires:
+  env: [{{ env | join(', ') }}]
+{%- endif %}

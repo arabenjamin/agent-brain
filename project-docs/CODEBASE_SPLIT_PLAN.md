@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Next: Phase 2.**
+built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 under way: the template, its script and its check built 2026-11-06; re-stamping the 13 plugins next.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -367,8 +367,50 @@ fails if a copy disagrees.
    never writes or commits a repo file. It's what api-integrator or a program
    review would use when a proposal needs a new bundle.
 
-Done when: a new plugin is one command, every plugin passes `cruft check`,
-and none was hand-built.
+✅ **Steps 1–3 built 2026-11-06**, with four changes from the text above,
+each found by trying it:
+- **The repo edits are the script's, not a hook's.** cruft re-runs the
+  template's hooks on every update, inside a temporary copy, so a hook that
+  edits `crates/host` would run in the wrong place. The hooks only check the
+  answers (`pre_gen_project.py`: names, kinds, a data plugin with tools) and
+  shape the plugin itself (`post_gen_project.py`: drop `crate/` for a data
+  plugin, write one `schemas/tools/<tool>.json` per tool and the graph file).
+  `scripts/plugin_template.sh new` does the 8 hand edits a Rust plugin used to
+  need (host `Cargo.toml` ×3, `plugins.rs` ×2, the Dockerfile's dependency
+  stage ×3), refuses a tool name that is already taken (dispatch is first
+  match; it checks the schema files, the Rust names and the live brain), then
+  formats and runs the plugin's tests, clippy, `check_plugin_deps.sh` and
+  `check_schemas.sh`. The script is `plugin_template.sh new|update|check`
+  rather than `new_plugin.sh`.
+- **`cruft check` can't see drift with the template in this repo.** It
+  compares commit hashes, so every commit, even one that doesn't touch the
+  template, makes every plugin "out of date". `plugin_template.sh check` asks
+  git instead: did `templates/plugin` change since the commit the plugin's
+  `.cruft.json` records? It needs no network or uvx, and it runs in CI (now
+  with `fetch-depth: 0`) and pre-commit. cruft stays for `create` and the
+  three-way `update`, which keeps the plugin's own edits and marks a
+  conflict. `.cruft.json` records the template as `.`, so the file is the
+  same on every checkout. cruft reads the committed template, so a template
+  change is committed before it's stamped or applied.
+- **No `store.rs`, no `seed_kinds` answer.** The stamped crate has to pass
+  clippy with `-D warnings`, and an unused graph-access skeleton is dead
+  code. The README says where graph access goes. Seed directories are
+  created when there's a seed to put in them; `check_schemas.sh` already
+  fails on an unknown kind.
+- **A stamped tool answers "not built yet" as an error** (`isError: true`)
+  until it's written, and its description says so. The plugin isn't on until
+  it's in `PLUGINS_ENABLED`.
+
+Tried in a scratch clone: a Rust plugin with two tools, a label and an env
+var stamped, registered and passed its 2 tests and every check; a template
+change after that was flagged by `check`, and `update` brought it in while
+keeping the plugin's own edit; a data plugin got only `plugin.yaml`,
+`README.md` and `.cruft.json`; `lookup`, `search_web`, `list_tasks` and
+`store_note` were each refused as taken. The Dockerfile edit was checked as
+text, not built.
+
+Done when: a new plugin is one command, every plugin passes
+`plugin_template.sh check`, and none was hand-built.
 
 ### Phase 3: shrink core: remove, then move into plugins
 

@@ -1,0 +1,25 @@
+{%- set tools = cookiecutter.tools.split(',') | map('trim') | reject('equalto', '') | list -%}
+{%- set labels = cookiecutter.graph_labels.split(',') | map('trim') | reject('equalto', '') | list -%}
+[package]
+name = "{{ cookiecutter.__crate }}"
+version.workspace = true
+edition.workspace = true
+
+# A plugin crate depends on agent-brain-plugin-api and external crates only
+# (scripts/check_plugin_deps.sh).
+[dependencies]
+agent-brain-plugin-api = { path = "../../../crates/plugin-api" }
+{%- if labels %}
+anyhow = { workspace = true }
+{%- endif %}
+{%- if tools %}
+serde_json = { workspace = true }
+{%- endif %}
+{%- if tools %}
+
+[dev-dependencies]
+tokio = { workspace = true }
+{%- endif %}
+
+[lints]
+workspace = true

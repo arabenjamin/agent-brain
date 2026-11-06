@@ -1,0 +1,10 @@
+{
+  "name": "example",
+  "description": "What the plugin does, in one sentence.",
+  "kind": ["rust", "data"],
+  "tools": "",
+  "graph_labels": "",
+  "needs_env": "",
+  "__struct": "{{ cookiecutter.name.replace('-', ' ').title().replace(' ', '') }}",
+  "__crate": "agent-brain-plugin-{{ cookiecutter.name }}"
+}

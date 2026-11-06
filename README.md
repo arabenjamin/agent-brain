@@ -134,6 +134,8 @@ Plugin tools (each from its bundle in `plugins/`, on by default in compose):
 - `sandbox`: `execute_code` (below); the bundle also holds the two sandbox images (`python/`, `rust/`)
 - `personal`: no tools; the owner's own workflows, agents and topics, from a private repo mounted at `/home/agent/plugins-private` (`PLUGINS_EXTRA_DIRS`); absent elsewhere
 
+A new plugin is stamped from `templates/plugin` (cookiecutter, kept current with cruft; CODEBASE_SPLIT_PLAN Phase 2): `scripts/plugin_template.sh new <name> --kind rust|data --description "..." [--tools a,b] [--graph-labels Thing] [--env KEY]` writes the bundle (`plugin.yaml`, `README.md`, and for Rust `crate/` with the `Plugin` impl, a skill whose tools answer "not built yet", their `schemas/tools/` files and a `schemas/graph/schema.cypher`), registers a Rust one with the host and the Dockerfile, and runs its tests and the repo checks. `update <name>` brings a later template change in as a three-way diff; `check` (CI, pre-commit) fails when a stamped plugin is behind the template. It runs through `uvx`, so nothing is installed. Enabling it is still `PLUGINS_ENABLED`.
+
 ### HTTP / API / MCP
 `http_request`, `define_api_context`, `ingest_api`, `mcp_list_tools` (no `server` lists the servers), `mcp_call`
 
