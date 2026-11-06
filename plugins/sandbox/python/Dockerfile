@@ -20,7 +20,11 @@ RUN pip install --no-cache-dir \
         scikit-learn==1.6.1 \
         cookiecutter==2.7.1
 
-RUN useradd -m -u 1000 sandbox
+# Not UID 1000: RLIMIT_NPROC is counted per real UID across the whole kernel,
+# so sharing the host user's UID (about 2,000 threads) meant a run could start
+# no child process or thread at all (found 2026-11-06). Not 10001 either: that
+# is the Rust sandbox's, whose builds would spend this sandbox's allowance.
+RUN useradd -m -u 10002 sandbox
 
 COPY server.py /usr/local/bin/sandbox-server.py
 

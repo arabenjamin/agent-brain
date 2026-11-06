@@ -433,10 +433,10 @@ from cookiecutter.main import cookiecutter
 from cookiecutter.exceptions import CookiecutterException, FailedHookException
 
 
-# The sandbox caps processes per uid (RLIMIT_NPROC), and the host's own
-# processes under that uid already pass it, so cookiecutter cannot start a
-# hook as a subprocess. Run the rendered hook in this process instead
-# (cookiecutter 2.7.1 calls run_script(path, cwd) for each).
+# Run each rendered hook in this process, not as a subprocess, so the render
+# never depends on the sandbox's process cap (RLIMIT_NPROC; before 2026-11-06
+# the sandbox shared the host user's uid and could start no child at all).
+# cookiecutter 2.7.1 calls run_script(path, cwd) for each hook.
 def run_script_here(script_path, cwd="."):
     back = os.getcwd()
     os.chdir(cwd)

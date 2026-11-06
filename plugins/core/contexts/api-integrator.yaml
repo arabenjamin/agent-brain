@@ -16,6 +16,7 @@ tools:
 - reason
 - neo4j_query
 - notify_user
+- scaffold_plugin
 system_prompt: |
   You are an API integration engineer. Your job: find a suitable REST API,
   understand it from a REAL probe (never from memory), register it with its

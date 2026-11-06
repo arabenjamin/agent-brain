@@ -460,8 +460,11 @@ with the command that applies it:
 That re-renders from the same committed template, registers the plugin and
 runs the checks. The brain never writes the repo. The tool is offered only
 when the codebase, the workspace, `SANDBOX_URL`, the graph and the Feed are
-all there. It is in no agent's tool list yet; which agent gets it is the
-owner's call. Two things trying it found:
+all there. `api-integrator` has it (owner, 2026-11-06): its allowlist names
+the tool, and the developer plugin's `contexts/api-integrator-scaffold.yaml`
+adds a section, shown only while the tool is registered, on when a plugin is
+needed at all (rarely: the ApiContext and `http_request` serve most APIs).
+R&D may want it later (owner). Two things trying it found:
 - **Why the sandbox is needed, not only tidy.** cookiecutter renders every
   answer as Jinja, so a model-written description holding `{{ … }}` would
   run Python wherever it's rendered. The answers are refused for those
@@ -472,8 +475,12 @@ owner's call. Two things trying it found:
   own processes under uid 1000 (about 2,000 threads), so starting any child
   process fails with `EAGAIN`. The render runs the two hooks in its own
   process instead, by replacing cookiecutter 2.7.1's `run_script`. The same
-  limit means `execute_code` can never start a subprocess: a separate
-  finding, left for the owner.
+  limit meant `execute_code` could never start a subprocess or a thread.
+  Fixed the same day on the owner's word: the Python sandbox runs as uid
+  10002, its own (the Rust sandbox already had 10001 for this reason).
+  Tried: a run starts subprocesses and threads, and the cap still stops it
+  at about 60 children. The in-process hooks stay, so the render never
+  depends on the cap.
 
 The sandbox image gains `cookiecutter==2.7.1`, at build time like its other
 libraries. Tried offline in a throwaway copy of that image (no network,
@@ -483,7 +490,10 @@ read-only, `noexec` tmp, the server's own limits):
 - a bad name was refused by the template's hook, with its message.
 
 Separately, `new --answers` applied a staged data draft in a scratch clone
-and passed every check.
+and passed every check. Live on the brain (2026-11-06): a Jinja answer and a
+taken tool name were refused, and a Rust test plugin was drafted (7 files and
+`answers.json` in the workspace, the Feed item right, the repo untouched);
+the item was closed and the draft deleted.
 
 Done when: a new plugin is one command, every plugin passes
 `plugin_template.sh check`, and none was hand-built. ✅ All three hold.

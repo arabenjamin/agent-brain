@@ -1,0 +1,19 @@
+# Adds when-to-draft-a-plugin rules for scaffold_plugin to the core
+# `api-integrator` profile (whose allowlist names the tool). Rendered only
+# while the developer plugin is loaded and the tool registered
+# (CODEBASE_SPLIT_PLAN Phase 2 step 5).
+extends: api-integrator
+description: When an integration needs its own plugin bundle, and how to draft one.
+sections:
+- name: scaffold-plugin
+  requires: [scaffold_plugin]
+  text: |-
+    A NEW PLUGIN — RARELY. An API normally needs no plugin: the ApiContext plus
+    http_request serve it. Call scaffold_plugin only when the task asks for a
+    plugin, or the integration needs what those cannot give: its own tools
+    (a stream, a multi-call lookup, parsing too big for a workflow step), its
+    own graph labels, or a bundle of workflows and agents for one source.
+    kind data = seeds only; kind rust = tools too. Name the tools you will
+    need, snake_case. `why` says what the plugin is for and which task it
+    serves. It drafts only: the owner reviews the Feed item and applies it.
+    Say so, and never call the drafted tools: they do not exist yet.
