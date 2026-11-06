@@ -20,7 +20,7 @@ There is no `schema_version` node — the schema is defined entirely by the Rust
 
 ## DuckDB — Telemetry & Operational Data
 
-File path configured via `TELEMETRY_DB_PATH` env var. Schema is auto-initialised by `TelemetryClient::new()`.
+File path configured via `TELEMETRY_DB_PATH` env var. The tables are defined in `plugins/core/schemas/duckdb/telemetry.sql` (read at compile time, run whole by `TelemetryClient::new()` on every open, every statement idempotent; CODEBASE_SPLIT_PLAN Phase 1). That file is the definition; the sections below describe what each table is for.
 
 ### `interactions`
 
@@ -137,7 +137,7 @@ Each successful attempt's result links in rank order (`usage_id` → `search_usa
 
 ## DuckDB — Tracks (maps plugin)
 
-A file of its own (`TRACKS_DB_PATH`, default `/home/agent/telemetry/tracks.duckdb`), written only by the maps plugin's collectors (MAP_PLAN Phase 4, `plugins/maps/crate/src/tracks/store.rs`): ship and aircraft positions over the watch areas (`:WatchArea`, seeded from `areas/*.yaml`). Kept 14 days. Times are unix seconds (BIGINT). Not reachable from `duckdb_query`; read through `area_traffic` and `/api/plugins/maps/areas*`.
+A file of its own (`TRACKS_DB_PATH`, default `/home/agent/telemetry/tracks.duckdb`), written only by the maps plugin's collectors (MAP_PLAN Phase 4, `plugins/maps/crate/src/tracks/store.rs`; tables defined in `plugins/maps/schemas/duckdb/tracks.sql`): ship and aircraft positions over the watch areas (`:WatchArea`, seeded from `areas/*.yaml`). Kept 14 days. Times are unix seconds (BIGINT). Not reachable from `duckdb_query`; read through `area_traffic` and `/api/plugins/maps/areas*`.
 
 ### `positions`
 
@@ -688,5 +688,5 @@ The file is the list: each statement carries the comment saying what it serves. 
 
 Measured against the live graph on 2026-11-06:
 - **Equivalent under another name.** Six file indexes (`agent_job_status`, `agent_job_priority`, `agent_job_created`, `entity_type_idx`, `note_next_review`, `working_memory_session`) are live under auto-generated names (`index_8795ea6`, …), created before they had names. `init_schema` treats "an equivalent index exists" as success, so nothing is missing.
-- **Retired labels' leftovers.** The original agent-api fork's `ApiCredential`, `Endpoint`, `HealingEvent`, `ModelSpec`, `Parameter`, `Resource`, `Schema` and `DynamicTool` still have 7 constraints and 7 indexes, and 185 nodes (`Parameter` 117, `Schema` 66, one `ApiCredential`, one `HealingEvent`). No code reads or writes these labels. Removing them is the owner's call.
+- **Retired labels' leftovers, dropped 2026-11-06 (owner).** The original agent-api fork's `ApiCredential`, `Endpoint`, `HealingEvent`, `ModelSpec`, `Parameter`, `Resource`, `Schema` and `DynamicTool` had 7 constraints, 6 indexes and 185 nodes (`Parameter` 117, `Schema` 66, one `ApiCredential`, one `HealingEvent`), none with a relationship, read and written by no code. `scripts/drop_fork_leftovers_2026-11-06.cypher` removed them; the backup with every `createStatement` is `workspace/backups/fork-leftovers-2026-11-06.json`. The live graph now holds exactly the files' 19 constraints, plus their indexes.
 - `task_created` was live and documented but in no code; it is in core's file now.

@@ -19,6 +19,13 @@
 #     safe to run on every start, and no name is defined twice across bundles;
 #   - a bundle's file is read by its code: graph_schema!(core) in a core crate,
 #     graph_schema!(plugin) in that plugin's crate.
+#
+# DuckDB (schemas/duckdb/<database>.sql, read by duckdb_schema!):
+#   - no CREATE TABLE / ALTER TABLE / CREATE INDEX for DuckDB in Rust outside
+#     test code;
+#   - every statement is idempotent (CREATE TABLE|INDEX|SEQUENCE IF NOT EXISTS,
+#     ALTER TABLE ... ADD COLUMN IF NOT EXISTS), since the file runs on every open;
+#   - each file is read by a duckdb_schema! call naming it, in that bundle.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export LC_ALL=C
@@ -47,6 +54,15 @@ files_like() {
 
 # A Neo4j schema statement (not DuckDB's `CREATE INDEX IF NOT EXISTS t ON ...`).
 NEO4J_DDL='CREATE (CONSTRAINT|VECTOR INDEX|FULLTEXT INDEX|RANGE INDEX|TEXT INDEX|POINT INDEX|LOOKUP INDEX|INDEX [A-Za-z_0-9]+ IF NOT EXISTS)'
+
+# DuckDB DDL in Rust (the graph's `CREATE INDEX <name> IF NOT EXISTS FOR` is
+# Neo4j's and is caught above).
+DUCKDB_DDL='(CREATE TABLE|ALTER TABLE|CREATE INDEX IF NOT EXISTS [A-Za-z_0-9]+ ON|CREATE SEQUENCE)'
+
+# A DuckDB file's statements, one per line: `--` comments dropped, joined, split on `;`.
+sql_statements() {
+  sed -E 's/--.*$//' "$1" | tr '\n' ' ' | tr ';' '\n' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | grep . || true
+}
 
 # A schema file's statements, one per line: comment lines dropped, each
 # statement's lines joined, split on `;`.
@@ -77,7 +93,7 @@ inventory() {
   n=0
   while read -r f; do
     t=$(test_start "$f")
-    n=$((n + $(awk -v t="$t" -v re="$NEO4J_DDL" 'NR < t && $0 ~ re' "$f" | wc -l)))
+    n=$((n + $(awk -v t="$t" -v re="$NEO4J_DDL" 'NR < t && $0 !~ /^[[:space:]]*\/\// && $0 ~ re' "$f" | wc -l)))
   done < <(rust_files)
   printf "%-44s %s\n" "Neo4j constraints/indexes in Rust strings" "$n"
   n=0
@@ -86,10 +102,17 @@ inventory() {
     n=$((n + $(cypher_statements "$g" | wc -l)))
   done
   printf "%-44s %s\n" "Neo4j statements in schemas/graph/ files" "$n ($(files_like 'plugins/*/schemas/graph/*.cypher' | wc -l) files)"
-  n=$(rust_files | xargs grep -h 'CREATE TABLE' | wc -l)
-  printf "%-44s %s\n" "DuckDB tables in Rust strings" "$n"
-  n=$(files_like 'plugins/*/schemas/telemetry/*.sql' | wc -l)
-  printf "%-44s %s\n" "DuckDB schema files (schemas/telemetry/)" "$n"
+  n=0
+  while read -r f; do
+    t=$(test_start "$f")
+    n=$((n + $(awk -v t="$t" -v re="$DUCKDB_DDL" 'NR < t && $0 !~ /^[[:space:]]*\/\// && $0 ~ re' "$f" | wc -l)))
+  done < <(rust_files)
+  printf "%-44s %s\n" "DuckDB DDL lines in Rust strings" "$n"
+  n=0
+  for g in $(files_like 'plugins/*/schemas/duckdb/*.sql'); do
+    n=$((n + $(sql_statements "$g" | grep -c '^CREATE TABLE' || true)))
+  done
+  printf "%-44s %s\n" "DuckDB tables in schemas/duckdb/ files" "$n ($(files_like 'plugins/*/schemas/duckdb/*.sql' | wc -l) files)"
 }
 
 if [ "${1:-}" = --inventory ]; then
@@ -163,7 +186,7 @@ while read -r f; do
   while IFS= read -r n; do
     [ -n "$n" ] || continue
     problems+=("$f:$n writes a Neo4j constraint or index in Rust: put it in the bundle's schemas/graph/schema.cypher")
-  done < <(awk -v t="$t" -v re="$NEO4J_DDL" 'NR < t && $0 ~ re { print NR }' "$f")
+  done < <(awk -v t="$t" -v re="$NEO4J_DDL" 'NR < t && $0 !~ /^[[:space:]]*\/\// && $0 ~ re { print NR }' "$f")
 done < <(rust_files)
 
 # 6. Graph files: idempotent statements, unique names, read by their code.
@@ -196,10 +219,38 @@ while IFS= read -r dup; do
   problems+=("Neo4j name $dup is defined more than once: $(awk -F'\t' -v n="$dup" '$1 == n { print $2 }' <<<"$graph_names" | tr '\n' ' ')")
 done < <(cut -f1 <<<"$graph_names" | grep . | sort | uniq -d)
 
+# 7. DuckDB: no DDL in Rust outside tests.
+while read -r f; do
+  t=$(test_start "$f")
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    problems+=("$f:$n writes DuckDB DDL in Rust: put it in the bundle's schemas/duckdb/<database>.sql")
+  done < <(awk -v t="$t" -v re="$DUCKDB_DDL" 'NR < t && $0 !~ /^[[:space:]]*\/\// && $0 ~ re { print NR }' "$f")
+done < <(rust_files)
+
+# 8. DuckDB files: idempotent statements, read by their code.
+duck_count=0
+for g in $(files_like 'plugins/*/schemas/duckdb/*.sql'); do
+  bundle=$(cut -d/ -f2 <<<"$g")
+  db=$(basename "$g" .sql)
+  while IFS= read -r stmt; do
+    duck_count=$((duck_count + 1))
+    grep -qE '^(CREATE (TABLE|INDEX|SEQUENCE|UNIQUE INDEX) IF NOT EXISTS |ALTER TABLE [A-Za-z_0-9]+ ADD COLUMN IF NOT EXISTS |CREATE OR REPLACE VIEW )' <<<"$stmt" ||
+      problems+=("$g: not idempotent (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS): $stmt")
+  done < <(sql_statements "$g")
+  if [ "$bundle" = core ]; then
+    rust_files | grep '^crates/' | xargs grep -l "duckdb_schema!(core \"$db\")" >/dev/null 2>&1 ||
+      problems+=("$g is read by no duckdb_schema!(core \"$db\") call")
+  else
+    rust_files | grep "^plugins/$bundle/crate/" | xargs -r grep -l "duckdb_schema!(plugin \"$db\")" >/dev/null 2>&1 ||
+      problems+=("$g is read by no duckdb_schema!(plugin \"$db\") call in plugins/$bundle/crate")
+  fi
+done
+
 files=$(files_like 'plugins/*/schemas/tools/*.json' | wc -l)
 if [ ${#problems[@]} -gt 0 ]; then
   echo "schema check: ${#problems[@]} problem(s):" >&2
   printf '  %s\n' "${problems[@]}" >&2
   exit 1
 fi
-echo "schemas checked: $files tool schema files, each used once, placeholders matching; $(grep -c . <<<"$INLINE_OK") inline by design; $graph_count Neo4j statements in $(files_like 'plugins/*/schemas/graph/*.cypher' | wc -l) graph files, idempotent, names unique."
+echo "schemas checked: $files tool schema files, each used once, placeholders matching; $(grep -c . <<<"$INLINE_OK") inline by design; $graph_count Neo4j statements in $(files_like 'plugins/*/schemas/graph/*.cypher' | wc -l) graph files, idempotent, names unique; $duck_count DuckDB statements in $(files_like 'plugins/*/schemas/duckdb/*.sql' | wc -l) files, idempotent."

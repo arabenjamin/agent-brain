@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 under way: tool and graph schemas moved and checked 2026-11-06; telemetry, seeds and lists next.**
+built 2026-11-06. Phase 1 under way: tool, graph and DuckDB schemas moved and checked 2026-11-06; seeds and lists next.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -185,7 +185,7 @@ already loaded and checked; it just holds two files today. Inside it:
 | `tools/<tool>.json` | each tool's input schema, descriptions included | the file. Rust loads it with `include_str!`, so nothing changes at runtime |
 | `seeds/<kind>.json` | each seed kind's shape (workflows, views, apis, sources-media, …) | the Rust struct. The JSON is generated (`schemars`) and committed, so it can be reviewed and diffed |
 | `graph/*.cypher` | Neo4j constraints and indexes, per bundle | the file. `init-db` and plugin `start` run it |
-| `telemetry/*.sql` | DuckDB tables, per bundle | the file |
+| `duckdb/<database>.sql` | DuckDB tables, one file per database (`telemetry.sql`, maps' `tracks.sql`) | the file |
 | `lists/*.yaml` | closed lists (claim statuses, source tiers, note types) | the file. Rust and the HBI read it or are generated from it |
 
 1. ✅ **Inventory**, by a script: `scripts/check_schemas.sh --inventory`
@@ -225,13 +225,25 @@ already loaded and checked; it just holds two files today. Inside it:
        already existed), so nothing is missing;
      - `task_created` was live and documented but in no code. It's added, so
        a fresh install gets it (48 statements now);
-     - **the original fork's retired labels** still hold 7 constraints, 7
-       indexes and 185 nodes (`Parameter` 117, `Schema` 66) that no code
-       touches. Removing them is the owner's call (§ 8.8).
+     - **the original fork's retired labels** held 7 constraints, 6 indexes
+       and 185 nodes (`Parameter` 117, `Schema` 66) that no code touched.
+       Dropped 2026-11-06 on the owner's word (§ 8.8), after a backup.
 
      `schema.md`'s constraint and index tables had drifted (a documented
      index no code created, a dozen real ones missing). They're replaced by a
      pointer to the files.
+   - ✅ **DuckDB, built 2026-11-06.** The two databases' schemas moved from
+     one raw SQL string each to `schemas/duckdb/<database>.sql`:
+     `plugins/core/schemas/duckdb/telemetry.sql` (10 tables, 21 `ADD COLUMN
+     IF NOT EXISTS` migrations, with their comments) and
+     `plugins/maps/schemas/duckdb/tracks.sql` (3 tables and an index). The
+     directory is `duckdb/` named by database, not `telemetry/` as § Phase 1's
+     table first said, because the maps file isn't telemetry.
+     `duckdb_schema!(core "telemetry")` / `(plugin "tracks")` reads each at
+     compile time, and `execute_batch` runs it as before. Proven equal line by
+     line (170 and 16 lines). The 19 telemetry tests that open a real
+     in-memory database pass. The inventory's 14 tables were 13; the 14th was
+     a test's `CREATE TABLE zz`.
 3. **One check**, `scripts/check_schemas.sh`, run in CI and pre-commit.
    ✅ Built for tools: every file is JSON and loaded by exactly one call, its
    placeholders are exactly the ones the call fills, and no schema is written
@@ -393,6 +405,8 @@ made per item once Phase 3's 60-day usage list exists.
    § Phase 1): 7 constraints, 7 indexes and 185 nodes on `ApiCredential`,
    `Endpoint`, `HealingEvent`, `ModelSpec`, `Parameter`, `Resource`, `Schema`
    and `DynamicTool`, from the agent-api fork, read and written by no code.
-   Recommended: snapshot, then drop them with a reviewed script. Open.
+   Decided (owner, 2026-11-06): drop them. Done the same day:
+   `scripts/drop_fork_leftovers_2026-11-06.cypher`, backup in
+   `workspace/backups/fork-leftovers-2026-11-06.json`.
 7. **Phase 3's list.** The owner's call per item (remove, move or keep),
    once the 60-day usage is in.
