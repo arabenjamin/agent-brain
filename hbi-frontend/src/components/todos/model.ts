@@ -3,11 +3,13 @@
  * the drawer and Home. Split out of the former TodoPanel (HBI Phase 2).
  */
 
+import type { TodoStatus } from "../../lib/lists.generated";
+
 export interface Todo {
   id: string;
   title: string;
   description?: string | null;
-  status: "pending" | "in_progress" | "awaiting_approval" | "awaiting_review" | "done";
+  status: TodoStatus;
   priority: 0 | 1 | 2 | 3;
   tags: string[];
   due_at?: string | null;
@@ -72,7 +74,7 @@ export const STATUS_LABELS: Record<string, string> = {
   awaiting_approval: "Awaiting approval",
   awaiting_review: "Awaiting review",
   done: "Done",
-};
+} satisfies Record<TodoStatus, string>;
 
 export function todosUrl(path = ""): string {
   return `/todos${path}`;

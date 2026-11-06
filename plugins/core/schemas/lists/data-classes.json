@@ -1,0 +1,8 @@
+{
+  "description": "Who may see a run's prompts: private (only no_log providers, the default) or public.",
+  "name": "data-classes",
+  "values": [
+    "private",
+    "public"
+  ]
+}

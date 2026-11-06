@@ -1,0 +1,8 @@
+{
+  "description": "Note types only the brain's own code writes; store_note does not offer them.",
+  "name": "code-written-note-types",
+  "values": [
+    "news_raw",
+    "meta_learning_result"
+  ]
+}

@@ -133,7 +133,7 @@ impl KnowledgeSkill {
                          linked to similar notes, and entities extracted when LLM is available. \
                          Long notes (>1500 chars) are semantically chunked into sub-notes."
                 .to_string(),
-            input_schema: tool_schema!(core "store_note"),
+            input_schema: tool_schema!(core "store_note", "NOTE_TYPES" => agent_brain_work::validation::agent_note_types()),
         }
     }
 

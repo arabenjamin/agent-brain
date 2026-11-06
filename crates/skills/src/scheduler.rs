@@ -283,7 +283,7 @@ impl SchedulerSkill {
                 disable those whose every step names a dead tool (and re-enable the ones an audit \
                 paused once their tools are live again)."
                 .to_string(),
-            input_schema: tool_schema!(core "manage_workflow"),
+            input_schema: tool_schema!(core "manage_workflow", "WORKFLOW_KINDS_OR_BLANK" => workflow_kinds_or_blank(), "DATA_CLASSES" => agent_brain_llm::routing::DataClass::names()),
         }
     }
 
@@ -719,6 +719,16 @@ fn humanize_interval(secs: i64) -> String {
 // =========================================================================
 // Skill implementation
 // =========================================================================
+
+/// `manage_workflow`'s `kind` choices: a workflow kind, or blank / null for
+/// none (the `workflow-kinds` closed list plus the two blanks).
+fn workflow_kinds_or_blank() -> Vec<Value> {
+    agent_brain_repository::WORKFLOW_KINDS
+        .iter()
+        .map(|k| json!(k))
+        .chain([json!(""), Value::Null])
+        .collect()
+}
 
 #[async_trait]
 impl Skill for SchedulerSkill {

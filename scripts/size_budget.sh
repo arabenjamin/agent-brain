@@ -17,6 +17,11 @@
 # (cl100k_base 4.24 bytes a token, Gemma 3.70), and it needs nothing installed.
 # Compare these numbers with each other, not with a model's bill.
 #
+# Generated files don't count either: the seed schemas under schemas/seeds/
+# and the closed lists under schemas/lists/ are written by tests from the Rust
+# types and constants, and nobody reads them to change code (owner,
+# 2026-11-06). They are reported on their own line.
+#
 # Core is crates/ plus plugins/core, the data core seeds. Tests don't count
 # against the budget: everything from a file's first `#[cfg(test)]` line is a
 # test, so nobody has to delete a test to make room.
@@ -40,14 +45,21 @@ sum_bytes() {
   xargs -0 -r wc -c | awk '$2 == "total" { n += $1 } END { print n + 0 }'
 }
 
-# Bytes of the tracked files under a path, leaving out .rs if asked.
+# Generated, not hand-written: left out of every count but the repo totals.
+GENERATED='/schemas/(seeds|lists)/'
+
+# Bytes of the tracked files under a path, leaving out .rs if asked, and
+# generated files always.
 file_bytes() {
   if [ "${2:-}" = norust ]; then
-    git ls-files -z -- "$1" | grep -zv '\.rs$' | sum_bytes
+    git ls-files -z -- "$1" | grep -zv '\.rs$' | grep -zEv "$GENERATED" | sum_bytes
   else
-    git ls-files -z -- "$1" | sum_bytes
+    git ls-files -z -- "$1" | grep -zEv "$GENERATED" | sum_bytes
   fi
 }
+
+# Bytes of the generated files under a path.
+generated_bytes() { git ls-files -z -- "$1" | grep -zE "$GENERATED" | sum_bytes; }
 
 row() { printf "%-22s %9s %9s %9s\n" "$@"; }
 tok() { printf "%d" "$(tokens "$1")"; }
@@ -66,6 +78,7 @@ core_data=$(file_bytes plugins/core)
 row "plugins/core" "" "" "$(tok "$core_data")"
 core_total=$(tokens $((core_code + core_data)))
 row "CORE (code + data)" "$(tok "$core_code")" "$(tok "$core_test")" "$(tok "$core_data")"
+row "  generated, not counted" "" "" "$(tok "$(generated_bytes plugins)")"
 
 echo
 row "plugin" code tests data

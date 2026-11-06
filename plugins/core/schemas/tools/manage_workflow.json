@@ -122,22 +122,11 @@
         "string",
         "null"
       ],
-      "enum": [
-        "monitor",
-        "brief",
-        "learning",
-        "maintenance",
-        "dataset",
-        "",
-        null
-      ]
+      "enum": "${WORKFLOW_KINDS_OR_BLANK}"
     },
     "data_class": {
       "type": "string",
-      "enum": [
-        "private",
-        "public"
-      ],
+      "enum": "${DATA_CLASSES}",
       "description": "upsert: stamped onto steps that set none."
     },
     "paid": {

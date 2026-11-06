@@ -31,6 +31,7 @@ import { DrillBanner, EmptyState, Pill } from "../ui";
 import TopicMap from "./TopicMap";
 import EntityNeighbourhood from "./EntityNeighbourhood";
 import References from "./References";
+import type { NoteType } from "../../lib/lists.generated";
 
 export interface KnowledgeParams {
   q?: string;
@@ -58,7 +59,7 @@ const MODES: { id: SearchMode; label: string; hint: string }[] = [
   { id: "id", label: "Id", hint: "An exact id: note, entity, task, job, schedule or todo" },
 ];
 
-const TYPES = ["semantic", "episodic", "claim", "source_record", "inference", "reflection", "unsourced_synthesis", "outcome", "consolidated", "news"];
+const TYPES: NoteType[] = ["semantic", "episodic", "claim", "source_record", "inference", "reflection", "unsourced_synthesis", "outcome", "consolidated", "news"];
 
 const BROWSE_CAP = 500;
 

@@ -4,6 +4,8 @@
 //! out of the app crate in CORE_AND_PLUGINS_PLAN 6f; the app re-exports each
 //! module at its old path.
 
+#[cfg(test)]
+mod closed_lists;
 pub mod context_builder;
 pub mod cypher_guard;
 pub mod events;

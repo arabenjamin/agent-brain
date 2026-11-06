@@ -1,28 +1,42 @@
 import type { Tone } from "../components/ui";
+import type { ClaimStatus, TodoStatus } from "./lists.generated";
+
+/** A todo's status; every one is named (the brain's `todo-statuses` list). */
+const TODO_TONES = {
+  pending: "accent",
+  in_progress: "yellow",
+  awaiting_approval: "muted",
+  awaiting_review: "muted",
+  done: "green",
+} satisfies Record<TodoStatus, Tone>;
+
+/** A claim's standing; every one is named (the brain's `claim-statuses` list). */
+const CLAIM_TONES = {
+  unverified: "muted",
+  corroborated: "green",
+  disputed: "purple",
+  refuted: "red",
+  // A contradiction waiting on the owner's review: not yet a refutation.
+  contested: "yellow",
+} satisfies Record<ClaimStatus, Tone>;
 
 /**
  * One colour per state across tasks, jobs, todos and runs. A job that will
  * never run again is failed, dead or dead_letter; all three read as red.
  */
 const TONES: Record<string, Tone> = {
+  ...TODO_TONES,
+  ...CLAIM_TONES,
   completed: "green",
-  done: "green",
-  corroborated: "green",
   running: "yellow",
-  in_progress: "yellow",
   queued: "accent",
   created: "accent",
-  pending: "accent",
   parked: "muted",
   cancelled: "muted",
   blocked: "purple",
   failed: "red",
   dead: "red",
   dead_letter: "red",
-  refuted: "red",
-  // A contradiction waiting on the owner's review: not yet a refutation.
-  contested: "yellow",
-  disputed: "purple",
 };
 
 export function statusTone(status: string | null | undefined): Tone {

@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 under way: tool, graph, DuckDB and seed schemas done 2026-11-06; closed lists next.**
+built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Next: Phase 2.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -186,7 +186,7 @@ already loaded and checked; it just holds two files today. Inside it:
 | `seeds/<kind>.json` | each seed kind's shape (workflows, views, apis, sources-media, …) | the Rust struct. The JSON is generated (`schemars`) and committed, so it can be reviewed and diffed |
 | `graph/*.cypher` | Neo4j constraints and indexes, per bundle | the file. `init-db` and plugin `start` run it |
 | `duckdb/<database>.sql` | DuckDB tables, one file per database (`telemetry.sql`, maps' `tracks.sql`) | the file |
-| `lists/*.yaml` | closed lists (claim statuses, source tiers, note types) | the file. Rust and the HBI read it or are generated from it |
+| `lists/<name>.json` | closed lists (claim statuses, source tiers, note types) | the Rust constant or enum. The file is written from it by a test; tool schemas fill from the constant, the HBI is generated from the file |
 
 1. ✅ **Inventory**, by a script: `scripts/check_schemas.sh --inventory`
    counts each kind of schema in files and still inline.
@@ -265,7 +265,7 @@ already loaded and checked; it just holds two files today. Inside it:
        into three schemas.
      - Two fields are another crate's type (`data_class`,
        `retrieval_exclude` on profiles), which a test-only derive can't
-       reach. They're opaque in the schema until the closed-lists step.
+       reach. They were opaque in the schema until the closed-lists step (below).
      - **Seven kinds accept unknown keys** (no `additionalProperties:
        false`): `contexts`, `topics`, `entities`, `mcp-servers`, `sources`,
        and the protocol and topic-scope files. A typo in an agent profile is
@@ -278,18 +278,57 @@ already loaded and checked; it just holds two files today. Inside it:
        single files (`relations.yaml`, `kinds.yaml`, `parallel.yaml`,
        `layout.yaml`). `workflows` and `programs` keep their hand-written
        schemas, which are checked on every save.
+   - ✅ **Closed lists, built 2026-11-06.** Ten lists, each written by its
+     owning crate's test to `plugins/<bundle>/schemas/lists/<name>.json`
+     (`{name, description, values}`) and drift-checked like the seed
+     schemas: core's `note-types`, `code-written-note-types`,
+     `todo-statuses`, `todo-origins`, `program-kinds`, `program-statuses`,
+     `workflow-kinds`, `data-classes` (`crates/work/src/closed_lists.rs`),
+     epistemics' `claim-statuses` (from `ClaimStatus::ALL`; an exhaustive
+     match makes a new variant fail to compile until it's listed) and media's
+     `source-types`. The Rust constant stays the source, not a YAML file as
+     the table first said: the code needs the values at compile time, and a
+     list read from a file would need a second check that the code handles
+     every value. Every whole copy now takes the list or is checked against
+     it:
+     - tool schemas: `claim` status, `store_note` note_type (the list minus
+       the two code-written types, as before), `manage_workflow` kind and
+       data_class are `"${NAME}"` placeholders, proven equal to the old
+       literals;
+     - the hand-written `program.json` and `workflow.json` keep their enums
+       (other code serves them as files), compared with the list by a test;
+     - the HBI imports `src/lib/lists.generated.ts` (`scripts/gen_lists.sh`).
+       `status.ts`, `noteTypes.ts`, the todo model and schedule kinds use
+       `satisfies Record<List, …>`, so a new value fails `tsc` until it has
+       a colour or label;
+     - core's `lookup` view can't import the plugin's enum; its copy is
+       checked against the epistemics file.
+
+     The check found two copies that had drifted. `lookup`'s claim statuses
+     lacked `disputed`, so a view filtering on it was refused (fixed). The
+     HBI's note colours lacked `news_raw` and `meta_learning_result` (now
+     named, still muted). The profile fields left opaque by the seed step
+     (`data_class`, `retrieval_exclude`) are now described from their lists,
+     so a profile naming an unknown class or note type fails the seed test.
+     `check_schemas.sh` checks each list file's shape and owner, that the
+     generated TS is current, and that no tool schema or HBI file spells a
+     whole list out. Generated files (`schemas/seeds/`, `schemas/lists/`)
+     no longer count against the core budget (owner, 2026-11-06): core is
+     787,284 tokens, with 17,220 generated reported apart.
 3. **One check**, `scripts/check_schemas.sh`, run in CI and pre-commit.
    ✅ Built for tools: every file is JSON and loaded by exactly one call, its
    placeholders are exactly the ones the call fills, and no schema is written
    inline outside test code except the five listed; each file is checked
    against the JSON Schema meta-schema by a unit test
-   (`crates/host/src/schema_files.rs`). Still to come, as each kind moves:
-   - every file is valid (JSON Schema 2020-12 / Cypher parse / SQL parse);
-   - every registered tool has exactly one schema file;
-   - every shipped seed file validates against its kind's schema;
-   - committed generated files match a fresh generation (drift fails);
-   - each closed list matches what reads it (the `contested` case).
-4. `schema.md` points to the files for constraints and lists instead of
+   (`crates/host/src/schema_files.rs`). ✅ Then, as each kind moved: graph
+   and DuckDB statements idempotent and read by their bundle; every shipped
+   seed file validated against its kind's schema; committed generated files
+   matching a fresh generation; each closed list matching what reads it (the
+   `contested` case). Not done: parsing Cypher and SQL (the live start is
+   the parse), and "every registered tool has exactly one schema file",
+   which the one-call-per-file rule covers for all but the five data-built
+   schemas.
+4. ✅ `schema.md` points to the files for constraints and lists instead of
    repeating them.
 
 Done when: adding a claim status is one edit plus regenerating, and the check

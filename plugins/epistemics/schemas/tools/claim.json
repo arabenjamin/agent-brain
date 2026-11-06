@@ -62,13 +62,7 @@
     },
     "status": {
       "type": "string",
-      "enum": [
-        "unverified",
-        "corroborated",
-        "disputed",
-        "refuted",
-        "contested"
-      ],
+      "enum": "${CLAIM_STATUSES}",
       "description": "list only: filter by epistemic status."
     },
     "limit": {

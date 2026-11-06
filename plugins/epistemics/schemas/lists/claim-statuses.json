@@ -1,0 +1,11 @@
+{
+  "description": "A claim's standing (claim_status on a claim note).",
+  "name": "claim-statuses",
+  "values": [
+    "unverified",
+    "corroborated",
+    "disputed",
+    "refuted",
+    "contested"
+  ]
+}

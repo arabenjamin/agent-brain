@@ -7,8 +7,10 @@
 
 export type GroupBy = "topic" | "kind" | "none";
 
-/** The kinds a schedule may declare; mirrors `SCHEDULE_KINDS` in the brain. */
-export const SCHEDULE_KINDS = ["monitor", "brief", "learning", "maintenance", "dataset"] as const;
+import { WORKFLOW_KINDS, type WorkflowKind } from "./lists.generated";
+
+/** The kinds a schedule may declare: the brain's `workflow-kinds` list. */
+export const SCHEDULE_KINDS = WORKFLOW_KINDS;
 
 export const KIND_LABELS: Record<string, string> = {
   monitor: "Monitors",
@@ -16,7 +18,7 @@ export const KIND_LABELS: Record<string, string> = {
   learning: "Learning",
   maintenance: "Maintenance",
   dataset: "Datasets",
-};
+} satisfies Record<WorkflowKind, string>;
 
 export interface Groupable {
   id: string;

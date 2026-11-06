@@ -62,6 +62,23 @@ pub enum ClaimStatus {
 }
 
 impl ClaimStatus {
+    /// Every status, in order: the `claim-statuses` closed list
+    /// (`plugins/epistemics/schemas/lists/claim-statuses.json`, written by this
+    /// crate's test). A new variant fails to compile in that test until it is
+    /// added here.
+    pub const ALL: [ClaimStatus; 5] = [
+        ClaimStatus::Unverified,
+        ClaimStatus::Corroborated,
+        ClaimStatus::Disputed,
+        ClaimStatus::Refuted,
+        ClaimStatus::Contested,
+    ];
+
+    /// [`Self::ALL`] as the strings stored on `:Note.status`.
+    pub fn names() -> Vec<&'static str> {
+        Self::ALL.iter().map(ClaimStatus::as_str).collect()
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             ClaimStatus::Unverified => "unverified",
@@ -2437,5 +2454,60 @@ mod tests {
                 "{v} must not map to an evidence edge"
             );
         }
+    }
+}
+
+/// The `claim-statuses` closed list (CODEBASE_SPLIT_PLAN Phase 1), written
+/// from [`ClaimStatus::ALL`] to the bundle's `schemas/lists/`. Core's
+/// `lookup view` keeps its own copy (it cannot import a plugin) and checks it
+/// against this file. `SCHEMA_REGENERATE=1` rewrites it after a change.
+#[cfg(test)]
+mod closed_lists {
+    use super::ClaimStatus;
+    use agent_brain_plugin_api::protocol::seed_schema_check::{
+        ClosedList, check_lists, read_list, repo_root,
+    };
+
+    #[test]
+    fn all_names_every_variant() {
+        // Exhaustive on purpose: a new variant stops this compiling until it
+        // is added here and to ClaimStatus::ALL.
+        for s in ClaimStatus::ALL {
+            match s {
+                ClaimStatus::Unverified
+                | ClaimStatus::Corroborated
+                | ClaimStatus::Disputed
+                | ClaimStatus::Refuted
+                | ClaimStatus::Contested => {}
+            }
+        }
+        assert_eq!(ClaimStatus::ALL.len(), 5);
+    }
+
+    #[test]
+    fn claim_statuses_list_matches_the_enum() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let lists = [ClosedList {
+            name: "claim-statuses".into(),
+            description: "A claim's standing (claim_status on a claim note).".into(),
+            values: ClaimStatus::names()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            file: "plugins/epistemics/schemas/lists/claim-statuses.json".into(),
+        }];
+        check_lists(&root, &lists).unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    /// Extraction's default tier is the media bundle's `source-types` list's
+    /// last (least trusted) value; this crate cannot import media's constant.
+    #[test]
+    fn default_source_type_is_a_listed_tier() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let tiers = read_list(&root, "plugins/media/schemas/lists/source-types.json");
+        assert_eq!(
+            tiers.last().map(String::as_str),
+            Some(crate::claim_skill::DEFAULT_SOURCE_TYPE)
+        );
     }
 }

@@ -1,0 +1,11 @@
+{
+  "description": "A :Workflow's kind (blank or null for none).",
+  "name": "workflow-kinds",
+  "values": [
+    "monitor",
+    "brief",
+    "learning",
+    "maintenance",
+    "dataset"
+  ]
+}

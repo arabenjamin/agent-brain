@@ -1,0 +1,11 @@
+{
+  "description": "A :Program's kind.",
+  "name": "program-kinds",
+  "values": [
+    "department",
+    "project",
+    "investigation",
+    "case",
+    "services"
+  ]
+}

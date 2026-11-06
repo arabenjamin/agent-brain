@@ -47,7 +47,7 @@ pub struct ClaimSkill {
 /// The catalog model for the contradiction second look
 /// (`CLAIM_CONTRADICTION_MODEL`); unset or blank keeps it on the verifier's own.
 /// What a source with no tier counts as (SOURCE_QUALITY_PLAN.md § 3a).
-const DEFAULT_SOURCE_TYPE: &str = "commentary";
+pub(crate) const DEFAULT_SOURCE_TYPE: &str = "commentary";
 
 /// How many claims to extract from one item of a source of this tier, from the
 /// caller's `limits_by_type` (the workflow owns the numbers). A tier that
@@ -116,7 +116,7 @@ impl ClaimSkill {
                  Claims are stored, never filtered: a claim's standing is recorded, not enforced \
                  by exclusion, so contested material stays inspectable."
                 .to_string(),
-            input_schema: tool_schema!(plugin "claim"),
+            input_schema: tool_schema!(plugin "claim", "CLAIM_STATUSES" => claims::ClaimStatus::names()),
         }
     }
 

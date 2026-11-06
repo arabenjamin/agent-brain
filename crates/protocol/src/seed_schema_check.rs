@@ -173,3 +173,76 @@ pub fn check(root: &Path, kinds: &[SeedKind]) -> Result<(), String> {
         Err(problems.join("\n"))
     }
 }
+
+/// A closed list (CODEBASE_SPLIT_PLAN Phase 1): a fixed set of values the code
+/// owns (claim statuses, note types, source tiers), written by its owning
+/// crate's test to `plugins/<bundle>/schemas/lists/<name>.json` so tool schemas,
+/// hand-written schemas, the HBI and the docs take it from one place.
+pub struct ClosedList {
+    /// The file stem, e.g. `claim-statuses`.
+    pub name: String,
+    /// What the values are, one sentence.
+    pub description: String,
+    /// In the code's order.
+    pub values: Vec<String>,
+    /// Repo-relative, e.g. `plugins/epistemics/schemas/lists/claim-statuses.json`.
+    pub file: String,
+}
+
+/// The JSON a list file holds.
+pub fn list_json(l: &ClosedList) -> String {
+    let v = serde_json::json!({
+        "name": l.name,
+        "description": l.description,
+        "values": l.values,
+    });
+    serde_json::to_string_pretty(&v).expect("a list serializes") + "\n"
+}
+
+/// Compare (or, under `SCHEMA_REGENERATE=1`, write) each list's committed file.
+pub fn check_lists(root: &Path, lists: &[ClosedList]) -> Result<(), String> {
+    let regenerate = std::env::var_os("SCHEMA_REGENERATE").is_some();
+    let mut problems = vec![];
+    for l in lists {
+        let text = list_json(l);
+        let path = root.join(&l.file);
+        if regenerate {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).expect("create schemas/lists");
+            }
+            std::fs::write(&path, &text).expect("write the list file");
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(committed) if committed == text => {}
+            Ok(_) => problems.push(format!(
+                "{} is stale: the list changed in the code. Rerun this test with SCHEMA_REGENERATE=1, then scripts/gen_lists.sh, and commit both.",
+                l.file
+            )),
+            Err(_) => problems.push(format!(
+                "{} is missing: rerun this test with SCHEMA_REGENERATE=1 and commit it.",
+                l.file
+            )),
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
+/// The values of a committed list file, for a copy that lives where the
+/// list's owner cannot be imported (core's copy of a plugin's list).
+pub fn read_list(root: &Path, file: &str) -> Vec<String> {
+    let text = std::fs::read_to_string(root.join(file))
+        .unwrap_or_else(|e| panic!("{file}: {e} (rerun the owning crate's test)"));
+    let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{file}: {e}"));
+    v["values"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{file}: no values"))
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}

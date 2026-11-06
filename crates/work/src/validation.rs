@@ -571,7 +571,7 @@ const PERSISTING_TOOLS: &[&str] = &[
 /// then never labelled or selected correctly — `label_claims`, consolidation,
 /// and `recall_recent` all key off these names. `news_raw` is the pre-classified
 /// news feed type; kept here so the lint doesn't flag a legitimate one.
-const VALID_NOTE_TYPES: &[&str] = &[
+pub const VALID_NOTE_TYPES: &[&str] = &[
     "semantic",
     "episodic",
     "reflection",
@@ -589,6 +589,20 @@ const VALID_NOTE_TYPES: &[&str] = &[
     // so the lint warned "not a recognized type" about the brain's own output.
     "meta_learning_result",
 ];
+
+/// The note types only the brain's own code writes (the news pipeline, the
+/// meta-learning chain): `store_note` does not offer them, so its `note_type`
+/// enum is [`VALID_NOTE_TYPES`] without these ([`agent_note_types`]).
+pub const CODE_WRITTEN_NOTE_TYPES: &[&str] = &["news_raw", "meta_learning_result"];
+
+/// The note types an agent may write with `store_note`, in list order.
+pub fn agent_note_types() -> Vec<&'static str> {
+    VALID_NOTE_TYPES
+        .iter()
+        .copied()
+        .filter(|t| !CODE_WRITTEN_NOTE_TYPES.contains(t))
+        .collect()
+}
 
 /// True when a step's arguments reference the previous step's output in any
 /// form — `{{_prev}}`, a dotted `{{_prev.id}}` path, the `{{result…}}` alias,

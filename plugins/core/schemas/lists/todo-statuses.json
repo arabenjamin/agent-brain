@@ -1,0 +1,11 @@
+{
+  "description": "A :Todo's status.",
+  "name": "todo-statuses",
+  "values": [
+    "pending",
+    "in_progress",
+    "awaiting_approval",
+    "awaiting_review",
+    "done"
+  ]
+}

@@ -33,6 +33,17 @@
 #     in SEED_COVERAGE below: its generated schema, its hand-written one, or
 #     why it has none yet; a new kind fails until it gets one;
 #   - every schema a line names exists.
+#
+# Closed lists (schemas/lists/<name>.json, written from the Rust constant or
+# enum by the owning crate's test; the HBI's copy is generated from them by
+# scripts/gen_lists.sh):
+#   - every file is {name, description, values}, name = its file stem, values
+#     unique non-empty strings, and its name appears in its bundle's Rust;
+#   - hbi-frontend/src/lib/lists.generated.ts is current;
+#   - no tool schema enum, and no HBI source file, spells a whole list out
+#     instead of taking it from the list (a "${NAME}" placeholder, or an import
+#     from lists.generated.ts). The hand-written schemas/*.json hold theirs and
+#     are compared with the list by crates/work/src/closed_lists.rs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export LC_ALL=C
@@ -161,6 +172,8 @@ inventory() {
     n=$((n + $(sql_statements "$g" | grep -c '^CREATE TABLE' || true)))
   done
   printf "%-44s %s\n" "DuckDB tables in schemas/duckdb/ files" "$n ($(files_like 'plugins/*/schemas/duckdb/*.sql' | wc -l) files)"
+  n=$(files_like 'plugins/*/schemas/lists/*.json' | wc -l)
+  printf "%-44s %s\n" "closed lists in schemas/lists/ files" "$n"
 }
 
 if [ "${1:-}" = --inventory ]; then
@@ -308,6 +321,42 @@ while IFS=$'\t' read -r k how what; do
     [ -f "$f" ] || problems+=("SEED_COVERAGE says $k's schema is $f, which does not exist")
   done
 done <<<"$SEED_COVERAGE"
+# 10. Closed lists: well-formed, owned, generated for the HBI, not copied.
+list_count=0
+hbi_flat=$(mktemp)
+trap 'rm -f "$hbi_flat"' EXIT
+# Each HBI source file on one line, whitespace dropped, so a list spelled over
+# several lines is still found. <file><TAB><text>
+while IFS= read -r f; do
+  printf '%s\t%s\n' "$f" "$(tr -d ' \n\t' <"$f")"
+done < <(files_like 'hbi-frontend/src/**/*.ts' 'hbi-frontend/src/**/*.tsx' | grep -v 'lists\.generated\.ts$') >"$hbi_flat"
+tool_enums=$(for t in $(files_like 'plugins/*/schemas/tools/*.json'); do
+  jq -r --arg f "$t" '.. | objects | select(has("enum")) | .enum | select(type == "array") | [$f, ([.[] | select(type == "string" and . != "")] | tojson)] | @tsv' "$t" 2>/dev/null
+done)
+for l in $(files_like 'plugins/*/schemas/lists/*.json'); do
+  list_count=$((list_count + 1))
+  bundle=$(cut -d/ -f2 <<<"$l")
+  stem=$(basename "$l" .json)
+  if ! jq -e --arg n "$stem" '(.name == $n) and (.description | type == "string" and length > 0) and (.values | type == "array" and length > 0 and all(type == "string" and length > 0) and (unique | length) == length)' "$l" >/dev/null 2>&1; then
+    problems+=("$l: not {name: \"$stem\", description, values: [unique non-empty strings]}")
+    continue
+  fi
+  if [ "$bundle" = core ]; then owner=$(rust_files | grep '^crates/'); else owner=$(rust_files | grep "^plugins/$bundle/crate/"); fi
+  xargs -r grep -lF "\"$stem\"" <<<"$owner" >/dev/null 2>&1 ||
+    problems+=("$l: no Rust in its bundle names \"$stem\" (which test writes it?)")
+  values=$(jq -c .values "$l")
+  while IFS=$'\t' read -r t e; do
+    [ -n "$t" ] || continue
+    [ "$e" = "$values" ] && problems+=("$t spells out the $stem list: fill it with a \"\${NAME}\" placeholder from the Rust constant")
+  done <<<"$tool_enums"
+  needle=$(jq -r '.values | map("\"" + . + "\"") | join(",")' "$l")
+  while IFS=$'\t' read -r f _; do
+    problems+=("$f spells out the $stem list: import it from src/lib/lists.generated.ts")
+  done < <(grep -F -- "[$needle]" "$hbi_flat" || true)
+done
+scripts/gen_lists.sh --check 2>/dev/null ||
+  problems+=("hbi-frontend/src/lib/lists.generated.ts is stale: run scripts/gen_lists.sh")
+
 seed_generated=$(files_like 'plugins/*/schemas/seeds/*.json' | wc -l)
 seed_pending=$(awk -F'\t' '$2 == "pending"' <<<"$SEED_COVERAGE" | wc -l)
 
@@ -317,4 +366,4 @@ if [ ${#problems[@]} -gt 0 ]; then
   printf '  %s\n' "${problems[@]}" >&2
   exit 1
 fi
-echo "schemas checked: $files tool schema files, each used once, placeholders matching; $(grep -c . <<<"$INLINE_OK") inline by design; $graph_count Neo4j statements in $(files_like 'plugins/*/schemas/graph/*.cypher' | wc -l) graph files, idempotent, names unique; $duck_count DuckDB statements in $(files_like 'plugins/*/schemas/duckdb/*.sql' | wc -l) files, idempotent; $seed_generated generated seed schemas, $seed_pending seed kinds still without one."
+echo "schemas checked: $files tool schema files, each used once, placeholders matching; $(grep -c . <<<"$INLINE_OK") inline by design; $graph_count Neo4j statements in $(files_like 'plugins/*/schemas/graph/*.cypher' | wc -l) graph files, idempotent, names unique; $duck_count DuckDB statements in $(files_like 'plugins/*/schemas/duckdb/*.sql' | wc -l) files, idempotent; $seed_generated generated seed schemas, $seed_pending seed kinds still without one; $list_count closed lists, none copied."

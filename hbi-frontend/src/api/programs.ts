@@ -10,9 +10,9 @@ import { apiJson, apiRequest, apiSend, query } from "./client";
 import { queryClient } from "./queries";
 import type { Tone } from "../components/ui";
 
-export const PROGRAM_KINDS = ["department", "project", "investigation", "case", "services"] as const;
-export type ProgramKind = (typeof PROGRAM_KINDS)[number];
-export type ProgramStatus = "active" | "paused" | "closed";
+export { PROGRAM_KINDS, PROGRAM_STATUSES } from "../lib/lists.generated";
+export type { ProgramKind, ProgramStatus } from "../lib/lists.generated";
+import type { ProgramKind, ProgramStatus } from "../lib/lists.generated";
 
 /** active: green · paused: yellow · closed (a cold case): muted. */
 export function programTone(s: string): Tone {
@@ -20,7 +20,7 @@ export function programTone(s: string): Tone {
 }
 
 /** Kinds that end with an answer: closing one needs a finding. */
-export const QUESTION_KINDS: string[] = ["investigation", "case"];
+export const QUESTION_KINDS: string[] = ["investigation", "case"] satisfies ProgramKind[];
 
 /** The server's checks (services/programs.rs), mirrored for the form. */
 export const PROGRAM_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;

@@ -52,8 +52,8 @@ pub struct ContextProfile {
     /// also admits free tiers that may train on prompts. A sub-agent run uses
     /// the stricter of this and its caller's class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    // Another crate's type: opaque in the generated schema (test-only derive).
-    #[cfg_attr(test, schemars(with = "Option<String>"))]
+    // Another crate's type: described from its closed list (test-only derive).
+    #[cfg_attr(test, schemars(schema_with = "seed_schema::data_class"))]
     pub data_class: Option<agent_brain_llm::routing::DataClass>,
     /// Models to step down to, in order, when `model_preference` fails or is
     /// refused — before the global `chat_fallback_ladder`. Catalog names, so a
@@ -64,8 +64,8 @@ pub struct ContextProfile {
     /// Notes this profile's `search_notes` never returns, applied when it runs
     /// as an agent (`run_agent`/`delegate`). See `RetrievalExclude`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    // Another crate's type: opaque in the generated schema (test-only derive).
-    #[cfg_attr(test, schemars(with = "Option<serde_json::Value>"))]
+    // Another crate's type: described from its closed list (test-only derive).
+    #[cfg_attr(test, schemars(schema_with = "seed_schema::retrieval_exclude"))]
     pub retrieval_exclude: Option<agent_brain_knowledge::knowledge::RetrievalExclude>,
     /// Runnable only when named in a `run_agent` step, never offered to a
     /// model: left out of the `delegate` roster and `run_agent(agent:"auto")`,
@@ -1412,5 +1412,47 @@ mod seed_schemas {
             },
         ];
         check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
+/// Schemas for the profile fields whose type lives in another crate, which a
+/// test-only derive cannot reach: built from their closed lists, so a profile
+/// naming an unknown class or note type fails the seed-schema test.
+#[cfg(test)]
+mod seed_schema {
+    use serde_json::{Value, json};
+
+    fn schema(v: Value) -> schemars::Schema {
+        schemars::Schema::try_from(v).expect("an object schema")
+    }
+
+    /// `data_class`: one of the `data-classes` list, or absent.
+    pub fn data_class(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut choices: Vec<Value> = agent_brain_llm::routing::DataClass::names()
+            .into_iter()
+            .map(Value::from)
+            .collect();
+        choices.push(Value::Null);
+        schema(json!({ "enum": choices }))
+    }
+
+    /// `retrieval_exclude`: note types from the `note-types` list, and
+    /// source contexts (free text).
+    pub fn retrieval_exclude(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schema(json!({
+            "type": ["object", "null"],
+            "properties": {
+                "note_types": {
+                    "type": "array",
+                    "items": { "enum": crate::validation::VALID_NOTE_TYPES },
+                    "description": "Note types this profile's search_notes never returns."
+                },
+                "source_contexts": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Source contexts this profile's search_notes never returns."
+                }
+            }
+        }))
     }
 }

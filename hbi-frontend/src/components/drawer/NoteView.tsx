@@ -16,10 +16,11 @@ import { Drawer, EmptyState, Pill, Stat, Tabs } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import { EntityLink, LoadState, Section } from "./parts";
 import NoteTopics from "./NoteTopics";
+import type { NoteType } from "../../lib/lists.generated";
 
 
 /** Types a person writes by hand (the rest are written by the brain's pipelines). */
-const WRITABLE_TYPES = ["semantic", "episodic", "reflection"];
+const WRITABLE_TYPES: NoteType[] = ["semantic", "episodic", "reflection"];
 
 /** /api/notes/{id}/related returns at most this many, most similar first. */
 const RELATED_CAP = 10;

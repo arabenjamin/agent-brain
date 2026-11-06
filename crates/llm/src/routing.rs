@@ -73,6 +73,15 @@ pub enum DataClass {
 }
 
 impl DataClass {
+    /// Every class: the `data-classes` closed list
+    /// (`plugins/core/schemas/lists/data-classes.json`).
+    pub const ALL: [DataClass; 2] = [DataClass::Private, DataClass::Public];
+
+    /// [`Self::ALL`] as stored and written in seed files.
+    pub fn names() -> Vec<&'static str> {
+        Self::ALL.iter().map(|c| c.as_str()).collect()
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             DataClass::Private => "private",

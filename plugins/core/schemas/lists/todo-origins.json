@@ -1,0 +1,10 @@
+{
+  "description": "The origin_kind a caller of the items API may give a :Todo; plugins also write their own (plugin, deep_research).",
+  "name": "todo-origins",
+  "values": [
+    "user",
+    "schedule",
+    "proposal",
+    "agent"
+  ]
+}

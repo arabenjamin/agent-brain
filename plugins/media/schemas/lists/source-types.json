@@ -1,0 +1,10 @@
+{
+  "description": "A :MediaSource's tier, most trusted first; unset reads as the last.",
+  "name": "source-types",
+  "values": [
+    "primary",
+    "reporting",
+    "analysis",
+    "commentary"
+  ]
+}

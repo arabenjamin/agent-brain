@@ -1,0 +1,9 @@
+{
+  "description": "A :Program's status.",
+  "name": "program-statuses",
+  "values": [
+    "active",
+    "paused",
+    "closed"
+  ]
+}

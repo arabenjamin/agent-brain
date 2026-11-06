@@ -204,7 +204,7 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 |----------|------|-------------|
 | `id` | String | UUID |
 | `content` | String | The note body |
-| `note_type` | String | `semantic` \| `episodic` \| `reflection` \| `consolidated` \| `outcome` \| `inference` |
+| `note_type` | String | One of the `note-types` closed list, `plugins/core/schemas/lists/note-types.json` (12 on 2026-11-06; `store_note` offers all but the two in `code-written-note-types.json`) |
 | `embedding` | Float[] | 1024-dim bge-m3 vector (nullable — absent if no embed model configured). Measured 2026-10-08: 223 notes hold an **empty** list and 3 a 4096-dim one; neither is searchable, so test `size(n.embedding) = 1024`, not `IS NOT NULL` |
 | `access_count` | Integer | Number of times retrieved |
 | `last_accessed_at` | DateTime | Native Neo4j `DATETIME`, UTC |
@@ -221,7 +221,7 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `topics_at` | DateTime? | Native `DATETIME`, UTC — when it was last classified |
 | `topics_failed` | Integer? | Classification failures; at 3 the assigner leaves the note alone (counted as `failed`) |
 | `provenance` | String | Who chose the words: `user_input` (a person: the HBI, an outside MCP client's call), `synthesis_inference` (a model: every queue job, chat turn and sub-agent), `system_record` (the brain's own code: scheduler dispatches, claim evidence, code-version notes), `core_training`. Decided by the caller (`knowledge::effective_provenance`): the brain's own work cannot claim `user_input`. Shown to the model by recall |
-| `source_type` | String? | The tier of the channel or feed a learning note came from (`primary`, `reporting`, `analysis`, `commentary`; SOURCE_QUALITY_PLAN.md § 3a), set by `claim` extract on its source note from 2026-11-05. On a claim: the tier it was extracted under, kept when the source is later re-tiered. The verification sweep takes low tiers first |
+| `source_type` | String? | The tier of the channel or feed a learning note came from (`primary`, `reporting`, `analysis`, `commentary`: `plugins/media/schemas/lists/source-types.json`; SOURCE_QUALITY_PLAN.md § 3a), set by `claim` extract on its source note from 2026-11-05. On a claim: the tier it was extracted under, kept when the source is later re-tiered. The verification sweep takes low tiers first |
 | `produced_by_task` | String? | The Task that owned the job that wrote it (`__owner_task_id`; for a schedule, its run-record task). Set on every note written inside a job from 2026-10-09, including claims and notes written inside a `run_agent` loop |
 | `provenance_was` / `provenance_relabelled_at` | String? / DateTime? | Set by `scripts/fix_note_provenance.cypher` (2026-10-08) on the 12,269 notes it relabelled: the old value (`none` when there was none) |
 
@@ -229,7 +229,7 @@ Claim notes (`note_type: 'claim'`, written by the epistemics plugin: `plugins/ep
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `claim_status` / `claim_kind` / `asserted_by` / `asserted_at` | | Epistemic status, see `subsystem-rules.md` § Epistemics. `claim_status` is `unverified`, `corroborated`, `contested` (a contradiction passed the gate and waits on the owner's review, from 2026-11-05), `refuted` or `disputed` (only an owner-confirmed contradiction refutes or disputes) |
+| `claim_status` / `claim_kind` / `asserted_by` / `asserted_at` | | Epistemic status, see `subsystem-rules.md` § Epistemics. `claim_status` is one of `plugins/epistemics/schemas/lists/claim-statuses.json`: `unverified`, `corroborated`, `disputed`, `refuted`, `contested` (a contradiction passed the gate and waits on the owner's review, from 2026-11-05). Only an owner-confirmed contradiction refutes or disputes |
 | `corroborating_count` / `contradicting_count` / `contested_count` | Int | Supporting edges; owner-confirmed contradictions; contradictions waiting on review. Dismissed ones count in none |
 | `about` | String[] | The named things the claim is about, as the claim names them. Extraction and the rewrite check that each is named in the claim (`standalone_problems`) |
 | `verify_skipped` | String? | Why the verification sweep never searches it: `internal` (about the brain itself) or `said_here` (an attribution that someone in the recording said it, `plugins/epistemics/said-here-claims.yaml`; labelled "said in its source, not web-checked") |
@@ -690,3 +690,17 @@ Measured against the live graph on 2026-11-06:
 - **Equivalent under another name.** Six file indexes (`agent_job_status`, `agent_job_priority`, `agent_job_created`, `entity_type_idx`, `note_next_review`, `working_memory_session`) are live under auto-generated names (`index_8795ea6`, …), created before they had names. `init_schema` treats "an equivalent index exists" as success, so nothing is missing.
 - **Retired labels' leftovers, dropped 2026-11-06 (owner).** The original agent-api fork's `ApiCredential`, `Endpoint`, `HealingEvent`, `ModelSpec`, `Parameter`, `Resource`, `Schema` and `DynamicTool` had 7 constraints, 6 indexes and 185 nodes (`Parameter` 117, `Schema` 66, one `ApiCredential`, one `HealingEvent`), none with a relationship, read and written by no code. `scripts/drop_fork_leftovers_2026-11-06.cypher` removed them; the backup with every `createStatement` is `workspace/backups/fork-leftovers-2026-11-06.json`. The live graph now holds exactly the files' 19 constraints, plus their indexes.
 - `task_created` was live and documented but in no code; it is in core's file now.
+
+### Closed lists
+
+A property that takes one of a fixed set of values has that set in one file, `plugins/<bundle>/schemas/lists/<name>.json` (`{name, description, values}`). The file is written from the Rust constant or enum by the owning crate's test (`SCHEMA_REGENERATE=1` rewrites it; it fails when stale). Tool schemas fill their enums from the same constant (`"${NAME}"`), the HBI imports `src/lib/lists.generated.ts` (`scripts/gen_lists.sh`), and `scripts/check_schemas.sh` fails on a tool schema or HBI file that spells a whole list out.
+
+| List | Property | Bundle |
+|---|---|---|
+| `note-types`, `code-written-note-types` | `Note.note_type` (the second: the two only the brain's code writes) | core |
+| `todo-statuses`, `todo-origins` | `Todo.status`; the `Todo.origin_kind` the items API accepts (plugins also write `plugin`, `deep_research`) | core |
+| `program-kinds`, `program-statuses` | `Program.kind`, `Program.status` | core |
+| `workflow-kinds` | `Workflow.kind` (blank or null for none) | core |
+| `data-classes` | `data_class` on workflows, steps, profiles and runs | core |
+| `claim-statuses` | `Note.claim_status` | epistemics |
+| `source-types` | `MediaSource.source_type`, `Note.source_type` | media |

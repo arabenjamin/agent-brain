@@ -153,9 +153,10 @@
   "properties": {
     "data_class": {
       "description": "Who may see this profile's turns (`services/routing.rs`): `private`\n(the default when absent) keeps them on `no_log` providers; `public`\nalso admits free tiers that may train on prompts. A sub-agent run uses\nthe stricter of this and its caller's class.",
-      "type": [
-        "string",
-        "null"
+      "enum": [
+        "private",
+        "public",
+        null
       ]
     },
     "description": {
@@ -194,7 +195,40 @@
       ]
     },
     "retrieval_exclude": {
-      "description": "Notes this profile's `search_notes` never returns, applied when it runs\nas an agent (`run_agent`/`delegate`). See `RetrievalExclude`."
+      "description": "Notes this profile's `search_notes` never returns, applied when it runs\nas an agent (`run_agent`/`delegate`). See `RetrievalExclude`.",
+      "properties": {
+        "note_types": {
+          "description": "Note types this profile's search_notes never returns.",
+          "items": {
+            "enum": [
+              "semantic",
+              "episodic",
+              "reflection",
+              "consolidated",
+              "outcome",
+              "inference",
+              "claim",
+              "source_record",
+              "news",
+              "news_raw",
+              "unsourced_synthesis",
+              "meta_learning_result"
+            ]
+          },
+          "type": "array"
+        },
+        "source_contexts": {
+          "description": "Source contexts this profile's search_notes never returns.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
     },
     "routing": {
       "anyOf": [

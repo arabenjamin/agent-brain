@@ -289,7 +289,17 @@ pub const NOTE_SLOTS: &[&str] = &[
     "window", "on", "kinds", "from", "topic", "entity", "words", "status", "as", "order", "limit",
 ];
 
-const STATUSES: &[&str] = &["unverified", "corroborated", "refuted", "contested"];
+/// A claim's standing: the epistemics bundle's `claim-statuses` closed list
+/// (`plugins/epistemics/schemas/lists/claim-statuses.json`). Core cannot import
+/// the plugin's enum, so this copy is checked against that file by a test.
+/// It lacked `disputed` until 2026-11-06, so a disputed-claims view was refused.
+const STATUSES: &[&str] = &[
+    "unverified",
+    "corroborated",
+    "disputed",
+    "refuted",
+    "contested",
+];
 
 impl NoteSpec {
     fn set_slots(&self) -> Vec<&'static str> {
@@ -1830,5 +1840,15 @@ mod seed_schemas {
             none_shipped: false,
         }];
         check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    #[test]
+    fn claim_statuses_match_the_epistemics_list() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let list = agent_brain_protocol::seed_schema_check::read_list(
+            &root,
+            "plugins/epistemics/schemas/lists/claim-statuses.json",
+        );
+        assert_eq!(super::STATUSES.to_vec(), list, "views.rs STATUSES drifted");
     }
 }

@@ -268,4 +268,27 @@ mod seed_schemas {
         }];
         check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
+
+    /// The `source-types` closed list: the tiers, most trusted first; the
+    /// last is what an unset source counts as.
+    #[test]
+    fn source_types_list_matches_the_constant() {
+        use agent_brain_plugin_api::protocol::seed_schema_check::{ClosedList, check_lists};
+        assert_eq!(
+            crate::store::SOURCE_TYPES.last(),
+            Some(&crate::store::DEFAULT_SOURCE_TYPE)
+        );
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let lists = [ClosedList {
+            name: "source-types".into(),
+            description: "A :MediaSource's tier, most trusted first; unset reads as the last."
+                .into(),
+            values: crate::store::SOURCE_TYPES
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            file: "plugins/media/schemas/lists/source-types.json".into(),
+        }];
+        check_lists(&root, &lists).unwrap_or_else(|e| panic!("{e}"));
+    }
 }
