@@ -1,0 +1,338 @@
+# Codebase Split Plan: small units, one schema home, stamped plugins
+
+**Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
+the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Nothing
+built; Phase 0 is next.**
+
+The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
+what it needs into context. The repo only grows, so break it up. Alongside:
+give the schemas one home so they're easy to review, change and validate, and
+use cookiecutter so every plugin follows one stamped pattern.
+
+## 1. Where we are (measured 2026-11-05)
+
+### Growth
+
+| Date | Rust, tokens (crates + plugins, tests included) | Everything tracked |
+|---|---|---|
+| 2026-08-01 | 357K | 669K |
+| 2026-09-01 | 483K | 889K |
+| 2026-10-01 | 669K | 1.23M |
+| 2026-11-01 | 1.11M | 2.37M |
+| 2026-11-05 | 1.14M | 2.43M |
+
+Rust has tripled in three months, about +200K tokens a month. Core (what
+`scripts/size_budget.sh` counts) went from 777K on 11-03 to 784K; the budget
+went from 778K to 900K. At this rate the new budget lasts weeks, not months.
+
+### What "fits in context" means here
+
+The whole of core will never fit: it's 784K tokens. Even a 1M-token window
+leaves no room to work. So the useful goal is narrower: **what an agent must
+read to change one thing**, meaning one unit plus the contracts it touches,
+fits with room to spare. A local 16K model never reads code. The readers that
+matter are cloud models with 128K to 200K windows.
+
+On that measure, plugins already work and core crates don't. A plugin is built
+against `plugin-api`, whose whole reach (`plugin-api`, `protocol`, `decision`,
+`engine`) is **21K tokens**. A core crate can reach everything it depends on:
+
+| Unit | Own code | Code it can reach (own + transitive deps) |
+|---|---|---|
+| `media` plugin | 40K | 61K |
+| `epistemics` plugin | 35K | 56K |
+| `llm` | 48K | 121K |
+| `knowledge` | 58K | 221K |
+| `work` | 102K | 323K |
+| `retrieve` | 79K | 402K |
+| `api` (HBI REST) | 70K | 419K |
+| `skills` | 62K | 560K |
+| `app` | 58K | all of core, 784K |
+
+"Can reach" is an upper bound: an agent reads the public items it needs, not
+whole crates. But it's the honest measure of how far a change can spread, and
+the gap between the plugins (21K of contract) and `work` (323K) is the
+problem.
+
+### Where the bulk is
+
+The core files over 15K tokens are `repository/telemetry.rs` 20.9K,
+`work/queue.rs` 20.4K, `chat/agent_runner.rs` 20.2K, `work/programs.rs`
+19.1K, `retrieve/search.rs` 18.6K, `host/views.rs` 18.2K,
+`retrieve/http/ingest.rs` 16.9K, `graph/entity_resolution.rs` 16.6K,
+`scheduler/scheduler.rs` 16.1K and `work/validation.rs` 15.8K.
+
+### Unused tools
+
+Of 70 registered tools, **29 ran in no workflow step and no agent run in the
+last 30 days**: `select_agent`, `snapshot_architecture`,
+`analyze_own_structure`, `get_git_log`, `list_workspace_files`,
+`write_codebase_doc`, `write_proposal`, `list_tasks`, `define_api_context`,
+`ingest_api`, `adversarial_plan_review`, `synthesize_knowledge`,
+`mcp_list_tools`, `geocode`, `discover_media_sources`, `manage_media_source`,
+`get_llm_budget`, `list_endpoints`, `reflect_on_work`, `get_search_usage`, the
+four `ws_*`, `dead_letter`, `enqueue_jobs`, `manage_job`, `area_traffic` and
+`scheduler_control`. Front-door chat turns and direct MCP calls aren't in that
+count (`manage_media_source` was called directly today), so this is a list to
+review, not a list to delete. Earlier lesson: code shrinks by removing
+features, not by deleting dead code.
+
+### Where schemas live today
+
+| Kind | Where | Count |
+|---|---|---|
+| Tool input schemas | inline `json!` in each skill's Rust | 74 places |
+| Seed-file shapes | serde structs with `deny_unknown_fields`, spread over 12 crates | 53 structs |
+| Seed JSON Schemas | `plugins/core/schemas/` (`workflow.json`, `program.json`), checked on save | 2 |
+| Neo4j constraints and indexes | Rust string constants in 8 files (`repository/client.rs` and plugin stores) | 48 statements |
+| DuckDB tables | `repository/telemetry.rs`, `maps/tracks/store.rs` | 14 tables |
+| Graph docs | `project-docs/schema.md`, by hand | |
+| HBI types | `hbi-frontend/src/lib/*.ts`, mirrored by hand | |
+
+Today's example: adding the claim status `contested` meant editing the Rust
+enum, the `lookup` view's status list (`host/views.rs`), `status.ts` and
+`schema.md`. That's four copies of one closed list, and nothing checks they
+agree.
+
+### How uniform the plugins are
+
+There are 13 plugins: 10 with a Rust crate, 3 data-only (`github`, `harness`,
+`ml-lab`). They share `plugin.yaml` and the `Plugin` trait, but nothing else
+is fixed. Seed directories are named by habit (`sources`, `sources-media`,
+`layers`, `kinds.yaml`, `parallel.yaml`). Crate modules differ (`store.rs` vs
+`db.rs` vs `runs.rs`, `skill.rs` vs `claim_skill.rs`). Two have their own
+Python or Rust sidecar directories. Adding a Rust plugin means editing three
+places by hand: `crates/host/Cargo.toml` (dependency and feature) and
+`crates/host/src/plugins.rs`.
+
+## 2. Principles
+
+1. **The unit of work is what must fit, not the repo.** Every unit you'd
+   change on its own (a plugin, a core crate, a service) plus the contracts it
+   touches stays under a stated token limit (§ 8.1).
+2. **A boundary is a contract.** It pays off when the reader can stop at it:
+   `plugin-api` is 7.6K tokens and nobody reads the host behind it. A split
+   with no narrow contract only moves lines.
+3. **Processes split for runtime reasons, not for reading.** Context size is
+   won at the contract. A network boundary adds latency, failure modes,
+   versioning and deployment, all on one home machine. Take that cost only
+   where the runtime gains something (isolation, its own resources, its own
+   lifecycle), and measure it on a pilot first.
+4. **One closed list, one file.** A schema, status list or table definition
+   lives in one place. Everything else is generated from it or checked
+   against it.
+5. **A plugin is stamped, not hand-built.** The template decides the layout,
+   and a check catches a plugin that drifts from it.
+6. **Removing beats moving.** Before moving a subsystem, ask whether it's
+   used.
+
+## 3. On microservices
+
+The todo says "break the monolith into microservices". My recommendation is a
+**modular core built from plugins, with a process boundary piloted once**,
+not microservices across the board:
+
+- **What the goal needs:** narrow contracts. Plugins prove it: 21K of
+  contract, and the unit stays small. Turning core subsystems into plugins
+  shrinks core and caps reach without a network.
+- **What microservices add:** one more container per service, a host API over
+  the wire (the graph, the note store and model calls, with privacy and
+  budget still decided by the brain), versioning between services, and
+  partial failures. On an 8 GB GPU and one Neo4j, every service still shares
+  those two resources, so isolation buys little.
+- **Where a process boundary is right:** the brain already runs eight
+  sidecars (llama.cpp, whisper, both sandboxes, yt-proxy, ml-runner, the HBI,
+  Neo4j). Each one has a runtime reason. A plugin with its own long-running
+  loop and its own store, like the maps track collectors, is the next
+  plausible case.
+- **The wire format exists.** The brain is both an MCP server and an MCP
+  client (`mcp_call`, `:McpServer`). An out-of-process plugin is an MCP
+  server the brain calls, so Phase 4 tests that path, with numbers.
+
+## 4. Phases
+
+### Phase 0: measure what one change must read
+
+1. Extend `scripts/size_budget.sh` to print each unit's own code and its
+   reach (own + transitive workspace deps, as in § 1), for core crates and
+   plugins.
+2. Add the per-unit limits from § 8.1 (own ≤ 60K, reach ≤ 100K), reported
+   first, gated once the over-limit units have a Phase 3 plan. The core budget stays as it is.
+3. Keep the growth series (§ 1) in the report, so the trend shows in every
+   run.
+
+Done when: every unit's own size and reach is in CI output, and the units
+over the limit are listed.
+
+### Phase 1: schemas in one place per bundle
+
+Every bundle gets one `schemas/` directory: `plugins/core/schemas/` for core,
+`plugins/<name>/schemas/` for a plugin. The directory already exists and is
+already loaded and checked; it just holds two files today. Inside it:
+
+| Subdir | Holds | Source of truth |
+|---|---|---|
+| `tools/<tool>.json` | each tool's input schema, descriptions included | the file. Rust loads it with `include_str!`, so nothing changes at runtime |
+| `seeds/<kind>.json` | each seed kind's shape (workflows, views, apis, sources-media, …) | the Rust struct. The JSON is generated (`schemars`) and committed, so it can be reviewed and diffed |
+| `graph/*.cypher` | Neo4j constraints and indexes, per bundle | the file. `init-db` and plugin `start` run it |
+| `telemetry/*.sql` | DuckDB tables, per bundle | the file |
+| `lists/*.yaml` | closed lists (claim statuses, source tiers, note types) | the file. Rust and the HBI read it or are generated from it |
+
+1. **Inventory**, by a script, not by hand, with § 1's counts as the
+   baseline.
+2. **Move by kind**, one commit each: tools first (the most reviewed text,
+   the descriptions models read), then graph, telemetry, seeds, lists.
+3. **One check**, `scripts/check_schemas.sh`, run in CI and pre-commit:
+   - every file is valid (JSON Schema 2020-12 / Cypher parse / SQL parse);
+   - every registered tool has exactly one schema file;
+   - every shipped seed file validates against its kind's schema;
+   - committed generated files match a fresh generation (drift fails);
+   - each closed list matches what reads it (the `contested` case).
+4. `schema.md` points to the files for constraints and lists instead of
+   repeating them.
+
+Done when: adding a claim status is one edit plus regenerating, and the check
+fails if a copy disagrees.
+
+### Phase 2: one plugin template, stamped with cookiecutter
+
+1. **`templates/plugin/`**, a cookiecutter template with two variants
+   (`kind: data` and `kind: rust`):
+   - `cookiecutter.json`: `name`, `description`, `kind`, `seed_kinds`
+     (multi-choice), `owns_graph_labels`, `needs_env`;
+   - the layout: `plugin.yaml`, `README.md`, `schemas/` (§ Phase 1),
+     `workflows/`, `contexts/`, `views/`, and for Rust `crate/` with
+     `lib.rs` (the `Plugin` impl), `skill.rs` (tools), `store.rs` (graph
+     access) and `tests`;
+   - a `post_gen_project` hook that does the deterministic edits a person
+     forgets: registers a Rust plugin in `crates/host/Cargo.toml` and
+     `plugins.rs`, runs `cargo check -p`, `check_schemas.sh` and the
+     shipped-seed test, and prints what is left to do.
+2. **Run it without installing anything on the host:**
+   `uvx cookiecutter@2.7.1 templates/plugin` (cookiecutter 2.7.1, Python ≥
+   3.10; the host has `uv` and Python 3.11). It's wrapped as
+   `scripts/new_plugin.sh`.
+3. **Keep plugins on the template with `cruft`** (2.16.0): each plugin
+   records the template commit it came from in `.cruft.json`. `cruft check`
+   in CI flags a plugin that has drifted, and `cruft update` brings a
+   template change to every plugin as a reviewable diff. That makes the
+   uniformity hold over time, not only at creation.
+4. **Re-stamp the 13 existing plugins**, one per commit, onto the template's
+   layout (module names, seed directory names, `schemas/`). Each move goes
+   through the shipped-seed test and the full unit tests.
+5. **The brain's own use** (§ 8.6): a `scaffold_plugin` step that stamps
+   from the same template into a staging directory (not the repo) inside the
+   Python sandbox, which has no network. It validates the result and offers
+   the diff to the owner. This keeps § 9.4 of OUTSIDE_REVIEW_PLAN: the brain
+   never writes or commits a repo file. It's what api-integrator or a program
+   review would use when a proposal needs a new bundle.
+
+Done when: a new plugin is one command, every plugin passes `cruft check`,
+and none was hand-built.
+
+### Phase 3: shrink core: remove, then move into plugins
+
+1. **The review list.** For each of the 29 unused tools (§ 1) and each
+   subsystem over 10K tokens: its use over 60 days (workflow steps, agent
+   runs, chat turns and direct calls, all counted), what it would cost to
+   remove it, and the plugin it could become. The owner decides each one:
+   remove, move, or keep.
+2. **Candidates to look at first** (by size and how narrow the edge is; none
+   decided):
+   - Programs: `work/programs.rs` 19.1K, `skills/program`, the `/api/programs`
+     resource.
+   - The developer-introspection tools left in core.
+   - The HBI REST `api` crate (70K, reach 419K). It's a natural boundary
+     because only the HBI uses it, but it calls deep into `work` and
+     `scheduler`.
+   - Telemetry readers.
+3. **Each move goes through the template** (Phase 2) and must cut core's
+   measured size. A move that leaves core the same size doesn't count.
+4. **When core shrinks, lower `scripts/core_token_budget`** to the new size,
+   rounded up, so the space freed isn't refilled by habit.
+
+Done when: core is below 700K tokens, and no core crate is over the reach
+limit, or the owner has kept it over with a reason recorded.
+
+### Phase 4: one process boundary, piloted and measured
+
+1. **The host API over the wire.** A narrow set of brain endpoints a service
+   may call: the graph read through the schema guard, the note store,
+   `generate` through the routing policy (privacy and budget stay in the
+   brain, so no service holds a provider key), and telemetry. They're
+   versioned, and the brain's API key is bound to the internal network.
+2. **A `kind: service` template variant:** an MCP server in its own
+   container on `brain-internal`, a `:McpServer` seed, a health check.
+3. **The pilot is `osint-data`** (6.4K tokens, tools only, one outside API).
+   It's the smallest real plugin, so it isolates the cost of the boundary
+   itself. Measure tool latency against in-process, memory, the code it took,
+   and how failures look (service down, slow, wrong version).
+4. **The decision gate:** stop at one, or take the next with a runtime
+   reason. The maps track collectors are the best next case: their own loop,
+   their own DuckDB, their own outside feeds.
+
+Done when: the pilot's numbers are in this plan and the owner has called the
+gate.
+
+### Phase 5 (optional): plugins in their own repos
+
+`agent-brain-personal` is the precedent. Only if, after Phases 0 to 3, the
+monorepo is still a problem for the tools that read it. A plugin in its own
+repo is stamped by the same template, pinned by version, and built in CI
+against `plugin-api`. Cross-repo changes cost more, so this waits until
+`plugin-api` has stopped changing every week.
+
+## 5. What this does not change
+
+- **The rules in CLAUDE.md.** Privacy before budget, routing, workflow step
+  rules and timestamps all stay as they are, and a service keeps them because
+  it calls the brain for models (§ Phase 4.1).
+- **One Neo4j and one GPU.** No service gets its own graph or engine.
+- **The brain never writes repo files**
+  (OUTSIDE_REVIEW_PLAN § 9.4); `scaffold_plugin` stages a diff.
+
+## 6. Risks
+
+- **The template ossifies a bad layout.** Mitigation: re-stamp two very
+  different plugins (`media`, `github`) first, and fix the template before
+  the rest.
+- **Generated schemas drift from hand-edited ones.** That's why the check
+  fails on drift, not warns.
+- **A pilot service that works but nobody needs.** The gate is a real stop;
+  stopping after one counts as a result.
+- **Moving code into plugins grows `plugin-api`.** Every new host capability
+  a moved subsystem needs is a contract change; count `plugin-api`'s size in
+  Phase 0 and treat it as the scarcest budget.
+
+## 7. Order
+
+**Phase 0 → 1 → 2 → 3**, with Phase 4 any time after Phase 2 (it needs the
+template variant) and Phase 5 last, if at all. Phase 1 before Phase 2,
+because the template's `schemas/` layout should be the real one. Phase 3
+after Phase 2, because each move uses the template.
+
+## 8. Decisions for the owner
+
+**Decided 2026-11-05 (owner): the recommendations, 1 to 6.** Decision 7 is
+made per item once Phase 3's 60-day usage list exists.
+
+1. **The limit per unit.** Decided: own code ≤ 60K tokens and reach ≤
+   100K, so one unit plus its contracts and a working session fits a 200K
+   window and still fits a 128K one. Plugins pass today; `work` (102K own,
+   323K reach) and most core crates don't.
+2. **Microservices.** Decided: plugins plus one measured process pilot
+   (§ 3, Phase 4), rather than committing to services now.
+3. **The schema home.** Decided: `plugins/core/schemas/` and
+   `plugins/<name>/schemas/` (one pattern for core and plugins, already
+   loaded), rather than a new top-level `schemas/`.
+4. **The source of truth for seed shapes.** Decided: the Rust structs,
+   with JSON Schema generated and committed. The other way, hand-written
+   JSON with structs generated from it, needs code generation in the build.
+5. **Cookiecutter or cargo-generate.** Decided: cookiecutter (as asked)
+   with cruft. The templates mix YAML, Python and Rust, and cruft's drift
+   check is what keeps plugins uniform. cargo-generate (0.26.0) is the
+   Rust-native equivalent, but it has no drift check.
+6. **The brain using the template.** Decided: yes, to a staged diff only
+   (Phase 2.5), after the template has stamped the existing plugins.
+7. **Phase 3's list.** The owner's call per item (remove, move or keep),
+   once the 60-day usage is in.
