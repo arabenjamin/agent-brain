@@ -26,6 +26,7 @@ pub const MIN_TEXT_CHARS: usize = 200;
 /// Most bytes the direct reader downloads.
 const DIRECT_MAX_BYTES: usize = 3 * 1024 * 1024;
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReaderSpec {
@@ -49,12 +50,14 @@ pub struct ReaderSpec {
     pub response: Option<ReaderResponse>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Builtin {
     Direct,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FirstFor {
@@ -65,6 +68,7 @@ pub struct FirstFor {
     pub extensions: Vec<String>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReaderRequest {
@@ -81,6 +85,7 @@ pub struct ReaderRequest {
     pub timeout_secs: Option<u64>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReaderResponse {
@@ -99,6 +104,7 @@ pub struct ReaderResponse {
     pub spent_words: Vec<String>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Require {
@@ -523,5 +529,26 @@ mod tests {
         for gone in ["Home | World", "© 2026", "var x", "p{}"] {
             assert!(!t.contains(gone), "{gone} in {t}");
         }
+    }
+}
+
+/// The JSON Schema of `page-readers`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, check, repo_root, seed_files};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "page-readers".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::ReaderSpec)).unwrap(),
+            schema_file: "plugins/core/schemas/seeds/page-readers.json".into(),
+            seeds: seed_files(&root, "page-readers", None),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

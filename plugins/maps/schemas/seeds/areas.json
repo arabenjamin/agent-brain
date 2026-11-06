@@ -1,0 +1,83 @@
+{
+  "$defs": {
+    "Owner": {
+      "additionalProperties": false,
+      "properties": {
+        "program": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "topic": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "aircraft": {
+      "default": false,
+      "description": "Collect aircraft positions here (OpenSky).",
+      "type": "boolean"
+    },
+    "bbox": {
+      "description": "`[min_lon, min_lat, max_lon, max_lat]`, WGS 84.",
+      "items": {
+        "format": "double",
+        "type": "number"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "type": "array"
+    },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "name": {
+      "description": "Equals the file name: lowercase letters, digits and hyphens.",
+      "type": "string"
+    },
+    "owner": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Owner"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ships": {
+      "default": false,
+      "description": "Collect ship positions here (aisstream.io).",
+      "type": "boolean"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "title",
+    "bbox"
+  ],
+  "title": "Area",
+  "type": "object"
+}

@@ -52,6 +52,7 @@ const BASELINE_DAYS: i64 = 7;
 
 /// A time window, in local days. Exactly one form: `hours`, `days`, `day`,
 /// `month`, or `since` (with an optional `until`).
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Window {
@@ -186,6 +187,7 @@ impl Window {
     }
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum On {
@@ -204,6 +206,7 @@ impl On {
     }
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
@@ -228,6 +231,7 @@ impl Shape {
     }
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Order {
@@ -237,6 +241,7 @@ pub enum Order {
 
 /// The one spec for notes. Every slot is optional; the empty spec is "the
 /// newest notes".
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NoteSpec {
@@ -619,6 +624,7 @@ fn join_rows(out: &mut Value, extra: &[Value], join: &str) {
 }
 
 /// One `views/*.yaml` file.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewFile {
@@ -1803,5 +1809,26 @@ mod tests {
             }
         }
         assert!(n >= 1, "no views shipped");
+    }
+}
+
+/// The JSON Schema of `views`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, check, repo_root, seed_files};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "views".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::ViewFile)).unwrap(),
+            schema_file: "plugins/core/schemas/seeds/views.json".into(),
+            seeds: seed_files(&root, "views", None),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

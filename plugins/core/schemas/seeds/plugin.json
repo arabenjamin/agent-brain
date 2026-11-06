@@ -1,0 +1,62 @@
+{
+  "$defs": {
+    "Requires": {
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "default": [],
+          "description": "Env vars that must be set and non-empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "plugins": {
+          "default": [],
+          "description": "Other plugins that must be loaded.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "author": {
+      "description": "`brain` for a bundle `manage_plugin` wrote (`PLUGINS_RUNTIME_DIR`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "requires": {
+      "$ref": "#/$defs/Requires",
+      "default": {
+        "env": [],
+        "plugins": []
+      }
+    },
+    "version": {
+      "default": 1,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

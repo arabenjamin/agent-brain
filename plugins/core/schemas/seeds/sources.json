@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "description": {
+      "type": "string"
+    },
+    "domains": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "name": {
+      "type": "string"
+    },
+    "role": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "name",
+    "description",
+    "domains"
+  ],
+  "title": "SourceListFile",
+  "type": "object"
+}

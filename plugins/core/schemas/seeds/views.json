@@ -1,0 +1,302 @@
+{
+  "$defs": {
+    "NoteSpec": {
+      "additionalProperties": false,
+      "description": "The one spec for notes. Every slot is optional; the empty spec is \"the\nnewest notes\".",
+      "properties": {
+        "as": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Shape"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entity": {
+          "description": "An entity the notes mention, by name or alias (any case).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "description": "Where the notes came from (`source_context`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "kinds": {
+          "description": "Note types (`note_type`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "on": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/On"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Which timestamp the window bounds (default `created`)."
+        },
+        "order": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Order"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "description": "A claim's standing: `unverified`, `corroborated`, `refuted` or `contested`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "topic": {
+          "description": "A topic's `name`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "window": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "words": {
+          "description": "Words the content must all contain (any case).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "On": {
+      "enum": [
+        "created",
+        "verified",
+        "asserted"
+      ],
+      "type": "string"
+    },
+    "Order": {
+      "enum": [
+        "newest",
+        "oldest"
+      ],
+      "type": "string"
+    },
+    "Shape": {
+      "enum": [
+        "rows",
+        "count",
+        "by_topic",
+        "by_kind",
+        "by_source",
+        "by_day"
+      ],
+      "type": "string"
+    },
+    "Window": {
+      "additionalProperties": false,
+      "description": "A time window, in local days. Exactly one form: `hours`, `days`, `day`,\n`month`, or `since` (with an optional `until`).",
+      "properties": {
+        "day": {
+          "description": "One local day: `today`, `yesterday` or `YYYY-MM-DD`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "days": {
+          "description": "The last N days, up to now.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "hours": {
+          "description": "The last N hours, up to now.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "month": {
+          "description": "One local month: `this`, `last` or `YYYY-MM`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "since": {
+          "description": "From the start of this local date (`YYYY-MM-DD`)...",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "until": {
+          "description": "...through the end of this one (inclusive).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One `views/*.yaml` file.",
+  "properties": {
+    "cypher": {
+      "default": null,
+      "description": "`kind: cypher`: the read query.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "defaults": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NoteSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "`kind: notes`: slots a call may override."
+    },
+    "description": {
+      "description": "What it is: all a model sees, with `words`.",
+      "type": "string"
+    },
+    "except_work_kinds": {
+      "default": null,
+      "description": "`kind: notes`: leave out notes a workflow of these kinds produced\n(`learned`: `maintenance`, the brain's upkeep, is not learning).",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "input_schema": {
+      "default": null,
+      "description": "`kind: cypher`: the parameters, on the declared-tool rules."
+    },
+    "join": {
+      "default": null,
+      "description": "`kind: cypher` with `sql`: the column both sides share.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kind": {
+      "type": "string"
+    },
+    "limit": {
+      "default": null,
+      "description": "`kind: cypher`: rows when the query has no LIMIT (default 30).",
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "preset": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NoteSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "`kind: notes`: the slots this view fixes; a call may not set them."
+    },
+    "sql": {
+      "default": null,
+      "description": "`kind: cypher`: a DuckDB SELECT (telemetry) whose columns join the\ngraph rows on `join` (the `workflow_scorecard`: runs from the graph,\ncost from the ledger). Its `$name`s are integer slots only, so a\ncaller's text never becomes SQL. It runs through `duckdb_query`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "wide": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Shape"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "`kind: notes`: the shape a call that asks for none gets when its notes\nare more than the limit (`learned`: a long window is counts by topic)."
+    },
+    "words": {
+      "description": "What people call it (\"daily brief\", \"news brief\").",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "kind",
+    "description",
+    "words"
+  ],
+  "title": "ViewFile",
+  "type": "object"
+}

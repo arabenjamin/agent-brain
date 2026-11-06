@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "An API the brain calls (`apis/*.yaml` → `(:ApiContext)`): where it is and\nhow it authenticates. The secret stays in env; only its variable's name\nis stored.",
+  "properties": {
+    "auth_env_var": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_param": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_scheme": {
+      "default": "none",
+      "type": "string"
+    },
+    "base_url": {
+      "type": "string"
+    },
+    "default_headers": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "type": "object"
+    },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "env_props": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "Node property → env var, set from the environment at every start.",
+      "type": "object"
+    },
+    "kind": {
+      "default": null,
+      "description": "Its data kind (`apis/_kinds.yaml`), set when the node is created.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "retire_exempt": {
+      "default": null,
+      "description": "Used outside workflows (a search engine behind `search_web`, GitHub\nbehind the developer tools), so never offered for retirement for going\nunused. Set from the file on every start.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "topics": {
+      "default": [],
+      "description": "The topics it serves, set when the node is created.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "base_url"
+  ],
+  "title": "ApiContextFile",
+  "type": "object"
+}

@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "Assign": {
+      "description": "How notes get into a topic.",
+      "oneOf": [
+        {
+          "const": "classifier",
+          "description": "The local model decides from the description.",
+          "type": "string"
+        },
+        {
+          "const": "rules",
+          "description": "Only `members` rules and the user. The topic is left out of the\nclassifier's prompt. For a topic about the user (their career): the\nmodel can't tell whose career a note is about, and a small topic in its\nprompt drew notes that fit nothing else (HBI plan Phase 15).",
+          "type": "string"
+        }
+      ]
+    },
+    "MemberRule": {
+      "description": "A note joins a rules topic when every field the rule gives matches:\n`note_type` and `source_context` exactly, `content_contains` as a\ncase-insensitive substring of the note's first 1,500 characters.",
+      "properties": {
+        "content_contains": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_context": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "aliases": {
+      "description": "Other names people use for it (\"Opensource Intelligence Agency\" for\n`nia`). `lookup` resolves them to the name. Not part of the version:\nthey classify nothing.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "assign": {
+      "$ref": "#/$defs/Assign",
+      "default": "classifier",
+      "description": "Who puts notes in it: the classifier (default), or only `members`\nrules and the user."
+    },
+    "description": {
+      "description": "What belongs here — this text *is* the classifier's definition.",
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    },
+    "members": {
+      "description": "`assign: rules`: a note matching any rule joins the topic.",
+      "items": {
+        "$ref": "#/$defs/MemberRule"
+      },
+      "type": "array"
+    },
+    "name": {
+      "type": "string"
+    },
+    "reference": {
+      "description": "A page about the topic, set by the user (HBI plan Phase 18). Most\ntopics are the user's own groupings with no Wikipedia article, so\nthere is no automatic lookup. Not part of the version: editing it\nclassifies nothing again.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_lists": {
+      "default": [],
+      "description": "SourceLists its searches use.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "label",
+    "description"
+  ],
+  "title": "TopicDef",
+  "type": "object"
+}

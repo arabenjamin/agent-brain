@@ -51,6 +51,7 @@ const MAX_TOPICS_PER_NOTE: usize = 2;
 /// A note whose classification failed this many times is left alone.
 pub const MAX_FAILURES: i64 = 3;
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct TopicDef {
     pub name: String,
@@ -85,6 +86,7 @@ pub struct TopicDef {
 }
 
 /// How notes get into a topic.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Assign {
@@ -118,6 +120,7 @@ impl Assign {
 /// A note joins a rules topic when every field the rule gives matches:
 /// `note_type` and `source_context` exactly, `content_contains` as a
 /// case-insensitive substring of the note's first 1,500 characters.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct MemberRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +168,7 @@ pub struct PendingNote {
 }
 
 /// A note the classifier skips: every field given must match.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct SkipRule {
     #[serde(default)]
@@ -174,6 +178,7 @@ pub struct SkipRule {
 }
 
 /// `topics/_scope.yaml`: which notes are classified at all.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Scope {
     #[serde(default)]
@@ -1542,5 +1547,35 @@ mod tests {
             "prompt is {} chars",
             t.prompt("").len()
         );
+    }
+}
+
+/// The JSON Schema of `topics`, `topics/_scope.yaml`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, check, repo_root, seed_files};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![
+            SeedKind {
+                kind: "topics".into(),
+                schema: serde_json::to_value(schemars::schema_for!(super::TopicDef)).unwrap(),
+                schema_file: "plugins/core/schemas/seeds/topics.json".into(),
+                seeds: seed_files(&root, "topics", None),
+                none_shipped: false,
+            },
+            SeedKind {
+                kind: "topics/_scope.yaml".into(),
+                schema: serde_json::to_value(schemars::schema_for!(super::Scope)).unwrap(),
+                schema_file: "plugins/core/schemas/seeds/topic-scope.json".into(),
+                seeds: seed_files(&root, "topics", Some("_scope.yaml")),
+                none_shipped: false,
+            },
+        ];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

@@ -194,6 +194,7 @@ pub fn plugin_skills(
 // The graph owns each of these after first creation, so runtime edits
 // survive restarts. Each node records the plugin that seeded it.
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 struct SourceListFile {
     name: String,
@@ -203,6 +204,7 @@ struct SourceListFile {
     role: Option<String>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 struct McpServerFile {
     name: String,
@@ -229,6 +231,7 @@ fn yes() -> bool {
 /// An API the brain calls (`apis/*.yaml` → `(:ApiContext)`): where it is and
 /// how it authenticates. The secret stays in env; only its variable's name
 /// is stored.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApiContextFile {
@@ -262,12 +265,14 @@ pub(crate) struct ApiContextFile {
 
 /// `apis/_kinds.yaml`: the closed list of API data kinds (API_USE_PLAN).
 /// Not an API context: the `_` prefix keeps it out of the context loop.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApiKindsFile {
     kinds: Vec<ApiKindDef>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApiKindDef {
@@ -1017,5 +1022,49 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = Plugins::load(tmp.path(), &[], &|_| None);
         assert!(p.core_loaded().is_err());
+    }
+}
+
+/// The JSON Schema of `apis`, `apis/_kinds.yaml`, `sources`, `mcp-servers`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, check, repo_root, seed_files};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![
+            SeedKind {
+                kind: "apis".into(),
+                schema: serde_json::to_value(schemars::schema_for!(super::ApiContextFile)).unwrap(),
+                schema_file: "plugins/core/schemas/seeds/apis.json".into(),
+                seeds: seed_files(&root, "apis", None),
+                none_shipped: false,
+            },
+            SeedKind {
+                kind: "apis/_kinds.yaml".into(),
+                schema: serde_json::to_value(schemars::schema_for!(super::ApiKindsFile)).unwrap(),
+                schema_file: "plugins/core/schemas/seeds/api-kinds.json".into(),
+                seeds: seed_files(&root, "apis", Some("_kinds.yaml")),
+                none_shipped: false,
+            },
+            SeedKind {
+                kind: "sources".into(),
+                schema: serde_json::to_value(schemars::schema_for!(super::SourceListFile)).unwrap(),
+                schema_file: "plugins/core/schemas/seeds/sources.json".into(),
+                seeds: seed_files(&root, "sources", None),
+                none_shipped: false,
+            },
+            SeedKind {
+                kind: "mcp-servers".into(),
+                schema: serde_json::to_value(schemars::schema_for!(super::McpServerFile)).unwrap(),
+                schema_file: "plugins/core/schemas/seeds/mcp-servers.json".into(),
+                seeds: seed_files(&root, "mcp-servers", None),
+                none_shipped: false,
+            },
+        ];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

@@ -26,6 +26,7 @@ use agent_brain_retrieve::QuerySkill;
 pub const KINDS: &[&str] = &["cypher"];
 
 /// One `tools/*.yaml` file.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolFile {
@@ -349,5 +350,26 @@ mod tests {
             cypher_params("WHERE a = $x AND b = $x_2 OR c = $x RETURN '$'"),
             ["x", "x_2"]
         );
+    }
+}
+
+/// The JSON Schema of `tools`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, check, repo_root, seed_files};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "tools".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::ToolFile)).unwrap(),
+            schema_file: "plugins/core/schemas/seeds/tools.json".into(),
+            seeds: seed_files(&root, "tools", None),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

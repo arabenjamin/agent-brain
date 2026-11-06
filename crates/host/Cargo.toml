@@ -55,6 +55,9 @@ plugin-websocket = ["dep:agent-brain-plugin-websocket"]
 plugin-maps = ["dep:agent-brain-plugin-maps"]
 
 [dev-dependencies]
+# Seed-schema test (CODEBASE_SPLIT_PLAN Phase 1).
+schemars = { workspace = true }
+agent-brain-protocol = { path = "../protocol", features = ["seed-schema-check"] }
 tempfile = "3"
 
 [lints]

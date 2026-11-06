@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "nouns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "self_names": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "verb_window": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "verbs": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "self_names",
+    "verb_window",
+    "verbs",
+    "nouns"
+  ],
+  "title": "InternalRules",
+  "type": "object"
+}

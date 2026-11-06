@@ -26,6 +26,13 @@
 #   - every statement is idempotent (CREATE TABLE|INDEX|SEQUENCE IF NOT EXISTS,
 #     ALTER TABLE ... ADD COLUMN IF NOT EXISTS), since the file runs on every open;
 #   - each file is read by a duckdb_schema! call naming it, in that bundle.
+#
+# Seed files (schemas/seeds/<kind>.json, generated from the Rust type by each
+# crate's seed_schemas test, which also validates every shipped seed file):
+#   - every seed directory and bundle-root YAML file in any bundle has a line
+#     in SEED_COVERAGE below: its generated schema, its hand-written one, or
+#     why it has none yet; a new kind fails until it gets one;
+#   - every schema a line names exists.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export LC_ALL=C
@@ -38,6 +45,43 @@ crates/retrieve/src/search.rs	search_web	its engine choices are the search-engin
 plugins/research/crate/src/skill.rs	deep_research	its processors come from parallel.yaml
 plugins/sandbox/crate/src/skill.rs	execute_code	its languages come from the sandboxes configured
 plugins/websocket/crate/src/skill.rs	ws_receive	its description is formatted from the default timeout
+EOF
+)
+
+# Where each seed kind's shape is written down. kind<TAB>how<TAB>file or why.
+# kind is a bundle directory (`views`) or a bundle-root file (`plugin.yaml`).
+SEED_COVERAGE=$(cat <<'EOF'
+apis	generated	plugins/core/schemas/seeds/apis.json plugins/core/schemas/seeds/api-kinds.json
+areas	generated	plugins/maps/schemas/seeds/areas.json
+contexts	generated	plugins/core/schemas/seeds/contexts.json plugins/core/schemas/seeds/context-protocol.json plugins/core/schemas/seeds/context-extension.json
+entities	generated	plugins/core/schemas/seeds/entities.json
+exact-patterns	generated	plugins/core/schemas/seeds/exact-patterns.json
+layers	generated	plugins/maps/schemas/seeds/layers.json
+mcp-servers	generated	plugins/core/schemas/seeds/mcp-servers.json
+page-readers	generated	plugins/core/schemas/seeds/page-readers.json
+search-engines	generated	plugins/core/schemas/seeds/search-engines.json
+sources	generated	plugins/core/schemas/seeds/sources.json
+sources-media	generated	plugins/media/schemas/seeds/sources-media.json
+tools	generated	plugins/core/schemas/seeds/tools.json
+topics	generated	plugins/core/schemas/seeds/topics.json plugins/core/schemas/seeds/topic-scope.json
+views	generated	plugins/core/schemas/seeds/views.json
+plugin.yaml	generated	plugins/core/schemas/seeds/plugin.json
+read-rules.yaml	generated	plugins/media/schemas/seeds/read-rules.json
+internal-claims.yaml	generated	plugins/epistemics/schemas/seeds/internal-claims.json
+said-here-claims.yaml	generated	plugins/epistemics/schemas/seeds/said-here-claims.json
+workflows	hand	plugins/core/schemas/workflow.json
+programs	hand	plugins/core/schemas/program.json
+schemas	n/a	the schema files themselves (this script)
+architecture	pending	core-only self-model files (components.yaml, removed-tools.yaml), parsed generically
+relations.yaml	pending	the epistemics relation vocabulary, parsed as untyped YAML
+kinds.yaml	pending	the reference plugin's entity kinds
+parallel.yaml	pending	the research plugin's processor config
+layout.yaml	pending	the developer plugin's architecture layout
+crate	not-seed	a plugin's Rust code
+python	not-seed	the sandbox's Python image
+rust	not-seed	the Rust sandbox's image
+runner	not-seed	the ML lab's runner
+yt-proxy	not-seed	the media plugin's YouTube proxy
 EOF
 )
 
@@ -89,7 +133,11 @@ inventory() {
   n=$(rust_files | xargs grep -h 'deny_unknown_fields' | wc -l)
   printf "%-44s %s\n" "seed-file structs (deny_unknown_fields)" "$n"
   n=$(files_like 'plugins/*/schemas/*.json' | wc -l)
-  printf "%-44s %s\n" "seed JSON Schemas (schemas/*.json)" "$n"
+  printf "%-44s %s\n" "hand-written seed JSON Schemas (schemas/*.json)" "$n"
+  n=$(files_like 'plugins/*/schemas/seeds/*.json' | wc -l)
+  printf "%-44s %s\n" "generated seed schemas (schemas/seeds/)" "$n"
+  n=$(awk -F'\t' '$2 == "pending"' <<<"$SEED_COVERAGE" | wc -l)
+  printf "%-44s %s\n" "seed kinds still without a schema" "$n ($(awk -F'\t' '$2 == "pending" { printf "%s ", $1 }' <<<"$SEED_COVERAGE"))"
   n=0
   while read -r f; do
     t=$(test_start "$f")
@@ -247,10 +295,26 @@ for g in $(files_like 'plugins/*/schemas/duckdb/*.sql'); do
   fi
 done
 
+# 9. Seed coverage: every bundle directory and root YAML file has a line.
+seed_entries=$( (files_like 'plugins/*/*/*' | cut -d/ -f3; files_like 'plugins/*/*.yaml' 'plugins/*/*.yml' | cut -d/ -f3) | sort -u)
+while IFS= read -r k; do
+  [ -n "$k" ] || continue
+  awk -F'\t' -v k="$k" '$1 == k { ok = 1 } END { exit !ok }' <<<"$SEED_COVERAGE" ||
+    problems+=("plugins/*/$k has no line in SEED_COVERAGE (scripts/check_schemas.sh): give the kind a schema (a seed_schemas test generating schemas/seeds/<kind>.json), or say why not")
+done <<<"$seed_entries"
+while IFS=$'\t' read -r k how what; do
+  [ "$how" = generated ] || [ "$how" = hand ] || continue
+  for f in $what; do
+    [ -f "$f" ] || problems+=("SEED_COVERAGE says $k's schema is $f, which does not exist")
+  done
+done <<<"$SEED_COVERAGE"
+seed_generated=$(files_like 'plugins/*/schemas/seeds/*.json' | wc -l)
+seed_pending=$(awk -F'\t' '$2 == "pending"' <<<"$SEED_COVERAGE" | wc -l)
+
 files=$(files_like 'plugins/*/schemas/tools/*.json' | wc -l)
 if [ ${#problems[@]} -gt 0 ]; then
   echo "schema check: ${#problems[@]} problem(s):" >&2
   printf '  %s\n' "${problems[@]}" >&2
   exit 1
 fi
-echo "schemas checked: $files tool schema files, each used once, placeholders matching; $(grep -c . <<<"$INLINE_OK") inline by design; $graph_count Neo4j statements in $(files_like 'plugins/*/schemas/graph/*.cypher' | wc -l) graph files, idempotent, names unique; $duck_count DuckDB statements in $(files_like 'plugins/*/schemas/duckdb/*.sql' | wc -l) files, idempotent."
+echo "schemas checked: $files tool schema files, each used once, placeholders matching; $(grep -c . <<<"$INLINE_OK") inline by design; $graph_count Neo4j statements in $(files_like 'plugins/*/schemas/graph/*.cypher' | wc -l) graph files, idempotent, names unique; $duck_count DuckDB statements in $(files_like 'plugins/*/schemas/duckdb/*.sql' | wc -l) files, idempotent; $seed_generated generated seed schemas, $seed_pending seed kinds still without one."

@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "SourceEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": true,
+          "type": "boolean"
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "type": "string"
+        },
+        "source_type": {
+          "default": null,
+          "description": "The source's tier (SOURCE_QUALITY_PLAN.md § 3a). Seeded on create only;\na later change is the owner's, through `manage_media_source` retype.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A group of watched sources (`sources-media/*.yaml`).",
+  "properties": {
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/SourceEntry"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "sources"
+  ],
+  "title": "SourceGroupFile",
+  "type": "object"
+}

@@ -20,5 +20,10 @@ tracing = { workspace = true }
 url = "2"
 uuid = { workspace = true }
 
+[dev-dependencies]
+# Seed-schema test (CODEBASE_SPLIT_PLAN Phase 1).
+schemars = { workspace = true }
+agent-brain-plugin-api = { path = "../../../crates/plugin-api", features = ["seed-schema-check"] }
+
 [lints]
 workspace = true

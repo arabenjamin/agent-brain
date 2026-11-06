@@ -1,0 +1,589 @@
+{
+  "$defs": {
+    "Auth": {
+      "additionalProperties": false,
+      "description": "Where the key goes: a header (`prefix` + key), or a query parameter.",
+      "properties": {
+        "header": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefix": {
+          "default": "",
+          "type": "string"
+        },
+        "query": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Budget": {
+      "additionalProperties": false,
+      "description": "What an engine's free tier allows, in its own unit and period.",
+      "properties": {
+        "cost_default": {
+          "description": "`usd` only: the price of a call whose answer names none.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cost_field": {
+          "description": "`usd` only: dot path to the answer's own price (Exa `costDollars.total`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "free": {
+          "description": "The allowance per `per`, in `unit`s.",
+          "format": "double",
+          "type": "number"
+        },
+        "per": {
+          "$ref": "#/$defs/BudgetPeriod"
+        },
+        "per_hour": {
+          "description": "Vendor rate limits, in attempts.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "per_minute": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "unit": {
+          "$ref": "#/$defs/BudgetUnit"
+        },
+        "weight": {
+          "description": "Relative share of the rotation (default 1): an engine with weight 2 is\npicked until it has twice the calls of a weight-1 engine today.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "free",
+        "per"
+      ],
+      "type": "object"
+    },
+    "BudgetPeriod": {
+      "oneOf": [
+        {
+          "const": "day",
+          "description": "Resets at 00:00 UTC.",
+          "type": "string"
+        },
+        {
+          "const": "month",
+          "description": "Resets on the 1st (UTC). Vendors that refill on the signup\nanniversary drift by up to a month; the spent-quota signal covers it.",
+          "type": "string"
+        },
+        {
+          "const": "once",
+          "description": "Never resets (a signup grant).",
+          "type": "string"
+        }
+      ]
+    },
+    "BudgetUnit": {
+      "oneOf": [
+        {
+          "const": "call",
+          "description": "One search is one unit.",
+          "type": "string"
+        },
+        {
+          "const": "usd",
+          "description": "Dollars of credit.",
+          "type": "string"
+        }
+      ]
+    },
+    "CountParam": {
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "description": "The most results the engine returns per request.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "param": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "param"
+      ],
+      "type": "object"
+    },
+    "Dialect": {
+      "description": "Engine-specific parameters derived from the query.",
+      "oneOf": [
+        {
+          "const": "exa",
+          "description": "Published-date range, include/exclude text.",
+          "type": "string"
+        },
+        {
+          "const": "tavily",
+          "description": "`time_range` or a date range, `exact_match` for phrases.",
+          "type": "string"
+        },
+        {
+          "const": "google_tbs",
+          "description": "Google's `tbs` date filter (Serper, SerpApi).",
+          "type": "string"
+        },
+        {
+          "const": "cse",
+          "description": "Custom Search `dateRestrict`.",
+          "type": "string"
+        },
+        {
+          "const": "brave",
+          "description": "Brave `freshness`.",
+          "type": "string"
+        },
+        {
+          "const": "currents",
+          "description": "Currents keywords, one domain each way, a clamped 7-day range.",
+          "type": "string"
+        },
+        {
+          "const": "webz",
+          "description": "Webz Lucene query and `ts` window start.",
+          "type": "string"
+        },
+        {
+          "const": "tinyfish",
+          "description": "TinyFish `recency_minutes`, or `after_date`/`before_date`.",
+          "type": "string"
+        }
+      ]
+    },
+    "Limits": {
+      "additionalProperties": false,
+      "description": "What an engine cannot serve; a query outside these skips it.",
+      "properties": {
+        "filetype": {
+          "default": true,
+          "description": "Whether a `filetype:` filter can be honoured.",
+          "type": "boolean"
+        },
+        "max_exclude_sites": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_sites": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_window_days": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Method": {
+      "oneOf": [
+        {
+          "enum": [
+            "get"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "post",
+          "description": "POST with the parameters as a JSON body.",
+          "type": "string"
+        }
+      ]
+    },
+    "QueryParam": {
+      "additionalProperties": false,
+      "properties": {
+        "param": {
+          "type": "string"
+        },
+        "syntax": {
+          "$ref": "#/$defs/Syntax"
+        }
+      },
+      "required": [
+        "param",
+        "syntax"
+      ],
+      "type": "object"
+    },
+    "RequestSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Auth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "base_url_default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url_env": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "count": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CountParam"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dialect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dialect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exclude_sites": {
+          "description": "Parameter taking the list of domains to exclude.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fixed": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Sent on every request.",
+          "type": "object"
+        },
+        "method": {
+          "$ref": "#/$defs/Method"
+        },
+        "news": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Sent when the search asks for news.",
+          "type": "object"
+        },
+        "news_url": {
+          "description": "The endpoint for news searches, when the engine has a separate one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QueryParam"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sites": {
+          "description": "Parameter taking the list of domains to restrict to.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_secs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The endpoint; `{base}` is replaced by the base URL below.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "type": "object"
+    },
+    "ResponseSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "default": "date",
+          "type": "string"
+        },
+        "error_field": {
+          "description": "A field that, when present in a 200 answer, is the error (SerpApi).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "items": {
+          "description": "Dot path to the result list (`web.results`).",
+          "type": "string"
+        },
+        "link": {
+          "default": "link",
+          "type": "string"
+        },
+        "log_fields": {
+          "default": [],
+          "description": "Top-level fields logged from each answer (Webz' prepaid `balance`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "news_items": {
+          "description": "Dot path to the list when a news search answers under another key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shape": {
+          "$ref": "#/$defs/Shape"
+        },
+        "snippet": {
+          "default": [
+            "snippet"
+          ],
+          "description": "Paths tried in order; the first non-empty one is the snippet. An array\nof strings is joined.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "snippet_chars": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The publisher's name, when the engine gives one (`source` in the result).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "spent_status": {
+          "default": [],
+          "description": "Statuses that mean the allowance is spent (none of them a 429).",
+          "items": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "spent_words": {
+          "default": [],
+          "description": "Words in an error body that mean the allowance is spent.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "default": "title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "Shape": {
+      "description": "Result shapes a field mapping cannot read.",
+      "oneOf": [
+        {
+          "const": "items",
+          "description": "A list of results at `items`, read through the field mapping.",
+          "type": "string"
+        },
+        {
+          "const": "google_news",
+          "description": "SerpApi Google News: stories, highlights and topic clusters, unrolled.",
+          "type": "string"
+        }
+      ]
+    },
+    "Syntax": {
+      "description": "How the parsed query is rendered for the engine.",
+      "oneOf": [
+        {
+          "const": "google",
+          "description": "Google operators, dates as `after:`/`before:`.",
+          "type": "string"
+        },
+        {
+          "const": "google_undated",
+          "description": "Google operators without date operators (dates go elsewhere).",
+          "type": "string"
+        },
+        {
+          "const": "google_news",
+          "description": "Undated Google operators plus Google News' `when:` window.",
+          "type": "string"
+        },
+        {
+          "const": "plain",
+          "description": "Plain text; operators become parameters.",
+          "type": "string"
+        },
+        {
+          "const": "plain_quoted",
+          "description": "Plain text keeping quoted phrases.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One search engine, as declared in `search-engines/<name>.yaml`.",
+  "properties": {
+    "budget": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Budget"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The free allowance. An engine with one is in the rotation\n(`search_rotation.rs`); one without is reached only as a fallback or\nwhen a caller names it."
+    },
+    "env_params": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "More required values sent as query parameters, `param: ENV_VAR`\n(Google CSE's `cx`).",
+      "type": "object"
+    },
+    "key_env": {
+      "default": null,
+      "description": "Env var holding the key. None: the engine needs no key.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lead_for": {
+      "default": [],
+      "description": "Tools whose searches this engine leads while it is on pace\n(`search_rotation::lead`), because it was measured better at their\njob. Only a budgeted engine is ever on pace, so without a `budget`\nthis does nothing: pacing is what keeps a lead from spending the\nallowance early.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "limits": {
+      "$ref": "#/$defs/Limits"
+    },
+    "name": {
+      "type": "string"
+    },
+    "quota_group": {
+      "default": null,
+      "description": "Engines on one account: a spent quota on one demotes them all.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rank": {
+      "default": null,
+      "description": "Position in the default ladder (`SEARCH_ENGINE_ORDER` unset), lowest\nfirst. No rank: the engine runs only when a caller names it.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "request": {
+      "$ref": "#/$defs/RequestSpec"
+    },
+    "reserved_for": {
+      "default": [],
+      "description": "Tools this engine's allowance is kept for. Any other caller reaches it\nonly when it names the engine, or last, after every other engine:\noutside the rotation, behind the ladder. Exa's credit covers ~47\nsearches a day and `search_web` spent ~40% of it, so claim checks got\nExa for 43% of their searches while Exa corroborated 52% of claims and\nthe rest 20-38% (2026-11-01..05; owner chose to keep Exa for claims).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "response": {
+      "$ref": "#/$defs/ResponseSpec"
+    }
+  },
+  "required": [
+    "name",
+    "request",
+    "response"
+  ],
+  "title": "EngineSpec",
+  "type": "object"
+}

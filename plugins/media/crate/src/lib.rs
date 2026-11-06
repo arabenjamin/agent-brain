@@ -36,6 +36,7 @@ pub(crate) fn bundle_root() -> PathBuf {
 }
 
 /// A group of watched sources (`sources-media/*.yaml`).
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceGroupFile {
@@ -45,6 +46,7 @@ struct SourceGroupFile {
     sources: Vec<SourceEntry>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceEntry {
@@ -242,5 +244,28 @@ mod tests {
         assert!(parse_group(ok).is_ok());
         let bad = "name: x\nsources:\n  - kind: article_rss\n    ref: https://a/rss\n    source_type: gospel\n";
         assert!(parse_group(bad).unwrap_err().contains("gospel"));
+    }
+}
+
+/// The JSON Schema of `sources-media`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_plugin_api::protocol::seed_schema_check::{
+        SeedKind, check, repo_root, seed_files,
+    };
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "sources-media".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::SourceGroupFile)).unwrap(),
+            schema_file: "plugins/media/schemas/seeds/sources-media.json".into(),
+            seeds: seed_files(&root, "sources-media", None),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

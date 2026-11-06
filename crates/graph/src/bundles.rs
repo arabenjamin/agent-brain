@@ -68,6 +68,7 @@ pub const MERGED_KINDS: &[&str] = &[
 /// bundle's `relations.yaml`.)
 pub const CORE_ONLY_KINDS: &[&str] = &["entities", "architecture"];
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -87,6 +88,7 @@ fn one() -> u32 {
     1
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Requires {
@@ -472,5 +474,25 @@ pub fn record_code_error(plugin: &str, error: String) {
         .get_mut(plugin)
     {
         st.error = Some(error);
+    }
+}
+
+/// Each bundle's `plugin.yaml`, as JSON Schema generated from [`Manifest`]
+/// (CODEBASE_SPLIT_PLAN Phase 1). `SCHEMA_REGENERATE=1` rewrites the file.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, bundle_files, check, repo_root};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "plugin.yaml".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::Manifest)).unwrap(),
+            schema_file: "plugins/core/schemas/seeds/plugin.json".into(),
+            seeds: bundle_files(&root, "plugin.yaml"),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

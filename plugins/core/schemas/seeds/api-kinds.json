@@ -1,0 +1,41 @@
+{
+  "$defs": {
+    "ApiKindDef": {
+      "additionalProperties": false,
+      "properties": {
+        "beat": {
+          "default": false,
+          "description": "A beat kind (a news feed, an advisory feed, a job board): its items are\nabout a subject, so a topic-less API of this kind matches only a\ntopic-less need (the Phase 3 matcher, `api-match-digest`).",
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`apis/_kinds.yaml`: the closed list of API data kinds (API_USE_PLAN).\nNot an API context: the `_` prefix keeps it out of the context loop.",
+  "properties": {
+    "kinds": {
+      "items": {
+        "$ref": "#/$defs/ApiKindDef"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "kinds"
+  ],
+  "title": "ApiKindsFile",
+  "type": "object"
+}

@@ -19,12 +19,14 @@ pub const MAX_SPANS: usize = 4;
 /// Phrase hits read per span before the literal check drops the near ones.
 const PHRASE_POOL: i64 = 200;
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PatternFile {
     patterns: Vec<PatternDef>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PatternDef {
@@ -32,6 +34,7 @@ struct PatternDef {
     pattern: String,
     /// A capture group: a number, or `any` for the first that took part.
     #[serde(default)]
+    #[cfg_attr(test, schemars(with = "Option<serde_json::Value>"))]
     group: Option<serde_yaml::Value>,
     #[serde(default)]
     matches: Vec<Example>,
@@ -39,6 +42,7 @@ struct PatternDef {
     rejects: Vec<String>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Example {
@@ -714,5 +718,26 @@ mod tests {
         let ids: Vec<&str> = out.iter().map(|(i, _)| i.as_str()).collect();
         assert_eq!(ids, ["c", "x", "a", "b"]);
         assert_eq!(counts["c"], 2);
+    }
+}
+
+/// The JSON Schema of `exact-patterns`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, check, repo_root, seed_files};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "exact-patterns".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::PatternFile)).unwrap(),
+            schema_file: "plugins/core/schemas/seeds/exact-patterns.json".into(),
+            seeds: seed_files(&root, "exact-patterns", None),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

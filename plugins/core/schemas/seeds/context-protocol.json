@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "ProtocolStep": {
+      "description": "One step in a boot/init protocol YAML.",
+      "oneOf": [
+        {
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "const": "log",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "args": {
+              "default": null
+            },
+            "tool": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tool"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "note_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "store_note",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "condition": {
+              "type": "string"
+            },
+            "then": {
+              "items": {
+                "$ref": "#/$defs/ProtocolStep"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "conditional",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "condition"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "protocol": {
+              "type": "string"
+            },
+            "type": {
+              "const": "run_protocol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "protocol"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A boot/init protocol file.",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/ProtocolStep"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "Protocol",
+  "type": "object"
+}

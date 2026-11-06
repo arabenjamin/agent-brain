@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 pub const FILE: &str = "said-here-claims.yaml";
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SaidHereRules {
@@ -174,5 +175,28 @@ mod tests {
             "With prices rising, the agency said exports would be capped.",
             "Channel 5 with Andrew Callaghan"
         )));
+    }
+}
+
+/// The JSON Schema of `said-here-claims.yaml`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_plugin_api::protocol::seed_schema_check::{
+        SeedKind, bundle_files, check, repo_root,
+    };
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "said-here-claims.yaml".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::SaidHereRules)).unwrap(),
+            schema_file: "plugins/epistemics/schemas/seeds/said-here-claims.json".into(),
+            seeds: bundle_files(&root, "said-here-claims.yaml"),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

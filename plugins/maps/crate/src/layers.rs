@@ -33,6 +33,7 @@ const WRITES: &[&str] = &[
     "CREATE", "MERGE", "SET", "DELETE", "DETACH", "REMOVE", "DROP", "FOREACH", "LOAD",
 ];
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Owner {
@@ -44,6 +45,7 @@ pub struct Owner {
     pub workflow: Option<String>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layer {
@@ -469,5 +471,28 @@ mod tests {
             n += 1;
         }
         assert!(n >= 4, "expected the shipped layers, found {n}");
+    }
+}
+
+/// The JSON Schema of `layers`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_plugin_api::protocol::seed_schema_check::{
+        SeedKind, check, repo_root, seed_files,
+    };
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "layers".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::Layer)).unwrap(),
+            schema_file: "plugins/maps/schemas/seeds/layers.json".into(),
+            seeds: seed_files(&root, "layers", None),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One `tools/*.yaml` file.",
+  "properties": {
+    "cypher": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "input_schema": true,
+    "kind": {
+      "type": "string"
+    },
+    "limit": {
+      "default": null,
+      "description": "Rows returned when the query has no LIMIT of its own (default 100).",
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "description",
+    "kind",
+    "input_schema",
+    "cypher"
+  ],
+  "title": "ToolFile",
+  "type": "object"
+}

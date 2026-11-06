@@ -9,6 +9,8 @@ pub mod graph_schema;
 pub mod net_policy;
 pub mod params;
 pub mod secrets;
+#[cfg(feature = "seed-schema-check")]
+pub mod seed_schema_check;
 pub mod skill;
 pub mod sse_notifier;
 pub mod tool_handler;

@@ -43,6 +43,7 @@ use agent_brain_repository::Neo4jClient;
 
 // ─── Rules (the seed) ─────────────────────────────────────────────────────────
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Deserialize)]
 struct RulesFile {
     #[serde(default)]
@@ -61,6 +62,7 @@ struct RulesFile {
 }
 
 /// Nationality and people words for one place ("chinese" → china).
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 struct Demonym {
     place: String,
@@ -68,6 +70,7 @@ struct Demonym {
 }
 
 /// A curated canonical entity and the names that mean it.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Canonical {
     pub name: String,
@@ -1799,5 +1802,26 @@ entities:
         assert_eq!(v[0], (Some("same"), 0.95));
         assert_eq!(rank(Some("same"), 0.55), rank(None, 0.0));
         assert_eq!(v[4], (Some("different"), 0.0));
+    }
+}
+
+/// The JSON Schema of `entities`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, check, repo_root, seed_files};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "entities".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::RulesFile)).unwrap(),
+            schema_file: "plugins/core/schemas/seeds/entities.json".into(),
+            seeds: seed_files(&root, "entities", None),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

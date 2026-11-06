@@ -11,6 +11,7 @@ use crate::layers::Owner;
 /// more above (measured 2026-10-21): an aircraft area stays at 100 or under.
 pub const MAX_AIRCRAFT_SQ_DEG: f64 = 100.0;
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Area {
@@ -385,5 +386,30 @@ mod graph_tests {
         assert_eq!(w.area.owner.unwrap().program.as_deref(), Some("nia"));
         assert!(!w.enabled);
         assert!(from_row(&json!({"name": "x", "bbox": [1.0]})).is_none());
+    }
+}
+
+/// The JSON Schema of `areas`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_plugin_api::protocol::seed_schema_check::{
+        SeedKind, check, repo_root, seed_files,
+    };
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "areas".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::Area)).unwrap(),
+            schema_file: "plugins/maps/schemas/seeds/areas.json".into(),
+            // The watch areas are the owner's, in the private bundle,
+            // which seed_files reads when it sits beside the repo.
+            seeds: seed_files(&root, "areas", None),
+            none_shipped: true,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

@@ -24,6 +24,7 @@ use crate::context_builder::ContextProfile;
 use agent_brain_repository::Neo4jClient;
 
 /// One part of a profile's prompt.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PromptSection {
@@ -47,6 +48,7 @@ pub struct PromptSection {
 }
 
 /// A bundle file that adds sections to another bundle's profile.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileExtension {

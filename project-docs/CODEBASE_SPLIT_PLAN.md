@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 under way: tool, graph and DuckDB schemas moved and checked 2026-11-06; seeds and lists next.**
+built 2026-11-06. Phase 1 under way: tool, graph, DuckDB and seed schemas done 2026-11-06; closed lists next.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -244,6 +244,40 @@ already loaded and checked; it just holds two files today. Inside it:
      line (170 and 16 lines). The 19 telemetry tests that open a real
      in-memory database pass. The inventory's 14 tables were 13; the 14th was
      a test's `CREATE TABLE zz`.
+   - ✅ **Seed shapes, built 2026-11-06.** 22 JSON Schemas generated from
+     the Rust types that parse each seed kind, committed as
+     `plugins/<bundle>/schemas/seeds/<kind>.json` (core 16, maps 2, media 2,
+     epistemics 2). `schemars` 1.2 is a dev-dependency only: the types carry
+     `#[cfg_attr(test, derive(schemars::JsonSchema))]`, so it never reaches
+     the binary (`cargo tree -e normal` has no `schemars`). One test per
+     owning file (13 tests in 8 crates) regenerates each schema. It fails if
+     the committed file differs (`SCHEMA_REGENERATE=1` rewrites it), and it
+     validates every shipped seed file of the kind against the schema: 106
+     files on 2026-11-06, 22 of them the private bundle's, which is checked
+     when it's checked out beside the repo (CI has only the repo's). The
+     shared check is `protocol::seed_schema_check`, behind a test-only
+     feature that plugins reach through `plugin-api`. Doc comments become
+     `description`s, `deny_unknown_fields` becomes `additionalProperties:
+     false`, and defaults and required fields carry over.
+     - Validation caught the generator's first mistake: `contexts/` holds
+       three shapes (profiles, the boot/init protocols, and profile
+       extensions with `extends:`). They're split as the loader splits them,
+       into three schemas.
+     - Two fields are another crate's type (`data_class`,
+       `retrieval_exclude` on profiles), which a test-only derive can't
+       reach. They're opaque in the schema until the closed-lists step.
+     - **Seven kinds accept unknown keys** (no `additionalProperties:
+       false`): `contexts`, `topics`, `entities`, `mcp-servers`, `sources`,
+       and the protocol and topic-scope files. A typo in an agent profile is
+       ignored, not reported. No shipped file has an ignored key today, so
+       making them strict breaks no seed. The profiles stored in the graph
+       need the same check first (§ 8.9).
+     - Coverage: `check_schemas.sh` holds a table naming each seed directory
+       and bundle-root file's schema. A new kind without a line fails. Still
+       without a schema: `architecture` (core's self-model files) and four
+       single files (`relations.yaml`, `kinds.yaml`, `parallel.yaml`,
+       `layout.yaml`). `workflows` and `programs` keep their hand-written
+       schemas, which are checked on every save.
 3. **One check**, `scripts/check_schemas.sh`, run in CI and pre-commit.
    ✅ Built for tools: every file is JSON and loaded by exactly one call, its
    placeholders are exactly the ones the call fills, and no schema is written
@@ -408,5 +442,9 @@ made per item once Phase 3's 60-day usage list exists.
    Decided (owner, 2026-11-06): drop them. Done the same day:
    `scripts/drop_fork_leftovers_2026-11-06.cypher`, backup in
    `workspace/backups/fork-leftovers-2026-11-06.json`.
+9. **Strict seed kinds** (found 2026-11-06, § Phase 1): add
+   `deny_unknown_fields` to the seven kinds that accept unknown keys, so a
+   typo fails the seed test instead of being dropped. Recommended, after
+   checking the profiles stored in the graph for extra keys. Open.
 7. **Phase 3's list.** The owner's call per item (remove, move or keep),
    once the 60-day usage is in.

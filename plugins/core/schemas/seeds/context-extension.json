@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "PromptSection": {
+      "additionalProperties": false,
+      "description": "One part of a profile's prompt.",
+      "properties": {
+        "generate": {
+          "description": "`tools`: the catalogue of the profile's available tools, one line each\nfrom the registry's descriptions. Replaces a hand-written list.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "requires": {
+          "description": "Tools the section is about; it is left out unless every one is\navailable to the profile (its allowlist, intersected with the registry).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "type": "string"
+        },
+        "when": {
+          "description": "A regex (case-insensitive): the section is left out of a turn whose\nmessage (an agent run: its task) does not match, so text that serves\none kind of turn is not paid on every other (HARNESS2_PLAN Phase 4).\nA render with no turn in hand (a preview) keeps it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A bundle file that adds sections to another bundle's profile.",
+  "properties": {
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "extends": {
+      "type": "string"
+    },
+    "sections": {
+      "items": {
+        "$ref": "#/$defs/PromptSection"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "extends",
+    "sections"
+  ],
+  "title": "ProfileExtension",
+  "type": "object"
+}

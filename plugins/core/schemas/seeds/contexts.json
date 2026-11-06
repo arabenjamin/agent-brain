@@ -1,0 +1,262 @@
+{
+  "$defs": {
+    "Behavior": {
+      "additionalProperties": false,
+      "description": "A behavior: one `lookup` view, run for a turn with the slots the local\nmodel pulls from it. Only `slots` may be filled (E4B over-fills: a status\nor a topic nobody asked for); the view's preset holds the rest.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "says": {
+          "description": "What it answers, as the picker reads it.",
+          "type": "string"
+        },
+        "slots": {
+          "default": [],
+          "description": "The view's slots the model may fill from the turn.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "unless": {
+          "default": "",
+          "description": "A case-insensitive regex that rules the behavior out: the turn names\nsomething narrower that another route reads (\"claims from the last 2\ndays\", \"videos today\").",
+          "type": "string"
+        },
+        "view": {
+          "description": "The `lookup` view it runs.",
+          "type": "string"
+        },
+        "when": {
+          "default": "",
+          "description": "A case-insensitive regex the turn must match for the behavior to run:\ncode decides that it fits, the model only that it is wanted. A pick of\nit for a turn that does not match goes to the stored agent. (`learned`\nas a bare choice drew 8 turns it did not fit, any \"what have we learned\nabout X\"; its `when` is a time window.)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "view",
+        "says"
+      ],
+      "type": "object"
+    },
+    "PromptSection": {
+      "additionalProperties": false,
+      "description": "One part of a profile's prompt.",
+      "properties": {
+        "generate": {
+          "description": "`tools`: the catalogue of the profile's available tools, one line each\nfrom the registry's descriptions. Replaces a hand-written list.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "requires": {
+          "description": "Tools the section is about; it is left out unless every one is\navailable to the profile (its allowlist, intersected with the registry).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "type": "string"
+        },
+        "when": {
+          "description": "A regex (case-insensitive): the section is left out of a turn whose\nmessage (an agent run: its task) does not match, so text that serves\none kind of turn is not paid on every other (HARNESS2_PLAN Phase 4).\nA render with no turn in hand (a preview) keeps it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "RouteChoice": {
+      "additionalProperties": false,
+      "description": "One routing choice that is not an agent.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "says": {
+          "description": "What it is for, as the picker reads it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "says"
+      ],
+      "type": "object"
+    },
+    "RoutingSpec": {
+      "additionalProperties": false,
+      "description": "How a front door routes a turn. The choices are the spawnable agents (with\ntheir `specialty`) and then `choices`, in order.",
+      "properties": {
+        "behaviors": {
+          "default": [],
+          "description": "Behaviors (GRAPH_CONTEXT_PLAN Phase B): a turn one fits is run by\ncode, with no agent loop. Offered to the picker as `lookup:<name>`.",
+          "items": {
+            "$ref": "#/$defs/Behavior"
+          },
+          "type": "array"
+        },
+        "choices": {
+          "default": [],
+          "description": "Choices besides the agents: the front door's own tools and `answer`.",
+          "items": {
+            "$ref": "#/$defs/RouteChoice"
+          },
+          "type": "array"
+        },
+        "confident": {
+          "default": 0.85,
+          "description": "The checker's probability at or above which its pick needs no second\nreading (the owner's 85% rule; calibrated on eval/routing_golden.yaml).",
+          "format": "double",
+          "type": "number"
+        },
+        "rules": {
+          "description": "The rules the picker reads with the choices (the owner's graded ones).",
+          "type": "string"
+        },
+        "stored": {
+          "description": "The agent that holds what is stored (`knowledge-worker`).",
+          "type": "string"
+        },
+        "web": {
+          "description": "The agent that searches the web (`researcher`).",
+          "type": "string"
+        },
+        "web_words": {
+          "default": "",
+          "description": "A case-insensitive regex: a turn that matches asks for the web or for\nfacts that change. A pick of `web` for a turn that does not match goes\nto `stored` first (accuracy first: what we have, then the world).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rules",
+        "stored",
+        "web"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Declarative \"mini-agent contract\" loaded from a YAML file.",
+  "properties": {
+    "data_class": {
+      "description": "Who may see this profile's turns (`services/routing.rs`): `private`\n(the default when absent) keeps them on `no_log` providers; `public`\nalso admits free tiers that may train on prompts. A sub-agent run uses\nthe stricter of this and its caller's class.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "type": "string"
+    },
+    "explicit_only": {
+      "description": "Runnable only when named in a `run_agent` step, never offered to a\nmodel: left out of the `delegate` roster and `run_agent(agent:\"auto\")`,\nand refused by chat `delegate`. For an agent a human must choose to run\n(none ships today; a paid model is pinned per step with `run_agent`'s\n`model` instead, as `workflows/deep-dive-hard.yaml` does).",
+      "type": "boolean"
+    },
+    "fallback_models": {
+      "description": "Models to step down to, in order, when `model_preference` fails or is\nrefused — before the global `chat_fallback_ladder`. Catalog names, so a\nprofile can say \"another Gemini first, then Ollama Cloud\". Every rung is\nstill judged by the routing policy and the budget. `/chat` only.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "model_preference": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "pre_load_query": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "provider_hint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "retrieval_exclude": {
+      "description": "Notes this profile's `search_notes` never returns, applied when it runs\nas an agent (`run_agent`/`delegate`). See `RetrievalExclude`."
+    },
+    "routing": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RoutingSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "A front door's router (GRAPH_CONTEXT_PLAN Phase 3): before the turn,\na local model picks where it goes first, and the pick is put in front\nof this profile's model. `None` = no router."
+    },
+    "sections": {
+      "description": "Prompt parts after `system_prompt`, each kept only when the tools it\n`requires` are available (`services/profiles.rs`).",
+      "items": {
+        "$ref": "#/$defs/PromptSection"
+      },
+      "type": "array"
+    },
+    "session_prefixes": {
+      "description": "Chat sessions whose id starts with one of these run this profile when\nthe request names none: a workflow that opens a session for replies\n(`notify_user` with a session id) owns the replies, however terse.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "side_effects": {
+      "description": "Whether an item assigned to this agent may run on its own\n(`read_only`) or must wait for the user's approval (`writes`). Absent,\nit is derived from `tools` and fails safe (`items::side_effects`): an\noverride is a deliberate, reviewable act.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "spawnable": {
+      "default": false,
+      "description": "Whether this profile may be invoked as a sub-agent by an orchestrator via\n`delegate`. Default false — the human entry points (`general`,\n`orchestrator`) must never be spawnable, which would let an orchestrator\ndelegate to itself. See project-docs/SUBAGENT_ORCHESTRATION_PLAN.md §3.1.",
+      "type": "boolean"
+    },
+    "specialty": {
+      "default": null,
+      "description": "One-line description of what this agent is *for*, injected into the\norchestrator's `delegate` roster so it knows when to pick this worker.\nFalls back to `description` when absent.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "system_prompt": {
+      "default": "",
+      "type": "string"
+    },
+    "tools": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "description"
+  ],
+  "title": "ContextProfile",
+  "type": "object"
+}

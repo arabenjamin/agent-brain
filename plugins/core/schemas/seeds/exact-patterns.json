@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "Example": {
+      "additionalProperties": false,
+      "properties": {
+        "span": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "span"
+      ],
+      "type": "object"
+    },
+    "PatternDef": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "default": null,
+          "description": "A capture group: a number, or `any` for the first that took part."
+        },
+        "matches": {
+          "items": {
+            "$ref": "#/$defs/Example"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "rejects": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "pattern"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "patterns": {
+      "items": {
+        "$ref": "#/$defs/PatternDef"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "patterns"
+  ],
+  "title": "PatternFile",
+  "type": "object"
+}

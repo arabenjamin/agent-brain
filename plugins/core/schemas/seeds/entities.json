@@ -1,0 +1,103 @@
+{
+  "$defs": {
+    "Canonical": {
+      "description": "A curated canonical entity and the names that mean it.",
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "case_sensitive": {
+          "default": [],
+          "description": "Aliases that are also ordinary words: they resolve only when the note's\ntext has them in capitals.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "Demonym": {
+      "description": "Nationality and people words for one place (\"chinese\" → china).",
+      "properties": {
+        "place": {
+          "type": "string"
+        },
+        "words": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "place",
+        "words"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "articles": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "demonyms": {
+      "description": "`entities/demonyms.yaml` (HBI plan Phase 20).",
+      "items": {
+        "$ref": "#/$defs/Demonym"
+      },
+      "type": "array"
+    },
+    "entities": {
+      "items": {
+        "$ref": "#/$defs/Canonical"
+      },
+      "type": "array"
+    },
+    "keep_distinct": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "titles": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "types": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "type": "object"
+    }
+  },
+  "title": "RulesFile",
+  "type": "object"
+}

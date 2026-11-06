@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 pub const FILE: &str = "read-rules.yaml";
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadRule {
@@ -27,6 +28,7 @@ pub struct ReadRule {
     pub canonical: Option<String>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadRules {
@@ -145,5 +147,28 @@ mod tests {
         let err = ReadRules::parse("rules:\n  - name: broken\n    pattern: '('\n    read: x\n")
             .unwrap_err();
         assert!(format!("{err:#}").contains("broken"), "{err:#}");
+    }
+}
+
+/// The JSON Schema of `read-rules.yaml`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_plugin_api::protocol::seed_schema_check::{
+        SeedKind, bundle_files, check, repo_root,
+    };
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "read-rules.yaml".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::ReadRules)).unwrap(),
+            schema_file: "plugins/media/schemas/seeds/read-rules.json".into(),
+            seeds: bundle_files(&root, "read-rules.yaml"),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

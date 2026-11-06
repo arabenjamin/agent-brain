@@ -1,0 +1,51 @@
+{
+  "$defs": {
+    "ReadRule": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical": {
+          "default": null,
+          "description": "The URL the article is known by: its id, its dedup, what a note\ncites. A mirror's canonical is the original, so reading the mirror\nis reading the original, once.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "read": {
+          "default": null,
+          "description": "The page to fetch instead (captures expanded); none: the URL itself.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "pattern"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "rules": {
+      "items": {
+        "$ref": "#/$defs/ReadRule"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "rules"
+  ],
+  "title": "ReadRules",
+  "type": "object"
+}

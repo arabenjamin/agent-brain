@@ -21,5 +21,10 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 tracing = { workspace = true }
 url = "2"
 
+[dev-dependencies]
+# Seed-schema test (CODEBASE_SPLIT_PLAN Phase 1).
+schemars = { workspace = true }
+agent-brain-plugin-api = { path = "../../../crates/plugin-api", features = ["seed-schema-check"] }
+
 [lints]
 workspace = true

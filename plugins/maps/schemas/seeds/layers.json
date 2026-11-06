@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "Owner": {
+      "additionalProperties": false,
+      "properties": {
+        "program": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "topic": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cluster": {
+      "default": true,
+      "description": "Points merge into count bubbles when zoomed out (default true).",
+      "type": "boolean"
+    },
+    "color": {
+      "description": "`#rrggbb`.",
+      "type": "string"
+    },
+    "cypher": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "limit": {
+      "default": null,
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "minzoom": {
+      "default": null,
+      "description": "Not drawn, and not queried, below this zoom.",
+      "format": "double",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "name": {
+      "description": "Equals the file name: lowercase letters, digits and hyphens.",
+      "type": "string"
+    },
+    "on": {
+      "default": true,
+      "description": "Drawn when the Map panel opens, until the viewer turns it off.",
+      "type": "boolean"
+    },
+    "owner": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Owner"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The program, topic or workflow the layer belongs to (one of them)."
+    },
+    "private": {
+      "default": false,
+      "description": "What it shows is the owner's own (hand-placed places): shown as such.",
+      "type": "boolean"
+    },
+    "timed": {
+      "default": false,
+      "description": "Its rows carry `at`, and it takes `$since` / `$until`.",
+      "type": "boolean"
+    },
+    "title": {
+      "type": "string"
+    },
+    "view": {
+      "default": false,
+      "description": "Takes the map's box (`$west $south $east $north`).",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "name",
+    "title",
+    "description",
+    "color",
+    "cypher"
+  ],
+  "title": "Layer",
+  "type": "object"
+}

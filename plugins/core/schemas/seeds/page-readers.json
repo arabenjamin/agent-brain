@@ -1,0 +1,353 @@
+{
+  "$defs": {
+    "Auth": {
+      "additionalProperties": false,
+      "description": "Where the key goes: a header (`prefix` + key), or a query parameter.",
+      "properties": {
+        "header": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefix": {
+          "default": "",
+          "type": "string"
+        },
+        "query": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Budget": {
+      "additionalProperties": false,
+      "description": "What an engine's free tier allows, in its own unit and period.",
+      "properties": {
+        "cost_default": {
+          "description": "`usd` only: the price of a call whose answer names none.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cost_field": {
+          "description": "`usd` only: dot path to the answer's own price (Exa `costDollars.total`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "free": {
+          "description": "The allowance per `per`, in `unit`s.",
+          "format": "double",
+          "type": "number"
+        },
+        "per": {
+          "$ref": "#/$defs/BudgetPeriod"
+        },
+        "per_hour": {
+          "description": "Vendor rate limits, in attempts.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "per_minute": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "unit": {
+          "$ref": "#/$defs/BudgetUnit"
+        },
+        "weight": {
+          "description": "Relative share of the rotation (default 1): an engine with weight 2 is\npicked until it has twice the calls of a weight-1 engine today.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "free",
+        "per"
+      ],
+      "type": "object"
+    },
+    "BudgetPeriod": {
+      "oneOf": [
+        {
+          "const": "day",
+          "description": "Resets at 00:00 UTC.",
+          "type": "string"
+        },
+        {
+          "const": "month",
+          "description": "Resets on the 1st (UTC). Vendors that refill on the signup\nanniversary drift by up to a month; the spent-quota signal covers it.",
+          "type": "string"
+        },
+        {
+          "const": "once",
+          "description": "Never resets (a signup grant).",
+          "type": "string"
+        }
+      ]
+    },
+    "BudgetUnit": {
+      "oneOf": [
+        {
+          "const": "call",
+          "description": "One search is one unit.",
+          "type": "string"
+        },
+        {
+          "const": "usd",
+          "description": "Dollars of credit.",
+          "type": "string"
+        }
+      ]
+    },
+    "Builtin": {
+      "enum": [
+        "direct"
+      ],
+      "type": "string"
+    },
+    "FirstFor": {
+      "additionalProperties": false,
+      "properties": {
+        "extensions": {
+          "default": [],
+          "description": "Path extensions, without the dot.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hosts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ReaderRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Auth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fixed": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Sent on every request.",
+          "type": "object"
+        },
+        "timeout_secs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The service endpoint (always a JSON POST).",
+          "type": "string"
+        },
+        "url_field": {
+          "description": "Field taking the page URL as a string.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "urls_field": {
+          "description": "Field taking the page URL as a one-element list.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "ReaderResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "default": [],
+          "description": "Dot paths to a per-URL failure inside a 200 answer.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "require": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Require"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A field that must hold `equals` for the answer to count (Anakin\n`status: completed`)."
+        },
+        "spent_status": {
+          "default": [],
+          "items": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "spent_words": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "Dot paths tried in order; the first non-empty string is the text.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "Require": {
+      "additionalProperties": false,
+      "properties": {
+        "equals": true,
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "equals"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "budget": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Budget"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "builtin": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Builtin"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`direct`: our own fetch, no `request`/`response`."
+    },
+    "first_for": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FirstFor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "URLs this reader takes first, ahead of the rotation."
+    },
+    "key_env": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "rank": {
+      "default": null,
+      "description": "Fallback order (lowest first) after the rotation's pick.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "request": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReaderRequest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "response": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReaderResponse"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "ReaderSpec",
+  "type": "object"
+}

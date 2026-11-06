@@ -1,0 +1,37 @@
+{
+  "$defs": {
+    "SkipRule": {
+      "description": "A note the classifier skips: every field given must match.",
+      "properties": {
+        "note_type": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_context": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`topics/_scope.yaml`: which notes are classified at all.",
+  "properties": {
+    "skip": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SkipRule"
+      },
+      "type": "array"
+    }
+  },
+  "title": "Scope",
+  "type": "object"
+}

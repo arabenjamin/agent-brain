@@ -30,6 +30,9 @@ serde_json = "1"
 
 # JSON Schema validation (deterministic write-boundary gate)
 jsonschema = { version = "0.26", default-features = false }
+# Test-only: generates each seed kind's JSON Schema from its Rust type
+# (CODEBASE_SPLIT_PLAN Phase 1). A dev-dependency everywhere, never in the binary.
+schemars = "1.2"
 
 # Date/time and UUIDs
 chrono = { version = "0.4", features = ["serde"] }

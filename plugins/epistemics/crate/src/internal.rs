@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 pub const FILE: &str = "internal-claims.yaml";
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InternalRules {
@@ -228,5 +229,28 @@ fn internal_dry_run() {
         if r.is_internal(c) {
             println!("INTERNAL\t{}\t{}", row["id"].as_str().unwrap_or(""), c);
         }
+    }
+}
+
+/// The JSON Schema of `internal-claims.yaml`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_plugin_api::protocol::seed_schema_check::{
+        SeedKind, bundle_files, check, repo_root,
+    };
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "internal-claims.yaml".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::InternalRules)).unwrap(),
+            schema_file: "plugins/epistemics/schemas/seeds/internal-claims.json".into(),
+            seeds: bundle_files(&root, "internal-claims.yaml"),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

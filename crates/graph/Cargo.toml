@@ -21,6 +21,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+# Seed-schema test (CODEBASE_SPLIT_PLAN Phase 1).
+schemars = { workspace = true }
+agent-brain-protocol = { path = "../protocol", features = ["seed-schema-check"] }
 async-trait = { workspace = true }
 sentry = { version = "0.49", default-features = false, features = ["test"] }
 tempfile = "3"

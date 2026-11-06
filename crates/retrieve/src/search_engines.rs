@@ -28,6 +28,7 @@ use tracing::{info, warn};
 use crate::search_query::QuerySpec;
 
 /// One search engine, as declared in `search-engines/<name>.yaml`.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EngineSpec {
@@ -73,6 +74,7 @@ pub struct EngineSpec {
 }
 
 /// What an engine's free tier allows, in its own unit and period.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Budget {
@@ -93,6 +95,7 @@ pub struct Budget {
     pub weight: Option<f64>,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BudgetUnit {
@@ -103,6 +106,7 @@ pub enum BudgetUnit {
     Usd,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BudgetPeriod {
@@ -116,6 +120,7 @@ pub enum BudgetPeriod {
 }
 
 /// What an engine cannot serve; a query outside these skips it.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
@@ -142,6 +147,7 @@ fn yes() -> bool {
     true
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
@@ -151,6 +157,7 @@ pub enum Method {
 }
 
 /// Where the key goes: a header (`prefix` + key), or a query parameter.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Auth {
@@ -161,6 +168,7 @@ pub struct Auth {
 }
 
 /// How the parsed query is rendered for the engine.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Syntax {
@@ -176,6 +184,7 @@ pub enum Syntax {
     PlainQuoted,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryParam {
@@ -183,6 +192,7 @@ pub struct QueryParam {
     pub syntax: Syntax,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CountParam {
@@ -192,6 +202,7 @@ pub struct CountParam {
 }
 
 /// Engine-specific parameters derived from the query.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Dialect {
@@ -213,6 +224,7 @@ pub enum Dialect {
     Tinyfish,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestSpec {
@@ -241,6 +253,7 @@ pub struct RequestSpec {
 }
 
 /// Result shapes a field mapping cannot read.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
@@ -251,6 +264,7 @@ pub enum Shape {
     GoogleNews,
 }
 
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResponseSpec {
@@ -1234,5 +1248,26 @@ mod tests {
         let v = json!({"web": {"results": [{"a": 1}]}});
         assert_eq!(path_get(&v, "web.results.0.a"), Some(&json!(1)));
         assert_eq!(path_get(&v, "web.missing"), None);
+    }
+}
+
+/// The JSON Schema of `search-engines`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, check, repo_root, seed_files};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        let kinds = vec![SeedKind {
+            kind: "search-engines".into(),
+            schema: serde_json::to_value(schemars::schema_for!(super::EngineSpec)).unwrap(),
+            schema_file: "plugins/core/schemas/seeds/search-engines.json".into(),
+            seeds: seed_files(&root, "search-engines", None),
+            none_shipped: false,
+        }];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

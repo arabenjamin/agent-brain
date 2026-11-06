@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "auth_env_var": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_param": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_scheme": {
+      "default": "none",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "enabled": {
+      "default": true,
+      "type": "boolean"
+    },
+    "name": {
+      "type": "string"
+    },
+    "url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "url"
+  ],
+  "title": "McpServerFile",
+  "type": "object"
+}

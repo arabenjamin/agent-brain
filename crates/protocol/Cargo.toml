@@ -11,6 +11,12 @@ reqwest = { workspace = true }
 tokio = { workspace = true }
 url = "2"
 serde_yaml = { workspace = true }
+jsonschema = { workspace = true, optional = true }
+
+[features]
+# The shared check behind each crate's seed-schema test (seed_schema_check).
+# Enabled only by dev-dependencies, so it never reaches the binary.
+seed-schema-check = ["dep:jsonschema"]
 
 [lints]
 workspace = true

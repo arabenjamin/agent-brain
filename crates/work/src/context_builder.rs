@@ -24,6 +24,7 @@ use agent_brain_repository::Neo4jClient;
 // ============================================================================
 
 /// Declarative "mini-agent contract" loaded from a YAML file.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextProfile {
     pub name: String,
@@ -51,6 +52,8 @@ pub struct ContextProfile {
     /// also admits free tiers that may train on prompts. A sub-agent run uses
     /// the stricter of this and its caller's class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Another crate's type: opaque in the generated schema (test-only derive).
+    #[cfg_attr(test, schemars(with = "Option<String>"))]
     pub data_class: Option<agent_brain_llm::routing::DataClass>,
     /// Models to step down to, in order, when `model_preference` fails or is
     /// refused — before the global `chat_fallback_ladder`. Catalog names, so a
@@ -61,6 +64,8 @@ pub struct ContextProfile {
     /// Notes this profile's `search_notes` never returns, applied when it runs
     /// as an agent (`run_agent`/`delegate`). See `RetrievalExclude`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Another crate's type: opaque in the generated schema (test-only derive).
+    #[cfg_attr(test, schemars(with = "Option<serde_json::Value>"))]
     pub retrieval_exclude: Option<agent_brain_knowledge::knowledge::RetrievalExclude>,
     /// Runnable only when named in a `run_agent` step, never offered to a
     /// model: left out of the `delegate` roster and `run_agent(agent:"auto")`,
@@ -93,6 +98,7 @@ pub struct ContextProfile {
 
 /// How a front door routes a turn. The choices are the spawnable agents (with
 /// their `specialty`) and then `choices`, in order.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RoutingSpec {
@@ -127,6 +133,7 @@ fn default_confident() -> f64 {
 /// A behavior: one `lookup` view, run for a turn with the slots the local
 /// model pulls from it. Only `slots` may be filled (E4B over-fills: a status
 /// or a topic nobody asked for); the view's preset holds the rest.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Behavior {
@@ -153,6 +160,7 @@ pub struct Behavior {
 }
 
 /// One routing choice that is not an agent.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RouteChoice {
@@ -170,6 +178,7 @@ pub struct ContextBundle {
 }
 
 /// One step in a boot/init protocol YAML.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProtocolStep {
@@ -196,6 +205,7 @@ pub enum ProtocolStep {
 }
 
 /// A boot/init protocol file.
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Protocol {
     pub name: String,
@@ -1342,5 +1352,65 @@ mod tests {
             missing.is_empty(),
             "fallback_models not in models.yaml: {missing:?}"
         );
+    }
+}
+
+/// The JSON Schema of `contexts`, generated from the Rust type that parses it
+/// and committed under the bundle's `schemas/seeds/` (CODEBASE_SPLIT_PLAN
+/// Phase 1). `SCHEMA_REGENERATE=1` rewrites it after a type change.
+#[cfg(test)]
+mod seed_schemas {
+    use agent_brain_protocol::seed_schema_check::{SeedKind, check, repo_root, seed_files};
+
+    #[test]
+    fn seed_schemas_match_their_types_and_the_shipped_files() {
+        let root = repo_root(env!("CARGO_MANIFEST_DIR"));
+        // contexts/ holds three shapes, told apart as the loader does
+        // (profiles::load): boot/init are protocols, a file with `extends:`
+        // adds sections to another bundle's profile, the rest are profiles.
+        let all = seed_files(&root, "contexts", None);
+        let stem = |p: &std::path::PathBuf| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let extends = |p: &std::path::PathBuf| {
+            std::fs::read_to_string(root.join(p))
+                .ok()
+                .and_then(|t| serde_yaml::from_str::<serde_json::Value>(&t).ok())
+                .is_some_and(|v| v.get("extends").is_some())
+        };
+        let (protocols, rest): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|p| stem(p) == "boot" || stem(p) == "init");
+        let (extensions, profiles): (Vec<_>, Vec<_>) = rest.into_iter().partition(|p| extends(p));
+        let kinds = vec![
+            SeedKind {
+                kind: "contexts".into(),
+                schema: serde_json::to_value(schemars::schema_for!(super::ContextProfile)).unwrap(),
+                schema_file: "plugins/core/schemas/seeds/contexts.json".into(),
+                seeds: profiles,
+                none_shipped: false,
+            },
+            SeedKind {
+                kind: "contexts (boot / init protocol)".into(),
+                schema: serde_json::to_value(schemars::schema_for!(super::Protocol)).unwrap(),
+                schema_file: "plugins/core/schemas/seeds/context-protocol.json".into(),
+                seeds: protocols,
+                none_shipped: false,
+            },
+            SeedKind {
+                kind: "contexts (profile extension)".into(),
+                schema: serde_json::to_value(schemars::schema_for!(
+                    crate::profiles::ProfileExtension
+                ))
+                .unwrap(),
+                schema_file: "plugins/core/schemas/seeds/context-extension.json".into(),
+                seeds: extensions,
+                none_shipped: false,
+            },
+        ];
+        check(&root, &kinds).unwrap_or_else(|e| panic!("{e}"));
     }
 }

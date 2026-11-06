@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "lead_words": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "name_stopwords": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "recordings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "speakers": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "verb_window": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "verbs": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "recordings",
+    "lead_words",
+    "verb_window",
+    "speakers",
+    "name_stopwords",
+    "verbs"
+  ],
+  "title": "SaidHereRules",
+  "type": "object"
+}
