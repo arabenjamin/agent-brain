@@ -1,0 +1,6 @@
+# What one change should have to read, in tokens (CODEBASE_SPLIT_PLAN § 8.1,
+# owner 2026-11-05). own: a unit's code, tests excluded. reach: its own code
+# plus the code of every workspace crate it depends on, transitively.
+# Reported by scripts/size_budget.sh, not gated yet (plan Phase 0).
+own=60000
+reach=100000

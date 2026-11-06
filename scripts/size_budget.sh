@@ -6,6 +6,13 @@
 #   scripts/size_budget.sh            # table + check
 #   scripts/size_budget.sh --files    # also the 15 largest core files
 #
+# It also reports, per unit (each core crate and plugin crate), its own code
+# and its reach: own code plus the code of every workspace crate it depends on,
+# transitively. That is the most a change to the unit can make an agent read.
+# Units over scripts/unit_token_limits are flagged, not failed
+# (CODEBASE_SPLIT_PLAN Phase 0). Then the growth of the Rust code by month,
+# from git history (skipped in a shallow clone).
+#
 # Tokens are bytes / 4. Against real tokenizers that is within about 6% on Rust
 # (cl100k_base 4.24 bytes a token, Gemma 3.70), and it needs nothing installed.
 # Compare these numbers with each other, not with a model's bill.
@@ -72,12 +79,85 @@ for dir in plugins/*/; do
   row "$name" "$(tok "$c")" "$(tok "$t")" "$(tok "$(file_bytes "$dir" norust)")"
 done
 
+# Units: what one change must read. Edges are normal (not dev or build)
+# path dependencies between workspace crates, from cargo metadata.
+limit() { grep -E "^$1=" scripts/unit_token_limits | cut -d= -f2 | tr -d '[:space:]'; }
+own_limit=$(limit own)
+reach_limit=$(limit reach)
+declare -A unit_code unit_deps
+meta=$(cargo metadata --format-version 1 --no-deps --offline 2>/dev/null || cargo metadata --format-version 1 --no-deps)
+while IFS=$'\t' read -r kind a b; do
+  if [ "$kind" = unit ]; then
+    read -r c _ < <(rust_bytes "$a/")
+    unit_code[$a]=${c:-0}
+  else
+    unit_deps[$a]+="$b "
+  fi
+done < <(jq -r '.workspace_root as $r
+  | .packages[] | (.manifest_path | ltrimstr($r + "/") | rtrimstr("/Cargo.toml")) as $u
+  | (["unit", $u, ""] | @tsv),
+    (.dependencies[] | select(.path != null and .kind == null)
+     | ["dep", $u, (.path | ltrimstr($r + "/"))] | @tsv)' <<<"$meta")
+
+# Own code of the unit and everything it reaches, each crate counted once.
+reach_bytes() {
+  local -A seen=()
+  local stack=("$1") u d total=0
+  while [ ${#stack[@]} -gt 0 ]; do
+    u=${stack[-1]}
+    unset 'stack[-1]'
+    [ -n "${seen[$u]:-}" ] && continue
+    seen[$u]=1
+    total=$((total + ${unit_code[$u]:-0}))
+    for d in ${unit_deps[$u]:-}; do
+      [ -n "${unit_code[$d]:-}" ] && [ -z "${seen[$d]:-}" ] && stack+=("$d")
+    done
+  done
+  echo "$total"
+}
+
+label() { case "$1" in crates/*) echo "${1#crates/}" ;; plugins/*/crate) echo "plugin ${1#plugins/}" | sed 's|/crate$||' ;; *) echo "$1" ;; esac; }
+
+echo
+row "unit" own reach ""
+over=()
+while read -r r u; do
+  o=$(tokens "${unit_code[$u]}")
+  rt=$(tokens "$r")
+  flag=""
+  [ "$o" -gt "$own_limit" ] && flag="own>$((own_limit / 1000))K"
+  [ "$rt" -gt "$reach_limit" ] && flag="${flag:+$flag }reach>$((reach_limit / 1000))K"
+  [ -n "$flag" ] && over+=("$(label "$u")")
+  printf "%-22s %9s %9s  %s\n" "$(label "$u")" "$o" "$rt" "$flag"
+done < <(for u in "${!unit_code[@]}"; do echo "$(reach_bytes "$u") $u"; done | sort -rn)
+echo "limits: own $own_limit, reach $reach_limit (scripts/unit_token_limits; reported, not gated)."
+echo "plugin contract: plugin-api reaches $(tokens "$(reach_bytes crates/plugin-api)") tokens, which every plugin reads."
+echo "units over a limit: ${#over[@]} of ${#unit_code[@]}${over:+ (${over[*]})}"
+
 echo
 row "repo" tokens "" ""
 for part in crates plugins hbi-frontend project-docs devdocs; do
   row "$part" "$(tok "$(file_bytes "$part")")" "" ""
 done
 row "everything tracked" "$(tok "$(git ls-files -z | sum_bytes)")" "" ""
+
+# Growth: tracked Rust in crates/ and plugins/ (tests included) on the first
+# of each of the last six months, and now.
+echo
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+  echo "growth: not available in a shallow clone."
+else
+  echo "growth, Rust in crates/ + plugins/ incl. tests, tokens:"
+  for m in 5 4 3 2 1 0; do
+    d=$(date -u -d "$(date -u +%Y-%m-01) -$m month" +%Y-%m-01)
+    c=$(git rev-list -1 --before="$d 00:00" HEAD)
+    [ -n "$c" ] || continue
+    b=$(git ls-tree -r -l "$c" -- crates plugins | awk '$5 ~ /\.rs$/ { s += $4 } END { print s + 0 }')
+    printf "  %-10s %9d\n" "$d" "$(tokens "$b")"
+  done
+  b=$(git ls-files -z -- crates plugins | grep -z '\.rs$' | sum_bytes)
+  printf "  %-10s %9d\n" "now" "$(tokens "$b")"
+fi
 
 if [ "${1:-}" = --files ]; then
   echo

@@ -1,8 +1,8 @@
 # Codebase Split Plan: small units, one schema home, stamped plugins
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
-the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Nothing
-built; Phase 0 is next.**
+the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
+built 2026-11-06; Phase 1 (schemas) is next.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -47,7 +47,8 @@ against `plugin-api`, whose whole reach (`plugin-api`, `protocol`, `decision`,
 | `retrieve` | 79K | 402K |
 | `api` (HBI REST) | 70K | 419K |
 | `skills` | 62K | 560K |
-| `app` | 58K | all of core, 784K |
+| `host` | 40K | 657K (it compiles in every plugin) |
+| `app` | 58K | 916K, all of core and every plugin |
 
 "Can reach" is an upper bound: an agent reads the public items it needs, not
 whole crates. But it's the honest measure of how far a change can spread, and
@@ -151,18 +152,27 @@ not microservices across the board:
 
 ## 4. Phases
 
-### Phase 0: measure what one change must read
+### Phase 0: measure what one change must read (built 2026-11-06)
 
-1. Extend `scripts/size_budget.sh` to print each unit's own code and its
-   reach (own + transitive workspace deps, as in § 1), for core crates and
-   plugins.
-2. Add the per-unit limits from § 8.1 (own ≤ 60K, reach ≤ 100K), reported
-   first, gated once the over-limit units have a Phase 3 plan. The core budget stays as it is.
-3. Keep the growth series (§ 1) in the report, so the trend shows in every
-   run.
+1. ✅ `scripts/size_budget.sh` prints each unit's own code and its reach: its
+   own code plus every workspace crate it depends on, transitively, through
+   normal path dependencies read from `cargo metadata`, each crate counted
+   once. That covers 27 units (17 core crates, 10 plugin crates), sorted by
+   reach.
+2. ✅ The limits are in `scripts/unit_token_limits` (own 60,000, reach
+   100,000; § 8.1). A unit over either limit is flagged. They're reported,
+   not gated, until the over-limit units have a Phase 3 plan. The core budget
+   is unchanged, and the budget line stays last, so the pre-commit hook reads
+   it as before.
+3. ✅ It also prints the plugin contract (what `plugin-api` reaches) and the
+   growth of Rust code by month from git history, skipped in a shallow clone
+   (CI's checkout).
 
-Done when: every unit's own size and reach is in CI output, and the units
-over the limit are listed.
+First run, 2026-11-06: **11 of 27 units are over a limit, all of them core
+crates**: `app`, `host`, `skills`, `api`, `retrieve`, `chat`, `scheduler`,
+`work`, `knowledge`, `graph`, `llm`. Every plugin passes; the largest,
+`media`, has 40K own and 62K reach. The plugin contract is 21,462 tokens.
+`repository` (49K own, 52K reach) is the largest core crate under both limits.
 
 ### Phase 1: schemas in one place per bundle
 
