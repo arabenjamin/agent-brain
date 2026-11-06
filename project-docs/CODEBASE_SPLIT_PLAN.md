@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 built 2026-11-06: the template, its script and its check, all 13 older plugins linked to it, and the brain's `scaffold_plugin`. Phase 3's review list measured 2026-11-06; waiting on the owner's decisions (§ 8.7).**
+built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 built 2026-11-06: the template, its script and its check, all 13 older plugins linked to it, and the brain's `scaffold_plugin`. Phase 3's review list measured and decided 2026-11-06 (§ 8.7); the removals built the same day.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -540,19 +540,20 @@ Core is 787,284 tokens; the target is under 700K, so 88K has to go.
 | Tool | Calls (queued / other) | Last | What uses it | Size | Recommendation |
 |---|---|---|---|---|---|
 | `adversarial_plan_review` | 9 (9 / 0) | 09-30 | only the opt-in `checks: [critic]`, which no workflow sets (files or graph) | ~1.5K with the critic insertion and gate | **remove**, and the `critic` check with it |
-| `manage_job` | 1 (0 / 1) | 10-17 | nothing; the HBI manages jobs over REST | ~0.8K | **remove** |
-| `dead_letter` | 48 (48 / 0) | 10-02 | a job last queued 10-02; the HBI reads dead letters over REST | ~0.7K | **remove** |
+| `manage_job` | 1 (0 / 1) | 10-17 | the HBI's Cancel button (`callToolStrict`, hbi-frontend/src/api/work.ts) | ~0.8K | ~~remove~~ **keep** (corrected 11-06: the HBI calls it as a tool) |
+| `dead_letter` | 48 (48 / 0) | 10-02 | the HBI's Retry button (`callToolStrict`, hbi-frontend/src/api/work.ts) | ~0.7K | ~~remove~~ **keep** (corrected 11-06: the HBI calls it as a tool) |
 | `select_agent` | 13 (0 / 13) | 10-14 | the front door's allowlist; `run_agent(agent: "auto")` picks the agent itself | ~0.5K | **remove** |
-| `get_llm_budget` | 4 (0 / 4) | 10-23 | knowledge-worker, self-analyst | ~0.3K | **remove**; a `lookup` view over `model_usage` if it's missed |
-| `get_search_usage` | 7 (0 / 7) | 10-22 | knowledge-worker | ~0.7K | **remove**; same |
-| `recent_tasks` | 14 (0 / 14) | 11-04 | knowledge-worker; overlaps the declared `list_tasks` | ~1K | **remove** |
+| `get_llm_budget` | 4 (0 / 4) | 10-23 | knowledge-worker, self-analyst | ~0.3K | ~~remove~~ **keep** (11-06: the live budget isn't a view's rows) |
+| `get_search_usage` | 7 (0 / 7) | 10-22 | knowledge-worker | ~0.7K | ~~remove~~ **keep** (11-06: rotation standing isn't a view's rows) |
+| `recent_tasks` | 14 (0 / 14) | 11-04 | knowledge-worker; the `lookup` view `tasks_recent` gives the same rows | ~1K | **remove** |
 | `scheduler_control` | 22 (0 / 22) | 11-02 | `tick`, by hand (development) | ~1K | keep: the one way to tick from MCP |
 | `enqueue_jobs` | 149 (0 / 149) | 11-02 | by hand (development) | ~1K | keep: the one way to queue an ad-hoc chain |
 | `describe_graph`, `list_capabilities` | 32, 76 | 11-05 | five agents; the schema guard | | keep |
 | `reflect_on_work`, `synthesize_knowledge` | 23, 26 | 10-26 | the `default` fallback chain (a task with no workflow) | | keep with the chain |
 
-Removing the seven saves only about 5.5K. They matter for what a model is
-offered, not for the budget.
+Removing the seven would save only about 5.5K. They matter for what a model
+is offered, not for the budget. After the corrections in § 8.7, three are
+removed (4.9K measured: core 787,284 → 782,378), recorded in `plugins/core/architecture/removed-tools.yaml`.
 
 **B. Moves to plugins**, through the template:
 
@@ -572,14 +573,25 @@ context builder (11.5K), the query tools (11.2K), argument validation
 (10.9K). Each is the core's own work, or used by most of it.
 
 **What it adds up to.** A (5.5K) + B's three moves (99K) takes core to about
-683K, under 700K. Without the HBI backend change it's about 757K, and 700K
+683K, under 700K; with A at 4.9K after the corrections, about 683K. Without the HBI backend change it's about 757K, and 700K
 isn't reachable without moving core's own work. **Reach:** every core crate
 but `repository`, `protocol`, `models`, `engine` and `decision` is over 100K
 by construction, since a layer depends on the layers below it. Recommended:
 keep them over, with that as the recorded reason; the per-plugin contract
 (25K) is the one that has to stay small.
 
-**Owner's decisions (§ 8.7):** pending.
+**Owner's decisions (§ 8.7, 2026-11-06):** the recommendations, with
+`manage_job`, `dead_letter`, `get_search_usage` and `get_llm_budget` kept.
+Built:
+
+- **The removals** (2026-11-06): `adversarial_plan_review` and the
+  workflow `critic` check (its insertion in the scheduler, the step fields
+  and the queue's adversarial gate), `select_agent` (the tool; `run_agent`
+  `agent: "auto"` still selects), `recent_tasks` (the `lookup` view
+  `tasks_recent` replaces it). `checks` is now the closed list
+  `workflow-checks`, so a workflow naming `critic` fails validation. Core 787,284 → 782,378 tokens.
+- Next: the `mcp-client` plugin, the `apis` plugin, the `hbi` feature,
+  then the lower budget.
 
 ### Phase 4: one process boundary, piloted and measured
 
@@ -672,5 +684,15 @@ made per item once Phase 3's 60-day usage list exists.
    `deny_unknown_fields` to the seven kinds that accept unknown keys, so a
    typo fails the seed test instead of being dropped. Recommended, after
    checking the profiles stored in the graph for extra keys. Open.
-7. **Phase 3's list.** The owner's call per item (remove, move or keep),
-   once the 60-day usage is in.
+7. **Phase 3's list.** Decided (owner, 2026-11-06): the recommendations,
+   "we can always change in the future". Two corrections the same day,
+   before any code: `manage_job` and `dead_letter` stay, because the HBI's
+   Cancel and Retry buttons call them as tools (`callToolStrict`), not over
+   REST as the list said; `get_search_usage` and `get_llm_budget` stay,
+   because rotation standing and the live budget aren't a view's rows, and
+   removing them saved about 1K. So: remove `adversarial_plan_review` (with
+   the `critic` check), `select_agent` and `recent_tasks`; make the HBI
+   backend an optional `hbi` feature; move the API tools to an `apis`
+   plugin and the MCP client to an `mcp-client` plugin; keep Programs; keep
+   the core crates over the reach limit, with the layering as the reason;
+   then lower `scripts/core_token_budget`. One commit each.

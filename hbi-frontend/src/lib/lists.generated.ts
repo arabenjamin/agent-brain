@@ -30,6 +30,10 @@ export type TodoOrigin = (typeof TODO_ORIGINS)[number];
 export const TODO_STATUSES = ["pending", "in_progress", "awaiting_approval", "awaiting_review", "done"] as const;
 export type TodoStatus = (typeof TODO_STATUSES)[number];
 
+/** The checks a workflow may opt into (checks). (plugins/core/schemas/lists/workflow-checks.json) */
+export const WORKFLOW_CHECKS = ["evaluator"] as const;
+export type WorkflowCheck = (typeof WORKFLOW_CHECKS)[number];
+
 /** A :Workflow's kind (blank or null for none). (plugins/core/schemas/lists/workflow-kinds.json) */
 export const WORKFLOW_KINDS = ["monitor", "brief", "learning", "maintenance", "dataset"] as const;
 export type WorkflowKind = (typeof WORKFLOW_KINDS)[number];

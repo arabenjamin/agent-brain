@@ -431,7 +431,7 @@ pub async fn handle_task_lineage(
         tasks: produced_tasks,
     } = produced;
 
-    // Reviews written about this task (adversarial critic, reflections).
+    // Reviews written about this task (reflections).
     let reflections = neo4j
         .execute(
             neo4rs::query("MATCH (n:Note)-[:REFLECTS_ON]->(:Task {id: $id}) RETURN n.id AS id")

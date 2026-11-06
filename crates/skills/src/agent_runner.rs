@@ -103,56 +103,6 @@ impl AgentRunnerSkill {
         }
     }
 
-    fn select_agent_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "select_agent".to_string(),
-            description:
-                "Pick the best-fitting spawnable agent for a goal, without running it. Returns \
-                 the chosen agent name (or none, when nothing fits) plus the full roster. Deterministic (specialty match, no model call), so \
-                 a chain step can route to an agent cheaply; then call `run_agent` with the \
-                 chosen name, or pass `run_agent` `agent: \"auto\"` to do both in one step."
-                    .to_string(),
-            input_schema: tool_schema!(core "select_agent"),
-        }
-    }
-
-    async fn handle_select_agent(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: SelectAgentInput = match parse_args(arguments) {
-            Ok(input) => input,
-            Err(e) => return e,
-        };
-        let goal = input.goal.trim();
-        if goal.is_empty() {
-            return ToolCallResult::error("`goal` must be a non-empty string.");
-        }
-
-        let Some(runner) = self.runner.read().await.clone() else {
-            return ToolCallResult::error(
-                "select_agent is unavailable: no agent loop engine is wired in this deployment. \
-                 (It is enabled with SUBAGENT_ENABLED and requires the chat service.)",
-            );
-        };
-
-        let selection = runner.select_agent(goal).await;
-        let roster: Vec<Value> = selection
-            .roster
-            .iter()
-            .map(|(name, specialty)| json!({ "agent": name, "specialty": specialty }))
-            .collect();
-        // `answer` carries the chosen name (or "none") so a downstream
-        // `{{_prev}}` hands the routing decision straight into the next step.
-        let answer = selection
-            .agent
-            .clone()
-            .unwrap_or_else(|| "none".to_string());
-        ToolCallResult::success_json(json!({
-            "answer": answer,
-            "agent": selection.agent,
-            "score": selection.score,
-            "roster": roster,
-        }))
-    }
-
     async fn handle_run_agent(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: RunAgentInput = match parse_args(arguments) {
             Ok(input) => input,
@@ -415,13 +365,12 @@ impl Skill for AgentRunnerSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![Self::run_agent_def(), Self::select_agent_def()]
+        vec![Self::run_agent_def()]
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
             "run_agent" => Some(self.handle_run_agent(arguments).await),
-            "select_agent" => Some(self.handle_select_agent(arguments).await),
             _ => None,
         }
     }
@@ -531,12 +480,6 @@ fn harness_leak(prompt: &str, task: &str) -> Option<String> {
     None
 }
 
-#[derive(Debug, Deserialize)]
-struct SelectAgentInput {
-    #[serde(default)]
-    goal: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,12 +542,13 @@ mod tests {
     }
 
     #[test]
-    fn exposes_run_agent_and_select_agent() {
+    fn exposes_run_agent_only() {
         let skill = skill_with_no_runner();
         let tools = skill.tools();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"run_agent"));
-        assert!(names.contains(&"select_agent"));
+        // select_agent was removed 2026-11-06; run_agent `agent: "auto"` selects.
+        assert!(!names.contains(&"select_agent"));
     }
 
     #[tokio::test]

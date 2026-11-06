@@ -785,8 +785,8 @@ impl AgentRunner {
         // Choose-or-build (plan §4): `agent: "auto"` picks the best-fitting
         // spawnable agent by specialty match — the "choose" half, LLM-free. When
         // nothing matches lexically, it falls back to a generalist rather than
-        // rejecting, so an open-ended auto task still runs (the standalone
-        // `select_agent` tool stays honest and returns None = a build cue).
+        // rejecting, so an open-ended auto task still runs (`select_agent`
+        // itself stays honest and returns None = a build cue).
         let selected;
         let agent: &str = if agent.eq_ignore_ascii_case("auto") {
             let sel = self.select_agent(task).await;

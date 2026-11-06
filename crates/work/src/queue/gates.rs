@@ -1,4 +1,4 @@
-//! What runs after a step: the evaluator and adversarial gates, their requeues, and meta-learning from a failure.
+//! What runs after a step: the evaluator gate, its requeue, and meta-learning from a failure.
 
 use super::{ChainStep, QueueService, STEP_MODEL_ERROR, is_transient_infra_error, job_arg};
 use agent_brain_models::{AgentJob, TaskStatus};
@@ -85,34 +85,6 @@ fn meta_learning_chain(tool_name: &str, attempt: u32, error_text: &str) -> Vec<C
     ]
 }
 
-/// Parse `overall_robustness` (1.0–5.0) from `adversarial_plan_review` JSON output.
-///
-/// Tries the JSON field first; falls back to a `Robustness: N/5` text pattern;
-/// defaults to 3.0 (neutral) if neither is found.
-fn parse_adversarial_robustness(text: &str) -> f32 {
-    // Try to parse the JSON blob returned by the tool.
-    if let Some(v) = agent_brain_llm::llm::first_json_object(text, &["overall_robustness"])
-        && let Some(r) = v
-            .get("overall_robustness")
-            .and_then(serde_json::Value::as_f64)
-    {
-        return (r as f32).clamp(1.0, 5.0);
-    }
-    // Fallback: look for `Robustness: N/5` or `overall_robustness: N`.
-    for line in text.lines() {
-        let lower = line.trim().to_lowercase();
-        if let Some(rest) = lower
-            .strip_prefix("robustness:")
-            .or_else(|| lower.strip_prefix("overall_robustness:"))
-            && let Some(n_str) = rest.trim().split('/').next()
-            && let Ok(n) = n_str.trim().parse::<f32>()
-        {
-            return n.clamp(1.0, 5.0);
-        }
-    }
-    3.0
-}
-
 /// Returns `true` if exhausted retries for `tool_name` should trigger a
 /// meta-learning chain rather than only a reflection note.
 ///
@@ -126,7 +98,6 @@ fn should_meta_learn(tool_name: &str) -> bool {
         "synthesize_knowledge",
         "reason",
         "reflect_on_work",
-        "adversarial_plan_review",
         "prune_old_notes",
         "review_due_notes",
         "get_task",
@@ -210,33 +181,6 @@ impl QueueService {
             let _ = self
                 .neo4j
                 .update_task_status(owner, TaskStatus::Failed)
-                .await;
-        }
-        true
-    }
-
-    /// Adversarial pre-flight: abort the chain if the plan is too risky. Mirrors
-    /// the evaluator gate but fires on the first step rather than the last.
-    pub(super) async fn adversarial_gate(&self, job: &AgentJob, result_text: &str) -> bool {
-        let Some(min_robustness) =
-            job_arg(job, "__adversarial_min_robustness").and_then(Value::as_f64)
-        else {
-            return false;
-        };
-        let robustness = parse_adversarial_robustness(result_text);
-        if robustness >= min_robustness as f32 {
-            info!(job_id = %job.id, robustness, "Adversarial: robustness passed — proceeding");
-            return false;
-        }
-        warn!(
-            job_id = %job.id,
-            robustness,
-            min_robustness,
-            "Adversarial: robustness below threshold — cancelling chain and re-queuing task"
-        );
-        let _ = self.neo4j.cancel_parked_children(&job.id).await;
-        if let Some(tid) = job_arg(job, "__adversarial_task_id").and_then(Value::as_str) {
-            self.handle_adversarial_requeue(tid, robustness, result_text)
                 .await;
         }
         true
@@ -336,75 +280,6 @@ impl QueueService {
                 "Evaluator: created retry task"
             ),
             Err(e) => warn!(error = %e, "Evaluator: failed to create retry task"),
-        }
-    }
-
-    /// Called when an adversarial pre-flight step scores a plan below its robustness threshold.
-    ///
-    /// Marks the original task `failed` and creates a new `Task` node with the adversarial
-    /// critique injected as context so the scheduler will re-dispatch a hardened attempt.
-    async fn handle_adversarial_requeue(&self, task_id: &str, robustness: f32, critique: &str) {
-        let task = match self.neo4j.get_task(task_id).await {
-            Ok(Some(t)) => t,
-            Ok(None) => {
-                warn!(task_id = %task_id, "Adversarial re-queue: task not found");
-                return;
-            }
-            Err(e) => {
-                warn!(task_id = %task_id, error = %e, "Adversarial re-queue: failed to fetch task");
-                return;
-            }
-        };
-
-        // Count previous adversarial aborts to enforce the same retry cap as the evaluator.
-        let abort_count = task
-            .context
-            .as_deref()
-            .unwrap_or("")
-            .matches("ADVERSARIAL ABORT")
-            .count();
-
-        let _ = self
-            .neo4j
-            .update_task_status(task_id, TaskStatus::Failed)
-            .await;
-
-        if abort_count >= 3 {
-            warn!(
-                task_id = %task_id,
-                abort_count,
-                robustness,
-                "Adversarial: abort cap reached — marking terminal failure"
-            );
-            return;
-        }
-
-        let retry_context = format!(
-            "ADVERSARIAL ABORT — plan robustness {:.1}/5 (threshold 2.5).\n\nAdversarial critique:\n{}\n\nOriginal context: {}",
-            robustness,
-            critique.chars().take(800).collect::<String>(),
-            task.context.as_deref().unwrap_or("none"),
-        );
-
-        // The retry runs the same workflow with the same inputs.
-        match crate::workflows::start_run(
-            &self.neo4j,
-            task.workflow.as_deref(),
-            &task.inputs.clone().unwrap_or_default(),
-            Some(&task.goal),
-            Some(&retry_context),
-            task.success_criteria.as_deref(),
-        )
-        .await
-        .map(|run| run.task_id)
-        {
-            Ok(new_id) => info!(
-                original_task_id = %task_id,
-                new_task_id = %new_id,
-                robustness,
-                "Adversarial: created hardened retry task"
-            ),
-            Err(e) => warn!(error = %e, "Adversarial: failed to create retry task"),
         }
     }
 }

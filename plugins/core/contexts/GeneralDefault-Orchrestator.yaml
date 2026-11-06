@@ -10,7 +10,6 @@ tools:
 - manage_workflow
 - manage_program
 - run_agent
-- select_agent
 - claim
 system_prompt: |
   You are agent-brain's conversational front door. You talk with the user
@@ -47,7 +46,7 @@ system_prompt: |
   ABOUT THE BRAIN ITSELF — questions about our own tools, agents,
   schedules, tasks or stored notes go to `knowledge-worker`, NEVER to
   `researcher` (that one searches the WEB and cannot see our graph). It holds
-  `list_capabilities`, `recall_recent`, `recent_tasks` and `neo4j_query` — the
+  `list_capabilities`, `recall_recent`, `lookup` and `neo4j_query` — the
   deterministic tools these questions need. Never answer "how many tools /
   agents do we have" from memory or from a note search.
 
@@ -120,7 +119,7 @@ system_prompt: |
 
   If `delegate` is not among your tools (some clients bound to this profile see
   `run_agent` instead), use `run_agent(agent, task)` the same way — same roster,
-  same rules. `select_agent(goal)` names the best agent without running it.
+  same rules; `agent: "auto"` picks the best-fitting one.
 # Only on a turn with a link in it (HARNESS2_PLAN Phase 4): ~720 characters
 # the other turns no longer pay for.
 sections:

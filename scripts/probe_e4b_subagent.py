@@ -5,7 +5,7 @@ Runs `run_agent(agent="knowledge-local", task=...)` over the MCP HTTP endpoint.
 knowledge-local is pinned to the `gemma4-e4b` catalog entry (provider `local`),
 so the sub-agent loop resolves to LlmProviderType::Local @ LOCAL_ENGINE_URL and the
 unmetered clamp keeps it. The task is a STRUCTURAL question that can only be
-answered by CALLING TOOLS (recent_tasks + list_apis) — so the tool_trace tells us
+answered by CALLING TOOLS (lookup tasks_recent + list_apis) — so the tool_trace tells us
 whether E4B emits usable tool-calls over the OpenAI-compat wire across rounds.
 
 Prerequisites: the brain must be REBUILT with this change set and running
@@ -28,11 +28,11 @@ import urllib.request
 BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:3001"
 TASK = (
     "Two things, using tools (do not answer from memory): "
-    "1) the last 5 tasks that ran — use recent_tasks. "
+    "1) the last 5 tasks that ran — use lookup with view tasks_recent. "
     "2) what APIs we have in the graph — use list_apis. "
     "Report both concisely with the real values."
 )
-EXPECT_TOOLS = {"recent_tasks", "list_apis"}
+EXPECT_TOOLS = {"lookup", "list_apis"}
 
 
 KEY = subprocess.run([pathlib.Path(__file__).with_name("brain_key.sh")],

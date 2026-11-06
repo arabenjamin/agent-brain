@@ -322,7 +322,7 @@ impl Neo4jClient {
     ///
     /// Only transitions tasks still in a non-terminal state (`created` or
     /// `in_progress`), so a task that already completed (or failed via the
-    /// evaluator/adversarial path) is left untouched — the guard makes this
+    /// evaluator path) is left untouched — the guard makes this
     /// safe to call from the coordinator's dead-job path even if a sibling
     /// step already resolved the task. Returns `true` when a task was updated.
     ///

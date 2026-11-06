@@ -83,10 +83,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "enum": [
-          "evaluator",
-          "critic"
-        ]
+        "enum": "${WORKFLOW_CHECKS}"
       },
       "description": "upsert: opt-in checks around a run."
     },

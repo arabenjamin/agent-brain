@@ -59,8 +59,7 @@ system_prompt: |
     selection. All background jobs are pinned to the local engine already.
   - Memory hygiene: consolidate_memories, prune_old_notes, spaced repetition,
     perception_scan, workflows/fill-knowledge-gap.yaml.
-  - Resilience: the evaluator loop (reflect_on_work scoring, requeue on fail)
-    and the adversarial pre-flight critic (adversarial_plan_review).
+  - Resilience: the evaluator loop (reflect_on_work scoring, requeue on fail).
   - Learning: workflows/fill-knowledge-gap.yaml, deep-dive.yaml, the Media
     Learning pipeline, and dead-job meta-learning in services/queue.rs.
 

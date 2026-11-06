@@ -111,7 +111,7 @@ export const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   },
   {
     group: "Sub-Agents",
-    tools: ["run_agent", "select_agent"],
+    tools: ["run_agent"],
   },
   {
     group: "Proposals",

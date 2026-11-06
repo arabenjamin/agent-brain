@@ -18,8 +18,8 @@
 //! # Parts
 //!
 //! This file holds the job types, the coordinator and running one job. The rest
-//! is in `queue/`: `templates` (step argument substitution), `gates` (evaluator
-//! and adversarial checks, meta-learning), `ops` (cancel, retry, drain, stats).
+//! is in `queue/`: `templates` (step argument substitution), `gates` (the
+//! evaluator check, meta-learning), `ops` (cancel, retry, drain, stats).
 //!
 //! # Resizing concurrency at runtime
 //!
@@ -125,23 +125,6 @@ pub struct ChainStep {
     /// in the job args so the coordinator can look up the original goal on re-queue.
     #[serde(default)]
     pub evaluator_task_id: Option<String>,
-    /// When `true`, this step runs *before* the main action steps and calls
-    /// `adversarial_plan_review`.  If the returned `overall_robustness` falls below
-    /// `min_robustness` the chain is aborted and the task re-created with the
-    /// adversarial critique injected as context for the next attempt.
-    #[serde(default)]
-    pub is_adversarial: bool,
-    /// Number of failure hypotheses the adversarial reviewer should generate (default 3).
-    #[serde(default)]
-    pub n_hypotheses: Option<u8>,
-    /// Minimum acceptable overall robustness score (1–5) from the adversarial review.
-    /// Defaults to 2.5 — plans that can't defend against half the scenarios are aborted.
-    #[serde(default)]
-    pub min_robustness: Option<f32>,
-    /// Task ID passed to the adversarial re-queue handler.  Stored as
-    /// `__adversarial_task_id` in job args.
-    #[serde(default)]
-    pub adversarial_task_id: Option<String>,
     /// Capabilities this step's LLM calls require (e.g. `["reasoning"]`).
     /// When set, the model router picks the cheapest catalog model that
     /// satisfies them within the active `CLOUD_TIER` and the job's LLM calls
@@ -443,22 +426,6 @@ impl QueueService {
                     );
                     if let Some(tid) = &step.evaluator_task_id {
                         m.insert("__evaluator_task_id".to_string(), serde_json::json!(tid));
-                    }
-                }
-                Some(a)
-            } else if step.is_adversarial {
-                let mut a = step.arguments.clone().unwrap_or(serde_json::json!({}));
-                if let serde_json::Value::Object(ref mut m) = a {
-                    m.insert(
-                        "__adversarial_min_robustness".to_string(),
-                        serde_json::json!(step.min_robustness.unwrap_or(2.5)),
-                    );
-                    m.insert(
-                        "__adversarial_n_hypotheses".to_string(),
-                        serde_json::json!(step.n_hypotheses.unwrap_or(3)),
-                    );
-                    if let Some(tid) = &step.adversarial_task_id {
-                        m.insert("__adversarial_task_id".to_string(), serde_json::json!(tid));
                     }
                 }
                 Some(a)
@@ -1302,11 +1269,9 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
             }
             Ok(true) => {
                 info!(job_id = %job.id, "AgentJob completed");
-                // Both gates run (each records its own outcome); either one
-                // blocking stops the chain.
+                // The evaluator gate records its outcome; blocking stops the chain.
                 let evaluator_blocked = self.evaluator_gate(job, &result_text).await;
-                let adversarial_blocked = self.adversarial_gate(job, &result_text).await;
-                if !evaluator_blocked && !adversarial_blocked {
+                if !evaluator_blocked {
                     let raw = structured_prev_to_preserve(result, &result_text);
                     self.unpark_and_enqueue_children(&job.id, &result_text, &raw)
                         .await;

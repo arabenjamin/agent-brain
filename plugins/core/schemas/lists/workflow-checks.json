@@ -1,0 +1,7 @@
+{
+  "description": "The checks a workflow may opt into (checks).",
+  "name": "workflow-checks",
+  "values": [
+    "evaluator"
+  ]
+}

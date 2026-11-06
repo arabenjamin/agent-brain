@@ -1,4 +1,4 @@
-//! `reason` and its neighbours: `synthesize_knowledge`, `adversarial_plan_review`.
+//! `reason` and its neighbour `synthesize_knowledge`.
 
 use super::{KnowledgeSkill, default_consolidate_limit};
 use agent_brain_protocol::tool_schema;
@@ -91,20 +91,6 @@ struct SynthesizeKnowledgeInput {
     topic: String,
     #[serde(default = "default_consolidate_limit")]
     limit: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdversarialPlanReviewInput {
-    goal: String,
-    proposed_plan: String,
-    #[serde(default = "default_n_hypotheses")]
-    n_hypotheses: u8,
-    #[serde(default)]
-    task_id: Option<String>,
-}
-
-fn default_n_hypotheses() -> u8 {
-    3
 }
 
 fn default_reason_limit() -> usize {
@@ -362,128 +348,6 @@ Respond with a JSON object only (no markdown, no explanation):
                 }
             }
         }
-    }
-
-    pub(super) fn adversarial_plan_review_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "adversarial_plan_review".to_string(),
-            description:
-                "Stress-test a proposed plan before execution by generating N adversarial \
-                         failure scenarios. For each hypothesis the tool scores how well the plan \
-                         handles it (1–5) and suggests a mitigation. Returns an overall robustness \
-                         score and adjusted plan notes. Results are stored as a semantic note so \
-                         future reviews benefit from accumulated failure-pattern knowledge."
-                    .to_string(),
-            input_schema: tool_schema!(core "adversarial_plan_review"),
-        }
-    }
-
-    pub(super) async fn handle_adversarial_plan_review(
-        &self,
-        arguments: Option<Value>,
-    ) -> ToolCallResult {
-        let input: AdversarialPlanReviewInput = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        info!(
-            goal = %input.goal,
-            n = input.n_hypotheses,
-            "Running adversarial plan review"
-        );
-
-        // Pull past adversarial analyses from the knowledge base so the LLM can
-        // avoid repeating already-known failure patterns and build on prior learning.
-        let past_patterns = self
-            .svc
-            .search_notes("adversarial review plan failure scenario", 3, 0, None, None)
-            .await
-            .unwrap_or_default();
-
-        let past_context = if past_patterns.is_empty() {
-            "None found.".to_string()
-        } else {
-            past_patterns
-                .iter()
-                .filter_map(|n| n["content"].as_str())
-                .take(3)
-                .map(|c| format!("- {}", c.chars().take(300).collect::<String>()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        let prompt = format!(
-            "You are an Adversarial Critic. Stress-test the following plan by generating \
-             {n} distinct failure scenarios — plausible ways the plan could fail, be derailed, \
-             or produce a wrong outcome.\n\n\
-             GOAL: {goal}\n\
-             PROPOSED PLAN: {plan}\n\n\
-             PAST FAILURE PATTERNS (from knowledge base — do not repeat these):\n{past}\n\n\
-             For each scenario score how well the current plan handles it \
-             (1 = completely unprepared, 5 = fully mitigated).\n\
-             Then give an overall_robustness score (1.0–5.0, one decimal) and \
-             brief adjusted_plan_notes on how to strengthen the weakest points.\n\n\
-             Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON:\n\
-             {{\"hypotheses\":[{{\"scenario\":\"...\",\"robustness_score\":N,\"mitigation\":\"...\"}}],\
-             \"overall_robustness\":N.N,\"adjusted_plan_notes\":\"...\"}}",
-            n = input.n_hypotheses,
-            goal = input.goal,
-            plan = input.proposed_plan,
-            past = past_context,
-        );
-
-        let raw = match self.llm.generate(&prompt, None).await {
-            Ok(r) => r,
-            Err(e) => return ToolCallResult::error(format!("LLM call failed: {e}")),
-        };
-
-        let text = raw.trim();
-        let parsed: Value = agent_brain_llm::llm::first_json_object(text, &["overall_robustness"])
-            .unwrap_or_else(|| {
-                json!({
-                    "hypotheses": [],
-                    "overall_robustness": 3.0,
-                    "adjusted_plan_notes": text
-                })
-            });
-
-        let overall_robustness = parsed["overall_robustness"].as_f64().unwrap_or(3.0);
-
-        // Persist so future reviews can learn from this one.
-        let note_content = format!(
-            "Adversarial Plan Review\nGoal: {}\nPlan: {}\nOverall robustness: {:.1}/5\n\n{}",
-            input.goal,
-            input.proposed_plan.chars().take(200).collect::<String>(),
-            overall_robustness,
-            serde_json::to_string_pretty(&parsed).unwrap_or_default()
-        );
-        let stored = self
-            .svc
-            .store_note(
-                &note_content,
-                Some("semantic"),
-                Some("adversarial_review"),
-                None,
-                None,
-            )
-            .await;
-        // The schema promises the review is linked to its task; a review that
-        // is never linked cannot be found from the task it judged.
-        if let (Ok((note_id, _)), Some(task_id)) = (&stored, input.task_id.as_deref()) {
-            match self.svc.link_note_to_task(note_id, task_id).await {
-                Ok(true) => {}
-                Ok(false) => warn!(
-                    task_id,
-                    "adversarial review: task not found, note left unlinked"
-                ),
-                Err(e) => {
-                    warn!(task_id, error = %e, "adversarial review: linking note to task failed")
-                }
-            }
-        }
-
-        ToolCallResult::success_json(parsed)
     }
 
     pub(super) fn synthesize_knowledge_def() -> ToolDefinition {

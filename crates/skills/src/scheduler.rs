@@ -283,7 +283,7 @@ impl SchedulerSkill {
                 disable those whose every step names a dead tool (and re-enable the ones an audit \
                 paused once their tools are live again)."
                 .to_string(),
-            input_schema: tool_schema!(core "manage_workflow", "WORKFLOW_KINDS_OR_BLANK" => workflow_kinds_or_blank(), "DATA_CLASSES" => agent_brain_llm::routing::DataClass::names()),
+            input_schema: tool_schema!(core "manage_workflow", "WORKFLOW_KINDS_OR_BLANK" => workflow_kinds_or_blank(), "DATA_CLASSES" => agent_brain_llm::routing::DataClass::names(), "WORKFLOW_CHECKS" => agent_brain_work::workflow_seeder::CHECKS),
         }
     }
 

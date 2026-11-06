@@ -57,11 +57,10 @@
       "items": {
         "type": "string",
         "enum": [
-          "evaluator",
-          "critic"
+          "evaluator"
         ]
       },
-      "description": "Opt-in: evaluator scores the result; critic reviews the plan before it runs."
+      "description": "Opt-in: evaluator scores the result against the rubric (or the run's success_criteria) and re-queues it below the threshold."
     },
     "evaluation_rubric": {
       "type": [

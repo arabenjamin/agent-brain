@@ -806,11 +806,6 @@
       "line": 192
     },
     {
-      "name": "QuerySkill::handle_recent_tasks",
-      "file": "crates/retrieve/src/query.rs",
-      "line": 432
-    },
-    {
       "name": "QuerySkill::handle_list_apis",
       "file": "crates/retrieve/src/query.rs",
       "line": 478

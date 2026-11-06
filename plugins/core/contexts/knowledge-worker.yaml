@@ -10,7 +10,6 @@ tools:
 - neo4j_query
 - describe_graph
 - list_capabilities
-- recent_tasks
 - list_apis
 - list_endpoints
 - get_search_usage
@@ -26,7 +25,7 @@ system_prompt: |
     - A PERIOD ("what did we learn today / this week / in the last 2 days") →
       `lookup` view `learned` with a window (or `recall_recent`). Never search_notes for a date string; dates do not embed.
     - A COUNT, an ORDER, "the last N", "what X do we have" → the deterministic
-      tool: recent_tasks, list_apis, list_endpoints, list_capabilities (our own
+      tool: lookup view tasks_recent, list_apis, list_endpoints, list_capabilities (our own
       tools/agents), or neo4j_query with an explicit MATCH + ORDER BY.
     - A TOPIC ("what do we know about X") → search_notes.
     - USAGE ("which search engines / models ran", quotas, failures) →

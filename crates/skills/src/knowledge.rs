@@ -147,7 +147,6 @@ impl Skill for KnowledgeSkill {
             Self::consolidate_memories_def(),
             Self::synthesize_knowledge_def(),
             Self::reason_def(),
-            Self::adversarial_plan_review_def(),
         ]
     }
 
@@ -160,7 +159,6 @@ impl Skill for KnowledgeSkill {
             "consolidate_memories" => Some(self.handle_consolidate_memories(arguments).await),
             "synthesize_knowledge" => Some(self.handle_synthesize_knowledge(arguments).await),
             "reason" => Some(self.handle_reason(arguments).await),
-            "adversarial_plan_review" => Some(self.handle_adversarial_plan_review(arguments).await),
             _ => None,
         }
     }
@@ -274,7 +272,7 @@ mod tests {
 
     #[test]
     fn tools_list_has_correct_count() {
-        assert_eq!(skill_ok().tools().len(), 8);
+        assert_eq!(skill_ok().tools().len(), 7);
     }
 
     #[test]

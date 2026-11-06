@@ -253,19 +253,6 @@ impl QuerySkill {
         }
     }
 
-    fn recent_tasks_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "recent_tasks".to_string(),
-            description: "The most recently updated Tasks, newest first (ordered by updated_at). \
-                          This is the deterministic answer to 'the last N tasks', 'what tasks \
-                          ran', 'recent work' — do NOT semantic-search for it (search cannot \
-                          order by time). Optional `status` filter \
-                          (created/in_progress/completed/failed/blocked)."
-                .to_string(),
-            input_schema: tool_schema!(core "recent_tasks"),
-        }
-    }
-
     fn list_apis_def() -> ToolDefinition {
         ToolDefinition {
             name: "list_apis".to_string(),
@@ -356,52 +343,6 @@ impl QuerySkill {
             None => ToolCallResult::error(
                 "Graph schema unavailable (Neo4j not reachable or empty).".to_string(),
             ),
-        }
-    }
-
-    async fn handle_recent_tasks(&self, args: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input {
-            #[serde(default = "default_task_limit")]
-            limit: i64,
-            #[serde(default)]
-            status: Option<String>,
-        }
-        fn default_task_limit() -> i64 {
-            5
-        }
-        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
-            Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
-        };
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
-        // Deterministic: ordered by updated_at DESC. Task carries created_at and
-        // updated_at as native datetimes — the "timestamps aren't stored" claim
-        // this tool exists to prevent is simply false.
-        let where_clause = if input.status.is_some() {
-            "WHERE t.status = $status"
-        } else {
-            ""
-        };
-        let cypher = format!(
-            "MATCH (t:Task) {where_clause} \
-             RETURN t.id AS id, t.goal AS goal, t.status AS status, \
-                    toString(t.updated_at) AS updated_at, toString(t.created_at) AS created_at \
-             ORDER BY t.updated_at DESC LIMIT $limit"
-        );
-        let mut q = neo4rs::query(&cypher).param("limit", input.limit.max(1));
-        if let Some(ref s) = input.status {
-            q = q.param("status", s.clone());
-        }
-        match neo4j.execute(q).await {
-            Ok(rows) => {
-                let result = Self::rows_to_json(rows);
-                let count = result.len();
-                ToolCallResult::success_json(json!({ "tasks": result, "count": count }))
-            }
-            Err(e) => ToolCallResult::error(format!("recent_tasks query failed: {e}")),
         }
     }
 
@@ -928,7 +869,6 @@ impl Skill for QuerySkill {
         let mut tools = vec![
             Self::neo4j_query_def(),
             Self::describe_graph_def(),
-            Self::recent_tasks_def(),
             Self::list_apis_def(),
             Self::list_endpoints_def(),
             Self::list_capabilities_def(),
@@ -944,7 +884,6 @@ impl Skill for QuerySkill {
             "neo4j_query" => Some(self.handle_neo4j_query(args).await),
             "duckdb_query" => Some(self.handle_duckdb_query(args).await),
             "describe_graph" => Some(self.handle_describe_graph().await),
-            "recent_tasks" => Some(self.handle_recent_tasks(args).await),
             "list_apis" => Some(self.handle_list_apis().await),
             "list_endpoints" => Some(self.handle_list_endpoints(args).await),
             "list_capabilities" => Some(self.handle_list_capabilities(args).await),
@@ -1060,7 +999,6 @@ mod tests {
         // The read/introspection tools do not need telemetry; duckdb does.
         assert!(names.contains(&"neo4j_query".to_string()));
         assert!(names.contains(&"describe_graph".to_string()));
-        assert!(names.contains(&"recent_tasks".to_string()));
         assert!(names.contains(&"list_apis".to_string()));
         assert!(names.contains(&"list_endpoints".to_string()));
         assert!(!names.contains(&"duckdb_query".to_string()));

@@ -20,7 +20,7 @@ steps:
         BLOCKED repeatedly, ranked by failure count. Each carries samples of the
         most recent failure context. A line beginning "[FAILURE]" is the actual
         error that killed the run (which chain step died and its last error);
-        an evaluator or adversarial critique may also appear. Read these — they
+        an evaluator critique may also appear. Read these — they
         say WHY the capability keeps failing.
 
         A capability that keeps failing is a concrete signal of a missing tool,
@@ -28,8 +28,8 @@ steps:
         best practices. Base every candidate ONLY on the CONTEXT, quoting the
         "[FAILURE]" error or critique that justifies it; do not invent gaps the
         data does not show, and do not propose things the brain already has
-        (durable job queue, knowledge graph, RAG, retry logic, evaluator and
-        adversarial loops all already exist). This is a Rust codebase — never
+        (durable job queue, knowledge graph, RAG, retry logic and the evaluator
+        loop all already exist). This is a Rust codebase — never
         propose Python-specific libraries (e.g. Pydantic); prefer Rust crates
         or concrete changes to existing tools/chains.
 

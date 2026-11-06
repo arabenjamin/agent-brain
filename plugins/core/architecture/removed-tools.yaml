@@ -59,3 +59,8 @@ tools:
 
   # Phase 6g, 2026-10-11 — never called as a tool; the fine-tuning script uses REST
   - { name: gpu_lease, commit: 63d65c6, reason: "0 calls since telemetry began (2026-06-12); scripts/gpu_lease.sh drives the lease over REST", replaced_by: "POST /api/gpu-lease" }
+
+  # CODEBASE_SPLIT_PLAN Phase 3, 2026-11-06 — low use, each covered by another tool
+  - { name: adversarial_plan_review, commit: be52180, reason: "9 calls in 60 days, last 2026-09-30, all from the workflow `critic` check, which no workflow sets; the check went with it", replaced_by: "the evaluator check" }
+  - { name: select_agent, commit: be52180, reason: "13 calls in 60 days, none queued, last 2026-10-14; run_agent picks the agent itself with agent: auto", replaced_by: run_agent }
+  - { name: recent_tasks, commit: be52180, reason: "14 calls in 60 days, none queued, last 2026-11-04; the lookup view tasks_recent gives the same rows", replaced_by: "lookup view tasks_recent" }

@@ -420,7 +420,7 @@ A named job chain (CORE_AND_PLUGINS_PLAN Phase 2; replaced `ScheduledTask` and `
 | `interval_seconds` | Integer? | Schedule period; null = runs only by name |
 | `steps` | String | JSON-encoded `Vec<ChainStep>` (file `defaults:` and `data_class` already applied) |
 | `inputs` | String | JSON array of `{name, description?, required}`; a run missing a required one is refused when created |
-| `checks` | String[] | Opt-in: `evaluator` (score the result, re-queue below threshold), `critic` (adversarial review before it starts) |
+| `checks` | String[] | Opt-in: `evaluator` (score the result, re-queue below threshold); the closed list `workflow-checks` |
 | `evaluation_rubric` | String? | What the evaluator scores against; the run's `success_criteria` otherwise |
 | `is_default` | Boolean | The one workflow a task with no `workflow` runs (free-text goals) |
 | `last_run_at` / `next_run_at` | DateTime? | Native `DATETIME`, UTC; `next_run_at` null without a schedule |

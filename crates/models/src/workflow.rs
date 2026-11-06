@@ -23,7 +23,7 @@ pub struct Workflow {
     #[serde(default)]
     pub inputs: Vec<WorkflowInput>,
     /// Opt-in checks around a run: `evaluator` (score the result, re-queue
-    /// below threshold) and `critic` (adversarial review before it starts).
+    /// below threshold). One of the `workflow-checks` closed list.
     #[serde(default)]
     pub checks: Vec<String>,
     /// What the evaluator scores against; the run's `success_criteria` otherwise.

@@ -289,7 +289,6 @@ impl SchedulerService {
             let task_id = task["id"].as_str().unwrap_or("").to_string();
             let goal = task["goal"].as_str().unwrap_or("").to_string();
             let success_criteria = task["success_criteria"].as_str();
-            let task_context = task["context"].as_str();
 
             if task_id.is_empty() || goal.is_empty() {
                 continue;
@@ -315,7 +314,6 @@ impl SchedulerService {
                     &goal,
                     &inputs,
                     success_criteria,
-                    task_context,
                     session_id.as_deref(),
                 )
                 .await
@@ -496,7 +494,7 @@ impl SchedulerService {
             }
         }
         let jobs = self
-            .dispatch_run(wf, &task_id, &goal, inputs, None, None, session_id)
+            .dispatch_run(wf, &task_id, &goal, inputs, None, session_id)
             .await?;
         info!(workflow = %wf.name, task_id = %task_id, jobs, "Scheduled workflow fired");
         Ok(task_id)
@@ -505,7 +503,6 @@ impl SchedulerService {
     /// Enqueue one run of `wf` as a job chain owned by `task_id`, and mark the
     /// Task in progress. Adds the opted-in checks, the confidence guardrail, a
     /// context profile, and a closing `update_task`. Returns the job count.
-    #[allow(clippy::too_many_arguments)]
     async fn dispatch_run(
         &self,
         wf: &Workflow,
@@ -513,7 +510,6 @@ impl SchedulerService {
         goal: &str,
         inputs: &serde_json::Map<String, Value>,
         success_criteria: Option<&str>,
-        task_context: Option<&str>,
         session_id: Option<&str>,
     ) -> Result<usize, String> {
         let mut steps = agent_brain_work::workflows::render_steps(wf, task_id, goal, inputs)?;
@@ -526,9 +522,6 @@ impl SchedulerService {
             .or(success_criteria);
         if wf.checks.iter().any(|c| c == "evaluator") {
             steps = self.maybe_append_evaluator(steps, task_id, rubric);
-        }
-        if wf.checks.iter().any(|c| c == "critic") {
-            steps = Self::maybe_prepend_adversarial(steps, task_id, goal, rubric, task_context);
         }
 
         // Guardrail: a first step with a confidence threshold the chain falls
@@ -1192,60 +1185,6 @@ impl SchedulerService {
         steps
     }
 
-    /// Prepend an `adversarial_plan_review` step to the chain when the task is
-    /// high-stakes (has `success_criteria`) and hasn't already been through an
-    /// adversarial abort cycle.
-    ///
-    /// Skipped when:
-    /// - `criteria` is `None` (no success criteria → not high-stakes)
-    /// - `no_adversarial` is `true` at the chain YAML level
-    /// - `task_context` already contains `"ADVERSARIAL ABORT"` (retry from prior abort)
-    fn maybe_prepend_adversarial(
-        mut steps: Vec<ChainStep>,
-        task_id: &str,
-        goal: &str,
-        criteria: Option<&str>,
-        task_context: Option<&str>,
-    ) -> Vec<ChainStep> {
-        if criteria.is_none() {
-            return steps;
-        }
-        if task_context.is_some_and(|c| c.contains("ADVERSARIAL ABORT")) {
-            return steps;
-        }
-
-        // Build a compact plan description from step descriptions for the LLM prompt.
-        let plan_description = steps
-            .iter()
-            .filter_map(|s| s.description.as_deref().or(Some(s.tool_name.as_str())))
-            .collect::<Vec<_>>()
-            .join(" → ");
-
-        steps.insert(
-            0,
-            ChainStep {
-                tool_name: "adversarial_plan_review".to_string(),
-                arguments: Some(json!({
-                    "goal": goal,
-                    "proposed_plan": plan_description,
-                    "n_hypotheses": 3,
-                    "task_id": task_id
-                })),
-                priority: Some(1),
-                max_attempts: Some(2),
-                provider_hint: Some("local".to_string()),
-                description: Some(
-                    "Adversarial pre-flight: stress-test plan before execution".to_string(),
-                ),
-                is_adversarial: true,
-                min_robustness: Some(2.5),
-                adversarial_task_id: Some(task_id.to_string()),
-                ..Default::default()
-            },
-        );
-        steps
-    }
-
     // =========================================================================
     // Guardrail Protocol
     // =========================================================================
@@ -1554,45 +1493,5 @@ mod count_tool_failures_tests {
         assert_eq!(failures.get("search_web"), Some(&2));
         assert_eq!(failures.get("ingest_media"), Some(&1));
         assert_eq!(failures.len(), 2);
-    }
-}
-
-#[cfg(test)]
-mod adversarial_prepend_tests {
-    use super::*;
-
-    fn step(tool: &str) -> ChainStep {
-        ChainStep {
-            tool_name: tool.into(),
-            ..Default::default()
-        }
-    }
-
-    /// The review is told which task it judges, so its note can be linked to
-    /// that task (`REFLECTS_ON`) — the schema has always promised the link.
-    #[test]
-    fn the_prepended_review_names_its_task() {
-        let steps = SchedulerService::maybe_prepend_adversarial(
-            vec![step("search_web")],
-            "task-123",
-            "learn about X",
-            Some("a cited summary exists"),
-            None,
-        );
-        assert_eq!(steps[0].tool_name, "adversarial_plan_review");
-        assert_eq!(steps[0].arguments.as_ref().unwrap()["task_id"], "task-123");
-        assert_eq!(steps[0].adversarial_task_id.as_deref(), Some("task-123"));
-    }
-
-    #[test]
-    fn no_success_criteria_means_no_review() {
-        let steps = SchedulerService::maybe_prepend_adversarial(
-            vec![step("search_web")],
-            "task-123",
-            "learn about X",
-            None,
-            None,
-        );
-        assert_eq!(steps.len(), 1);
     }
 }

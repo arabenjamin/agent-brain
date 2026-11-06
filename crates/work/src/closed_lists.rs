@@ -48,6 +48,11 @@ fn core_lists() -> Vec<ClosedList> {
             &agent_brain_llm::routing::DataClass::names(),
         ),
         list(
+            "workflow-checks",
+            "The checks a workflow may opt into (checks).",
+            crate::workflow_seeder::CHECKS,
+        ),
+        list(
             "workflow-kinds",
             "A :Workflow's kind (blank or null for none).",
             WORKFLOW_KINDS,
@@ -97,6 +102,11 @@ fn hand_schemas_hold_the_whole_lists() {
             "plugins/core/schemas/workflow.json",
             "/properties/kind/enum",
             agent_brain_repository::WORKFLOW_KINDS,
+        ),
+        (
+            "plugins/core/schemas/workflow.json",
+            "/properties/checks/items/enum",
+            crate::workflow_seeder::CHECKS,
         ),
         (
             "plugins/core/schemas/workflow.json",

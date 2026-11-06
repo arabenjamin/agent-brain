@@ -15,8 +15,10 @@ use agent_brain_repository::{
     Neo4jClient, RevisionKind, WorkflowDef, WorkflowInput, YamlSyncOutcome,
 };
 
-/// The checks a workflow may opt into.
-pub const CHECKS: &[&str] = &["evaluator", "critic"];
+/// The checks a workflow may opt into: the `workflow-checks` closed list.
+/// `critic` (an adversarial review before the run) was removed 2026-11-06,
+/// unused (CODEBASE_SPLIT_PLAN Phase 3).
+pub const CHECKS: &[&str] = &["evaluator"];
 
 /// One `workflows/*.yaml` file. Unknown keys are refused, so a leftover
 /// chain or schedule field (`pattern`, `interval_seconds`) fails loudly.
@@ -445,7 +447,8 @@ mod tests {
 
     #[test]
     fn unknown_checks_are_refused() {
-        assert!(check_checks(&["evaluator".into(), "critic".into()]).is_ok());
+        assert!(check_checks(&["evaluator".into()]).is_ok());
+        assert!(check_checks(&["critic".into()]).is_err());
         assert!(check_checks(&["adversarial".into()]).is_err());
     }
 }
