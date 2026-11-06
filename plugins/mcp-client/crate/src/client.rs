@@ -3,7 +3,7 @@
 //! egress; never the sandbox. JSON-RPC over HTTP with a best-effort session
 //! handshake, handling both plain-JSON and SSE-framed response bodies.
 //!
-//! See `project-docs/MCP_CLIENT_PLAN.md`.
+//! Design: dev notes under `MCP_CLIENT_PLAN` (`scripts/dev_docs.sh`).
 
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -118,10 +118,12 @@ impl McpClient {
             // goes in HTTP_ALLOW_INTERNAL.
             // A server's key rides on every call, so a redirect never leaves
             // the server's host (`guard_pinned`).
-            http: agent_brain_protocol::net_policy::guard_pinned(reqwest::Client::builder())
-                .user_agent(concat!("agent-brain/", env!("CARGO_PKG_VERSION")))
-                .build()
-                .unwrap_or_default(),
+            http: agent_brain_plugin_api::protocol::net_policy::guard_pinned(
+                reqwest::Client::builder(),
+            )
+            .user_agent(concat!("agent-brain/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_default(),
             timeout: Duration::from_secs(30),
         }
     }
@@ -134,8 +136,9 @@ impl McpClient {
         cfg: &McpServerConfig,
     ) -> Result<reqwest::RequestBuilder, String> {
         if let Some(env_var) = cfg.auth_env_var.as_deref().filter(|n| !n.trim().is_empty())
-            && let Some(secret) = agent_brain_protocol::secrets::resolve(env_var, &cfg.url)
-                .map_err(|why| format!("{}: not requested: {why}", cfg.name))?
+            && let Some(secret) =
+                agent_brain_plugin_api::protocol::secrets::resolve(env_var, &cfg.url)
+                    .map_err(|why| format!("{}: not requested: {why}", cfg.name))?
         {
             match cfg.auth_scheme.as_str() {
                 "bearer" => {
@@ -176,13 +179,12 @@ impl McpClient {
         }
         req = self.with_auth(req, cfg)?;
 
-        let resp =
-            req.send().await.map_err(|e| {
-                match agent_brain_protocol::net_policy::refusal_in(&e) {
-                    Some(why) => format!("{}: not requested: {why}", cfg.name),
-                    None => format!("{}: request failed: {e}", cfg.name),
-                }
-            })?;
+        let resp = req.send().await.map_err(|e| {
+            match agent_brain_plugin_api::protocol::net_policy::refusal_in(&e) {
+                Some(why) => format!("{}: not requested: {why}", cfg.name),
+                None => format!("{}: request failed: {e}", cfg.name),
+            }
+        })?;
         let status = resp.status();
         let sid = resp
             .headers()

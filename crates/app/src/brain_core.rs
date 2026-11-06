@@ -31,9 +31,8 @@ use crate::services::{
 };
 use crate::skills::{
     Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, http::HttpSkill,
-    knowledge::KnowledgeSkill, mcp_client::McpClientSkill, model::ModelSkill, query::QuerySkill,
-    scheduler::SchedulerSkill, search::SearchSkill, task::TaskSkill,
-    working_memory::WorkingMemorySkill,
+    knowledge::KnowledgeSkill, model::ModelSkill, query::QuerySkill, scheduler::SchedulerSkill,
+    search::SearchSkill, task::TaskSkill, working_memory::WorkingMemorySkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -576,11 +575,6 @@ impl BrainCore {
             self.storage.neo4j.clone(),
             Some(Arc::clone(&llm)),
         )));
-        // Tools on external MCP servers (:McpServer nodes).
-        skills.push(Arc::new(
-            McpClientSkill::new(self.storage.neo4j.clone())
-                .with_telemetry(self.storage.telemetry.clone()),
-        ));
         skills.push(Arc::new(ModelSkill));
 
         if let Some(neo4j) = &self.storage.neo4j {

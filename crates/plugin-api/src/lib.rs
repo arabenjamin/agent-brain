@@ -408,6 +408,23 @@ pub trait Telemetry: Send + Sync {
     fn log_external_call(&self, _call: &ExternalCall) {}
 }
 
+/// The host's argument check, for a tool whose input schema a plugin learns
+/// only at call time (a remote MCP server's tool). Same checker, mode
+/// (`TOOL_ARG_CHECK`) and `arg_checks` record as the check every local tool
+/// call passes at dispatch.
+pub trait ArgCheck: Send + Sync {
+    /// False when checking is off, so a plugin need not fetch a schema.
+    fn active(&self) -> bool;
+
+    /// What is wrong with `args` for `tool` given its `schema`, worded as
+    /// the dispatch check words it. Empty when they fit.
+    fn problems(&self, tool: &str, schema: &Value, args: &Value) -> Vec<String>;
+
+    /// Record a misfit under `label`; true when the call must be refused
+    /// (enforce mode), false when it runs anyway (shadow).
+    fn record(&self, label: &str, problems: &[String], args: &Value) -> bool;
+}
+
 /// Every loaded bundle's files of one seed kind: `(plugin, path)`, core first.
 pub type FilesFn = Arc<dyn Fn(&str) -> Vec<(String, PathBuf)> + Send + Sync>;
 
@@ -428,6 +445,7 @@ pub struct PluginContext {
     pub introspection: Option<Arc<dyn Introspection>>,
     pub search: Option<Arc<dyn Search>>,
     pub reader: Option<Arc<dyn Reader>>,
+    pub arg_check: Option<Arc<dyn ArgCheck>>,
     files: Option<FilesFn>,
     root: Option<PathBuf>,
     background: bool,
@@ -452,6 +470,7 @@ impl PluginContext {
             introspection: None,
             search: None,
             reader: None,
+            arg_check: None,
             files: None,
             root: None,
             background: false,

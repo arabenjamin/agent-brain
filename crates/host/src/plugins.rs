@@ -53,6 +53,8 @@ pub fn compiled() -> Vec<Arc<dyn Plugin>> {
     plugins.push(Arc::new(agent_brain_plugin_websocket::Websocket));
     #[cfg(feature = "plugin-maps")]
     plugins.push(Arc::new(agent_brain_plugin_maps::Maps));
+    #[cfg(feature = "plugin-mcp-client")]
+    plugins.push(Arc::new(agent_brain_plugin_mcp_client::McpClient));
     plugins
 }
 
@@ -709,17 +711,24 @@ mod tests {
         // A kind a compiled plugin owns (`sources-media`, `layers`) ships in
         // that plugin's bundle, not the core's. `sources-media/` left the core
         // with the media plugin (a97fe5f); the empty dir git left behind on
-        // disk hid that, and a fresh checkout (CI) failed here.
+        // disk hid that, and a fresh checkout (CI) failed here. So a merged
+        // kind must have files in some shipped bundle (`mcp-servers/` left
+        // the core with the mcp-client plugin), and a core-only kind in the
+        // core's.
         let owned: Vec<&str> = compiled()
             .iter()
             .flat_map(|p| p.seed_kinds().to_vec())
             .collect();
-        for k in MERGED_KINDS
-            .iter()
-            .chain(CORE_ONLY_KINDS)
-            .filter(|k| !owned.contains(k))
-        {
-            assert!(p.core_dir(k).is_dir(), "core bundle lacks {k}/");
+        let has_files = |d: &Path| std::fs::read_dir(d).is_ok_and(|mut e| e.next().is_some());
+        for k in MERGED_KINDS.iter().filter(|k| !owned.contains(k)) {
+            let shipped = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .any(|b| has_files(&b.path().join(k)));
+            assert!(shipped, "no shipped bundle has {k}/");
+        }
+        for k in CORE_ONLY_KINDS {
+            assert!(has_files(&p.core_dir(k)), "core bundle lacks {k}/");
         }
         assert!(p.files("workflows", "yaml").len() >= 15);
     }

@@ -105,7 +105,7 @@ services:
       - KNOWLEDGE_SNAPSHOT_DIR=/home/agent/snapshots
       - CODEBASE_DIR=/home/agent/agent-brain
       - PLUGINS_DIR=/home/agent/agent-brain/plugins
-      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,research,websocket,github,maps,harness}
+      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,research,websocket,github,maps,harness,mcp-client}
       - PLUGINS_EXTRA_DIRS=/home/agent/plugins-private
       - PLUGINS_RUNTIME_DIR=/home/agent/agent-brain/plugins-runtime
       - YT_DLP_PATH=/usr/local/bin/yt-dlp

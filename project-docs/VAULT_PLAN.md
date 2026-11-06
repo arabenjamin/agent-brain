@@ -39,7 +39,7 @@ Resolution points (each reads the process environment):
 | Where | Reads | When |
 |---|---|---|
 | `retrieve/src/http.rs` | `ApiContext.auth_env_var` | each `http_request` / `ingest_api` call |
-| `work/src/mcp_client.rs` | `McpServer.auth_env_var` | each MCP call |
+| `plugins/mcp-client/crate/src/client.rs` | `McpServer.auth_env_var` | each MCP call |
 | `retrieve/src/search_engines.rs` | an engine's key name | each search |
 | `retrieve/src/page_readers.rs` | a reader's key name | each page read |
 | `llm/src/provider_registry.rs` | `api_key_env` | building an `LlmConfig` (startup and per route) |

@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use agent_brain_plugin_api::{
-    Activity, Entities, Feed, FeedItem, Graph, Introspection, Knowledge, Llm, Map, PluginContext,
-    Provenance, Search, Telemetry, Value, Workflows, async_trait,
+    Activity, ArgCheck, Entities, Feed, FeedItem, Graph, Introspection, Knowledge, Llm, Map,
+    PluginContext, Provenance, Search, Telemetry, Value, Workflows, async_trait,
 };
 
 use agent_brain_knowledge::KnowledgeStore;
@@ -77,6 +77,7 @@ impl Host {
             .telemetry
             .clone()
             .map(|t| Arc::new(HostTelemetry(t)) as Arc<dyn Telemetry>);
+        ctx.arg_check = Some(Arc::new(HostArgCheck(self.telemetry.clone())));
         ctx.reader = Some(Arc::new(HostReader(
             agent_brain_retrieve::read::ReadSkill::new(self.telemetry.clone()),
         )));
@@ -386,6 +387,31 @@ impl Telemetry for HostTelemetry {
     }
 }
 
+/// The dispatch check's checker, mode and record, for a schema a plugin
+/// learns at call time.
+struct HostArgCheck(Option<TelemetryClient>);
+
+impl ArgCheck for HostArgCheck {
+    fn active(&self) -> bool {
+        agent_brain_work::validation::ArgCheckMode::from_env()
+            != agent_brain_work::validation::ArgCheckMode::Off
+    }
+
+    fn problems(&self, tool: &str, schema: &Value, args: &Value) -> Vec<String> {
+        agent_brain_work::validation::check_tool_arguments(tool, schema, Some(args))
+    }
+
+    fn record(&self, label: &str, problems: &[String], args: &Value) -> bool {
+        agent_brain_work::tools::record_arg_misfit(
+            self.0.as_ref(),
+            agent_brain_work::validation::ArgCheckMode::from_env(),
+            label,
+            problems,
+            &args.to_string(),
+        )
+    }
+}
+
 struct HostEntities(Neo4jClient);
 
 #[async_trait]
@@ -470,5 +496,45 @@ impl Introspection for HostIntrospection {
 
     fn workspace_dir(&self) -> Option<std::path::PathBuf> {
         self.workspace_dir.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "remote": {"type": "boolean"}},
+            "required": ["query"]
+        })
+    }
+
+    /// A plugin's check words a misfit as the dispatch check does.
+    #[test]
+    fn arg_check_names_the_argument_meant() {
+        let p = HostArgCheck(None)
+            .problems(
+                "aidevboard/search_jobs",
+                &schema(),
+                &json!({"querry": "rust"}),
+            )
+            .join("; ");
+        assert!(
+            p.contains("`querry` is not an argument of aidevboard/search_jobs"),
+            "{p}"
+        );
+        assert!(p.contains("did you mean `query`"), "{p}");
+    }
+
+    #[test]
+    fn arg_check_catches_a_wrong_type_and_passes_a_fit() {
+        let c = HostArgCheck(None);
+        let wrong = json!({"query": "rust", "remote": "yes"});
+        assert!(!c.problems("s/t", &schema(), &wrong).is_empty());
+        let fits = json!({"query": "rust", "remote": true});
+        assert!(c.problems("s/t", &schema(), &fits).is_empty());
     }
 }

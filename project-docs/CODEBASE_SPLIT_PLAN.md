@@ -561,7 +561,7 @@ removed (4.9K measured: core 787,284 → 782,378), recorded in `plugins/core/arc
 |---|---|---|---|---|
 | **HBI backend**: the `api` crate plus its route table in `app/mcp/http_transport.rs` | ~74.5K | only `app` depends on it; it calls deep into `work` and `scheduler` | the HBI only | **make it optional** (an `hbi` feature, its routes moved into the `api` crate), so core builds and runs without it, the way it does without plugins. It isn't a plugin (it needs more than `plugin-api`), but nothing in core needs it. Measured apart from core |
 | **APIs**: `ingest_api`, `define_api_context`, `list_apis`, `list_endpoints` (`retrieve/http/ingest.rs`, `api_context.rs`, part of `query.rs`) | ~18K | only `retrieve/http.rs`; `http_request` stays core and reads `(:ApiContext)` from the graph | api-integrator, `brain-api-sync`; 96 calls | **move** to an `apis` plugin |
-| **MCP client**: `mcp_call`, `mcp_list_tools`, the `:McpServer` seeding (`retrieve/mcp_client.rs`, `work/mcp_client.rs`) | ~6.5K | `brain_core`, `retrieve` | `ai-dev-board-job-search`, job-applicant; 183 calls | **move** to an `mcp-client` plugin |
+| **MCP client**: `mcp_call`, `mcp_list_tools`, the `:McpServer` seeding (`retrieve/mcp_client.rs`, `work/mcp_client.rs`; moved 2026-11-06) | ~6.5K | `brain_core`, `retrieve` | `ai-dev-board-job-search`, job-applicant; 183 calls | **move** to an `mcp-client` plugin |
 | **Programs** (`work/programs.rs`, `skills/program.rs`, `api/programs.rs`) | ~21.7K | ten files in five crates (revisions, workflows, scheduler items, plugin manager); pausing a program pauses workflows | `program-review`; 179 calls | **keep for now**: moving it first needs host capabilities the plugin API doesn't have (pause a workflow, revisions), which would grow every plugin's contract |
 
 **C. Core's big modules, kept** (core = retrieve, store, reason): knowledge
@@ -590,8 +590,17 @@ Built:
   `agent: "auto"` still selects), `recent_tasks` (the `lookup` view
   `tasks_recent` replaces it). `checks` is now the closed list
   `workflow-checks`, so a workflow naming `critic` fails validation. Core 787,284 → 782,378 tokens.
-- Next: the `mcp-client` plugin, the `apis` plugin, the `hbi` feature,
-  then the lower budget.
+- **The `mcp-client` plugin** (2026-11-06): `mcp_list_tools`, `mcp_call`,
+  the client and the `mcp-servers/` seeds, out of `retrieve` and `work`
+  into `plugins/mcp-client` (stamped from the template). The one thing the
+  plugin API lacked was the argument check `mcp_call` runs on a remote
+  tool's schema: `ArgCheck` (`ctx.arg_check`), the host's checker, mode and
+  `arg_checks` record (`tools::record_arg_misfit`, shared with the
+  dispatch check). The host still seeds `:McpServer` from any bundle's
+  `mcp-servers/`. Core profiles that name `mcp_call` (researcher,
+  deep-diver) lose it when the plugin is off, as with `deep_research`.
+  On by default. Core 782,378 → 775,914; the plugin is 6.5K own, 32K reach.
+- Next: the `apis` plugin, the `hbi` feature, then the lower budget.
 
 ### Phase 4: one process boundary, piloted and measured
 

@@ -1,9 +1,7 @@
 // The skills live in `agent-brain-retrieve` and `agent-brain-skills`
 // (CORE_AND_PLUGINS_PLAN 6f) and keep their `skills::` paths here. The plugin
 // tools are in `agent-brain-host` with the plugin machinery.
-pub use agent_brain_retrieve::{
-    http, mcp_client, query, search, search_engines, search_query, serde_flex,
-};
+pub use agent_brain_retrieve::{http, query, search, search_engines, search_query, serde_flex};
 pub use agent_brain_skills::{
     agent, agent_runner, knowledge, model, program, scheduler, task, todo, working_memory,
 };

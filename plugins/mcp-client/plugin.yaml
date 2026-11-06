@@ -1,0 +1,6 @@
+# Call tools on external MCP servers: mcp_list_tools lists the registered servers or one server's tools, and mcp_call runs one. Servers are :McpServer nodes seeded from mcp-servers/*.yaml (Exa, Tavily); auth secrets stay in env vars.
+# Stamped from templates/plugin (scripts/plugin_template.sh); .cruft.json
+# records the template commit it is current with.
+name: mcp-client
+version: 1
+description: "Call tools on external MCP servers: mcp_list_tools lists the registered servers or one server's tools, and mcp_call runs one. Servers are :McpServer nodes seeded from mcp-servers/*.yaml (Exa, Tavily); auth secrets stay in env vars."

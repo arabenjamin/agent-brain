@@ -777,18 +777,18 @@
     },
     {
       "name": "McpClientSkill::check_remote_arguments",
-      "file": "crates/retrieve/src/mcp_client.rs",
-      "line": 84
+      "file": "plugins/mcp-client/crate/src/skill.rs",
+      "line": 77
     },
     {
       "name": "McpClientSkill::handle_call",
-      "file": "crates/retrieve/src/mcp_client.rs",
-      "line": 295
+      "file": "plugins/mcp-client/crate/src/skill.rs",
+      "line": 236
     },
     {
       "name": "remote_problems",
-      "file": "crates/retrieve/src/mcp_client.rs",
-      "line": 354
+      "file": "plugins/mcp-client/crate/src/skill.rs",
+      "line": 300
     },
     {
       "name": "read",

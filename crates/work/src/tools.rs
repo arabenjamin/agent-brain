@@ -244,27 +244,8 @@ impl ToolHandler {
         if problems.is_empty() {
             return None;
         }
-        let refused = mode == crate::validation::ArgCheckMode::Enforce;
-        let purpose = agent_brain_llm::routing::RouteContext::current().purpose;
-        tracing::warn!(
-            tool = %name,
-            purpose = purpose.as_str(),
-            mode = mode.as_str(),
-            problems = %problems.join("; "),
-            "tool arguments do not fit the schema"
-        );
-        if let Some(tel) = &self.telemetry {
-            let args = arguments.map(Value::to_string).unwrap_or_default();
-            let _ = tel.log_arg_check(
-                name,
-                purpose.as_str(),
-                mode.as_str(),
-                refused,
-                &problems,
-                &args,
-                agent_brain_llm::ctx::current_agent().as_deref(),
-            );
-        }
+        let args = arguments.map(Value::to_string).unwrap_or_default();
+        let refused = record_arg_misfit(self.telemetry.as_ref(), mode, name, &problems, &args);
         refused.then(|| {
             ToolCallResult::error(format!(
                 "Arguments rejected; {name} did not run. {}",
@@ -272,6 +253,40 @@ impl ToolHandler {
             ))
         })
     }
+}
+
+/// Log and record (`arg_checks`) a call whose arguments do not fit its
+/// tool's schema, under `label`; true when `mode` refuses it. The dispatch
+/// check and a plugin's own check (`plugin_api::ArgCheck`, for a remote
+/// MCP tool) both record through here.
+pub fn record_arg_misfit(
+    telemetry: Option<&TelemetryClient>,
+    mode: crate::validation::ArgCheckMode,
+    label: &str,
+    problems: &[String],
+    args: &str,
+) -> bool {
+    let refused = mode == crate::validation::ArgCheckMode::Enforce;
+    let purpose = agent_brain_llm::routing::RouteContext::current().purpose;
+    tracing::warn!(
+        tool = %label,
+        purpose = purpose.as_str(),
+        mode = mode.as_str(),
+        problems = %problems.join("; "),
+        "tool arguments do not fit the schema"
+    );
+    if let Some(tel) = telemetry {
+        let _ = tel.log_arg_check(
+            label,
+            purpose.as_str(),
+            mode.as_str(),
+            refused,
+            problems,
+            args,
+            agent_brain_llm::ctx::current_agent().as_deref(),
+        );
+    }
+    refused
 }
 
 #[async_trait]

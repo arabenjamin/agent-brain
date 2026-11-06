@@ -1,30 +1,30 @@
-//! MCP Client Skill — call tools on EXTERNAL MCP servers from the brain.
+//! The `mcp-client` plugin's tools: call tools on EXTERNAL MCP servers.
 //!
-//! Two passthrough tools make any registered server usable from chat and from
-//! chains/schedules: `mcp_list_tools` (no `server` ⇒ the registered servers) and
-//! `mcp_call`. Servers
-//! are `(:McpServer)` nodes seeded from `mcp-servers/*.yaml`; a bare `https://`
-//! URL is also accepted directly for a keyless server. Auth secrets live only in
-//! env vars (the node stores the env var NAME). Runs in the brain process, which
-//! has egress. See `project-docs/MCP_CLIENT_PLAN.md`.
+//! Two passthrough tools make any registered server usable from chat and
+//! from workflows: `mcp_list_tools` (no `server` ⇒ the registered servers)
+//! and `mcp_call`. Servers are `(:McpServer)` nodes seeded from the bundle's
+//! `mcp-servers/*.yaml`; a bare `https://` URL is also accepted directly for a
+//! keyless server. Auth secrets live only in env vars (the node stores the
+//! env var NAME). Runs in the brain process, which has egress. Each tool's
+//! input schema is the bundle's `schemas/tools/<tool>.json`.
 
-use async_trait::async_trait;
-use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use agent_brain_protocol::Skill;
-use agent_brain_protocol::tool_schema;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
-use agent_brain_repository::Neo4jClient;
-use agent_brain_work::mcp_client::{McpClient, McpServerConfig, content_text};
+use serde_json::{Value, json};
+
+use agent_brain_plugin_api::protocol::tool_schema;
+use agent_brain_plugin_api::{ArgCheck, Graph, Skill, ToolCallResult, ToolDefinition, async_trait};
+
+use crate::client::{McpClient, McpServerConfig, content_text};
 
 pub struct McpClientSkill {
-    neo4j: Option<Neo4jClient>,
+    graph: Option<Arc<dyn Graph>>,
     client: McpClient,
-    /// Where an `mcp_call` whose arguments do not fit the remote tool is
-    /// recorded (`arg_checks`), as the dispatch check records a local one.
-    telemetry: Option<agent_brain_repository::TelemetryClient>,
+    /// The host's argument check, for an `mcp_call` whose arguments do not
+    /// fit the remote tool: recorded in `arg_checks` as a local misfit is.
+    arg_check: Option<Arc<dyn ArgCheck>>,
     /// Each server's tool schemas from its `tools/list`, by server name, kept
     /// for [`SCHEMA_TTL`] so a check costs one listing per server per window.
     schemas: tokio::sync::Mutex<HashMap<String, (Instant, ToolSchemas)>>,
@@ -37,21 +37,13 @@ type ToolSchemas = HashMap<String, Value>;
 const SCHEMA_TTL: Duration = Duration::from_secs(600);
 
 impl McpClientSkill {
-    pub fn new(neo4j: Option<Neo4jClient>) -> Self {
+    pub fn new(graph: Option<Arc<dyn Graph>>, arg_check: Option<Arc<dyn ArgCheck>>) -> Self {
         Self {
-            neo4j,
+            graph,
             client: McpClient::new(),
-            telemetry: None,
+            arg_check,
             schemas: tokio::sync::Mutex::new(HashMap::new()),
         }
-    }
-
-    pub fn with_telemetry(
-        mut self,
-        telemetry: Option<agent_brain_repository::TelemetryClient>,
-    ) -> Self {
-        self.telemetry = telemetry;
-        self
     }
 
     /// The server's tools and their input schemas, from cache or a fresh
@@ -79,46 +71,23 @@ impl McpClientSkill {
 
     /// Validation Phase 4: an `mcp_call`'s `arguments` against the remote
     /// tool's own `inputSchema` (the dispatch check sees only mcp_call's
-    /// envelope). Same checker and mode (`TOOL_ARG_CHECK`) as a local tool;
-    /// a misfit is recorded as `mcp_call:<server>/<tool>`. Returns the
-    /// refusal in `enforce` mode.
+    /// envelope). The host's checker and mode (`TOOL_ARG_CHECK`); a misfit
+    /// is recorded as `mcp_call:<server>/<tool>`. Returns the refusal in
+    /// `enforce` mode.
     async fn check_remote_arguments(
         &self,
         cfg: &McpServerConfig,
         tool: &str,
         arguments: &Value,
     ) -> Option<ToolCallResult> {
-        use agent_brain_work::validation::ArgCheckMode;
-        let mode = ArgCheckMode::from_env();
-        if mode == ArgCheckMode::Off {
-            return None;
-        }
+        let check = self.arg_check.as_ref().filter(|c| c.active())?;
         let schemas = self.remote_schemas(cfg).await?;
         let label = format!("{}/{tool}", cfg.name);
-        let problems = remote_problems(&schemas, &cfg.name, tool, arguments);
+        let problems = remote_problems(check.as_ref(), &schemas, &cfg.name, tool, arguments);
         if problems.is_empty() {
             return None;
         }
-        let refused = mode == ArgCheckMode::Enforce;
-        let purpose = agent_brain_llm::routing::RouteContext::current().purpose;
-        tracing::warn!(
-            tool = %label,
-            purpose = purpose.as_str(),
-            mode = mode.as_str(),
-            problems = %problems.join("; "),
-            "mcp_call arguments do not fit the remote tool's schema"
-        );
-        if let Some(tel) = &self.telemetry {
-            let _ = tel.log_arg_check(
-                &format!("mcp_call:{label}"),
-                purpose.as_str(),
-                mode.as_str(),
-                refused,
-                &problems,
-                &arguments.to_string(),
-                agent_brain_llm::ctx::current_agent().as_deref(),
-            );
-        }
+        let refused = check.record(&format!("mcp_call:{label}"), &problems, arguments);
         refused.then(|| {
             ToolCallResult::error(format!(
                 "Arguments rejected; {label} was not called. {}",
@@ -131,46 +100,41 @@ impl McpClientSkill {
     /// `:McpServer` by name, or a bare `https://`/`http://` URL used directly
     /// (keyless). A disabled server is refused.
     async fn resolve_server(&self, server: &str) -> Result<McpServerConfig, String> {
-        if let Some(ref neo4j) = self.neo4j {
-            let rows = neo4j
-                .execute(
-                    neo4rs::query(
-                        "MATCH (m:McpServer {name: $name}) \
-                         RETURN m.url AS url, m.auth_scheme AS auth_scheme, \
-                                m.auth_param AS auth_param, m.auth_env_var AS auth_env_var, \
-                                m.enabled AS enabled",
-                    )
-                    .param("name", server),
+        if let Some(graph) = &self.graph {
+            let rows = graph
+                .query(
+                    "MATCH (m:McpServer {name: $name}) \
+                     RETURN m.url AS url, m.auth_scheme AS auth_scheme, \
+                            m.auth_param AS auth_param, m.auth_env_var AS auth_env_var, \
+                            m.enabled AS enabled",
+                    json!({ "name": server }),
                 )
                 .await
                 .map_err(|e| format!("failed to read McpServer '{server}': {e}"))?;
 
             if let Some(row) = rows.first() {
-                let enabled: bool = row.get("enabled").unwrap_or(true);
-                if !enabled {
+                if !row["enabled"].as_bool().unwrap_or(true) {
                     return Err(format!(
                         "MCP server '{server}' is disabled. Enable it with a Cypher SET before use."
                     ));
                 }
-                let url: String = row.get("url").unwrap_or_default();
+                let url = text(row, "url").unwrap_or_default();
                 if url.is_empty() {
                     return Err(format!("MCP server '{server}' has no url."));
                 }
                 return Ok(McpServerConfig {
                     name: server.to_string(),
                     url,
-                    auth_scheme: row
-                        .get::<String>("auth_scheme")
-                        .unwrap_or_else(|_| "none".into()),
-                    auth_param: row.get::<String>("auth_param").ok(),
-                    auth_env_var: row.get::<String>("auth_env_var").ok(),
+                    auth_scheme: text(row, "auth_scheme").unwrap_or_else(|| "none".into()),
+                    auth_param: text(row, "auth_param"),
+                    auth_env_var: text(row, "auth_env_var"),
                 });
             }
         }
 
         // Fallback: a bare URL is a keyless server addressed directly.
         if server.starts_with("https://") || server.starts_with("http://") {
-            agent_brain_protocol::net_policy::check_url_str(server)
+            agent_brain_plugin_api::protocol::net_policy::check_url_str(server)
                 .map_err(|why| format!("Not requested: {why}"))?;
             return Ok(McpServerConfig::keyless(server));
         }
@@ -189,7 +153,7 @@ impl McpClientSkill {
                           server exposes (its tools/list), to discover tool names and argument \
                           schemas before mcp_call."
                 .to_string(),
-            input_schema: tool_schema!(core "mcp_list_tools"),
+            input_schema: tool_schema!(plugin "mcp_list_tools"),
         }
     }
 
@@ -205,19 +169,20 @@ impl McpClientSkill {
                           the remote side and require an explicit human-approved token — never \
                           claim such an action succeeded unless the result says so."
                 .to_string(),
-            input_schema: tool_schema!(core "mcp_call"),
+            input_schema: tool_schema!(plugin "mcp_call"),
         }
     }
 
     async fn handle_list_servers(&self) -> ToolCallResult {
-        let Some(ref neo4j) = self.neo4j else {
+        let Some(graph) = &self.graph else {
             return ToolCallResult::error("Neo4j not available".to_string());
         };
-        let rows = match neo4j
-            .execute(neo4rs::query(
+        let rows = match graph
+            .query(
                 "MATCH (m:McpServer) RETURN m.name AS name, m.url AS url, \
                  m.description AS description, m.enabled AS enabled ORDER BY m.name",
-            ))
+                Value::Null,
+            )
             .await
         {
             Ok(r) => r,
@@ -227,10 +192,10 @@ impl McpClientSkill {
             .iter()
             .map(|row| {
                 json!({
-                    "name": row.get::<String>("name").unwrap_or_default(),
-                    "url": row.get::<String>("url").unwrap_or_default(),
-                    "description": row.get::<String>("description").unwrap_or_default(),
-                    "enabled": row.get::<bool>("enabled").unwrap_or(true),
+                    "name": text(row, "name").unwrap_or_default(),
+                    "url": text(row, "url").unwrap_or_default(),
+                    "description": text(row, "description").unwrap_or_default(),
+                    "enabled": row["enabled"].as_bool().unwrap_or(true),
                 })
             })
             .collect();
@@ -324,18 +289,23 @@ impl McpClientSkill {
     }
 }
 
+/// A row's string column; `None` when null, missing or not a string.
+fn text(row: &Value, key: &str) -> Option<String> {
+    row[key].as_str().map(str::to_string)
+}
+
 /// What is wrong with calling `tool` on `server` with `arguments`, given the
 /// server's listed tools: an unknown tool names the ones it has, a known one
 /// is checked against its `inputSchema`.
 fn remote_problems(
+    check: &dyn ArgCheck,
     schemas: &ToolSchemas,
     server: &str,
     tool: &str,
     arguments: &Value,
 ) -> Vec<String> {
-    use agent_brain_work::validation::check_tool_arguments;
     if let Some(schema) = schemas.get(tool) {
-        check_tool_arguments(&format!("{server}/{tool}"), schema, Some(arguments))
+        check.problems(&format!("{server}/{tool}"), schema, arguments)
     } else {
         let mut names: Vec<&str> = schemas.keys().map(String::as_str).collect();
         names.sort();
@@ -369,6 +339,44 @@ impl Skill for McpClientSkill {
 mod tests {
     use super::*;
 
+    /// The tools, in the order they are offered.
+    const TOOLS: &[&str] = &["mcp_list_tools", "mcp_call"];
+
+    #[tokio::test]
+    async fn every_tool_loads_its_schema_and_is_dispatched() {
+        let skill = McpClientSkill::new(None, None);
+        let defs = skill.tools();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, TOOLS);
+        for t in TOOLS {
+            let r = skill.execute(t, None).await;
+            assert!(r.is_some(), "{t} is offered but not dispatched");
+        }
+    }
+
+    /// Stands in for the host's checker: an argument the schema has no
+    /// property for is a problem. (The real wording is the host's, tested
+    /// with `validation::check_tool_arguments`.)
+    struct UnknownKeys;
+
+    impl ArgCheck for UnknownKeys {
+        fn active(&self) -> bool {
+            true
+        }
+        fn problems(&self, tool: &str, schema: &Value, args: &Value) -> Vec<String> {
+            let props = schema["properties"].as_object();
+            args.as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(k, _)| !props.is_some_and(|p| p.contains_key(*k)))
+                .map(|(k, _)| format!("`{k}` is not an argument of {tool}"))
+                .collect()
+        }
+        fn record(&self, _label: &str, _problems: &[String], _args: &Value) -> bool {
+            true
+        }
+    }
+
     fn schemas() -> ToolSchemas {
         let mut m = ToolSchemas::new();
         m.insert(
@@ -386,31 +394,49 @@ mod tests {
     #[test]
     fn fitting_arguments_pass() {
         let args = json!({"query": "rust", "remote": true});
-        assert!(remote_problems(&schemas(), "aidevboard", "search_jobs", &args).is_empty());
+        assert!(
+            remote_problems(&UnknownKeys, &schemas(), "aidevboard", "search_jobs", &args)
+                .is_empty()
+        );
     }
 
     #[test]
-    fn a_misspelt_argument_names_the_right_one() {
+    fn a_known_tool_is_checked_under_its_server_label() {
         let args = json!({"querry": "rust"});
-        let p = remote_problems(&schemas(), "aidevboard", "search_jobs", &args).join("; ");
+        let p = remote_problems(&UnknownKeys, &schemas(), "aidevboard", "search_jobs", &args)
+            .join("; ");
         assert!(
             p.contains("`querry` is not an argument of aidevboard/search_jobs"),
             "{p}"
         );
-        assert!(p.contains("did you mean `query`"), "{p}");
-    }
-
-    #[test]
-    fn a_wrong_type_is_caught() {
-        let args = json!({"query": "rust", "remote": "yes"});
-        let p = remote_problems(&schemas(), "aidevboard", "search_jobs", &args);
-        assert!(!p.is_empty());
     }
 
     #[test]
     fn an_unknown_tool_lists_what_the_server_has() {
-        let p = remote_problems(&schemas(), "aidevboard", "find_jobs", &json!({})).join("; ");
+        let p = remote_problems(
+            &UnknownKeys,
+            &schemas(),
+            "aidevboard",
+            "find_jobs",
+            &json!({}),
+        )
+        .join("; ");
         assert!(p.contains("`find_jobs` is not a tool of aidevboard"), "{p}");
         assert!(p.contains("list_companies, search_jobs"), "{p}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_server_or_tool_is_an_error() {
+        let skill = McpClientSkill::new(None, None);
+        let r = skill
+            .execute("mcp_call", Some(json!({"tool": "x"})))
+            .await
+            .unwrap();
+        assert!(r.is_error.is_some());
+        let r = skill
+            .execute("mcp_call", Some(json!({"server": "nope", "tool": "x"})))
+            .await
+            .unwrap();
+        assert!(r.is_error.is_some());
     }
 }

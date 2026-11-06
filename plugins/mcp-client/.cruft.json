@@ -1,0 +1,26 @@
+{
+  "template": ".",
+  "commit": "3b5ba11e62bf1d82ea433e60be13e5b74c852eb8",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "mcp-client",
+      "description": "Call tools on external MCP servers: mcp_list_tools lists the registered servers or one server's tools, and mcp_call runs one. Servers are :McpServer nodes seeded from mcp-servers/*.yaml (Exa, Tavily); auth secrets stay in env vars.",
+      "kind": "rust",
+      "tools": "mcp_list_tools,mcp_call",
+      "graph_labels": "",
+      "needs_env": "",
+      "__struct": "McpClient",
+      "__crate": "agent-brain-plugin-mcp-client",
+      "_template": ".",
+      "_commit": "3b5ba11e62bf1d82ea433e60be13e5b74c852eb8"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "README.md",
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}

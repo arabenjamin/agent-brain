@@ -6,7 +6,6 @@
 
 pub mod api_tags;
 pub mod http;
-pub mod mcp_client;
 pub mod page_readers;
 pub mod query;
 pub mod read;
