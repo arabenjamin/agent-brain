@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 built 2026-11-06: the template, its script and its check, all 13 older plugins linked to it, and the brain's `scaffold_plugin`. Next: Phase 3.**
+built 2026-11-06. Phase 1 built 2026-11-06: tool, graph, DuckDB and seed schemas, and closed lists. Phase 2 built 2026-11-06: the template, its script and its check, all 13 older plugins linked to it, and the brain's `scaffold_plugin`. Phase 3's review list measured 2026-11-06; waiting on the owner's decisions (§ 8.7).**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -521,6 +521,65 @@ Done when: a new plugin is one command, every plugin passes
 
 Done when: core is below 700K tokens, and no core crate is over the reach
 limit, or the owner has kept it over with a reason recorded.
+
+#### The review list (measured 2026-11-06)
+
+**How it was measured.** The `interactions` table logs every tool call that
+goes through `ToolHandler::execute`, from any caller. Over 60 days
+(2026-09-07 → 11-06) that's 58K calls. A call is *queued* when its arguments
+carry an internal `__` key (a workflow step or a queued job). *Other* covers
+chat, sub-agent loops, direct MCP calls (development sessions included) and
+the brain's own code calling a tool. Sub-agent calls by tool come from
+`agent_runs` trajectories, which only go back to 2026-10-23. **All 71 live tools
+were called at least once.** § 1's "29 unused" counted only workflows and
+agents over 30 days. Sizes are own code without tests, in tokens (bytes / 4).
+Core is 787,284 tokens; the target is under 700K, so 88K has to go.
+
+**A. Low-use core tools** (≤ 50 calls in 60 days, or nothing depends on them):
+
+| Tool | Calls (queued / other) | Last | What uses it | Size | Recommendation |
+|---|---|---|---|---|---|
+| `adversarial_plan_review` | 9 (9 / 0) | 09-30 | only the opt-in `checks: [critic]`, which no workflow sets (files or graph) | ~1.5K with the critic insertion and gate | **remove**, and the `critic` check with it |
+| `manage_job` | 1 (0 / 1) | 10-17 | nothing; the HBI manages jobs over REST | ~0.8K | **remove** |
+| `dead_letter` | 48 (48 / 0) | 10-02 | a job last queued 10-02; the HBI reads dead letters over REST | ~0.7K | **remove** |
+| `select_agent` | 13 (0 / 13) | 10-14 | the front door's allowlist; `run_agent(agent: "auto")` picks the agent itself | ~0.5K | **remove** |
+| `get_llm_budget` | 4 (0 / 4) | 10-23 | knowledge-worker, self-analyst | ~0.3K | **remove**; a `lookup` view over `model_usage` if it's missed |
+| `get_search_usage` | 7 (0 / 7) | 10-22 | knowledge-worker | ~0.7K | **remove**; same |
+| `recent_tasks` | 14 (0 / 14) | 11-04 | knowledge-worker; overlaps the declared `list_tasks` | ~1K | **remove** |
+| `scheduler_control` | 22 (0 / 22) | 11-02 | `tick`, by hand (development) | ~1K | keep: the one way to tick from MCP |
+| `enqueue_jobs` | 149 (0 / 149) | 11-02 | by hand (development) | ~1K | keep: the one way to queue an ad-hoc chain |
+| `describe_graph`, `list_capabilities` | 32, 76 | 11-05 | five agents; the schema guard | | keep |
+| `reflect_on_work`, `synthesize_knowledge` | 23, 26 | 10-26 | the `default` fallback chain (a task with no workflow) | | keep with the chain |
+
+Removing the seven saves only about 5.5K. They matter for what a model is
+offered, not for the budget.
+
+**B. Moves to plugins**, through the template:
+
+| Subsystem | Size | Edge into core | Uses | Recommendation |
+|---|---|---|---|---|
+| **HBI backend**: the `api` crate plus its route table in `app/mcp/http_transport.rs` | ~74.5K | only `app` depends on it; it calls deep into `work` and `scheduler` | the HBI only | **make it optional** (an `hbi` feature, its routes moved into the `api` crate), so core builds and runs without it, the way it does without plugins. It isn't a plugin (it needs more than `plugin-api`), but nothing in core needs it. Measured apart from core |
+| **APIs**: `ingest_api`, `define_api_context`, `list_apis`, `list_endpoints` (`retrieve/http/ingest.rs`, `api_context.rs`, part of `query.rs`) | ~18K | only `retrieve/http.rs`; `http_request` stays core and reads `(:ApiContext)` from the graph | api-integrator, `brain-api-sync`; 96 calls | **move** to an `apis` plugin |
+| **MCP client**: `mcp_call`, `mcp_list_tools`, the `:McpServer` seeding (`retrieve/mcp_client.rs`, `work/mcp_client.rs`) | ~6.5K | `brain_core`, `retrieve` | `ai-dev-board-job-search`, job-applicant; 183 calls | **move** to an `mcp-client` plugin |
+| **Programs** (`work/programs.rs`, `skills/program.rs`, `api/programs.rs`) | ~21.7K | ten files in five crates (revisions, workflows, scheduler items, plugin manager); pausing a program pauses workflows | `program-review`; 179 calls | **keep for now**: moving it first needs host capabilities the plugin API doesn't have (pause a workflow, revisions), which would grow every plugin's contract |
+
+**C. Core's big modules, kept** (core = retrieve, store, reason): knowledge
+(52K), chat (51K), the MCP transport (31K), the queue (28K, about 2K less
+without the critic), the knowledge tools (16.5K), the scheduler (15.7K), the
+agent runner (15.4K), `lookup` views (15.3K), `search_web` (14.8K), the
+telemetry writer (14.3K), entity resolution (13.3K), topics (12K), the
+context builder (11.5K), the query tools (11.2K), argument validation
+(10.9K). Each is the core's own work, or used by most of it.
+
+**What it adds up to.** A (5.5K) + B's three moves (99K) takes core to about
+683K, under 700K. Without the HBI backend change it's about 757K, and 700K
+isn't reachable without moving core's own work. **Reach:** every core crate
+but `repository`, `protocol`, `models`, `engine` and `decision` is over 100K
+by construction, since a layer depends on the layers below it. Recommended:
+keep them over, with that as the recorded reason; the per-plugin contract
+(25K) is the one that has to stay small.
+
+**Owner's decisions (§ 8.7):** pending.
 
 ### Phase 4: one process boundary, piloted and measured
 
