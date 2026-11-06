@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use agent_brain_plugin_api::{Plugin, PluginContext, Skill, async_trait, graph::query};
+use agent_brain_plugin_api::{Plugin, PluginContext, Skill, async_trait};
 
 mod geocode;
 pub mod layers;
@@ -46,9 +46,12 @@ impl Plugin for Maps {
 
     async fn start(&self, ctx: &PluginContext) -> anyhow::Result<()> {
         if let Some(g) = &ctx.graph {
-            g.run(query(
-                "CREATE CONSTRAINT place_key IF NOT EXISTS FOR (p:Place) REQUIRE p.key IS UNIQUE",
-            ))
+            // Places' and watch areas' constraints: schemas/graph/schema.cypher,
+            // before the areas are seeded below.
+            agent_brain_plugin_api::graph::apply_schema(
+                g.as_ref(),
+                agent_brain_plugin_api::protocol::graph_schema!(plugin),
+            )
             .await?;
         }
         for bad in routes::load_all(ctx).1 {

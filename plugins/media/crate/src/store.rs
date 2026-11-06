@@ -15,16 +15,6 @@ use anyhow::Result;
 use chrono::Utc;
 use serde_json::json;
 
-/// Constraints and indexes the pack needs (run by `Plugin::start`).
-pub const SCHEMA: &[&str] = &[
-    "CREATE CONSTRAINT media_source_name IF NOT EXISTS FOR (m:MediaSource) REQUIRE m.name IS UNIQUE",
-    "CREATE CONSTRAINT media_id IF NOT EXISTS FOR (m:Media) REQUIRE m.id IS UNIQUE",
-    // poll_media_sources scans active watchlist entries every tick.
-    "CREATE INDEX media_source_active IF NOT EXISTS FOR (m:MediaSource) ON (m.active)",
-    "CREATE INDEX media_channel_idx IF NOT EXISTS FOR (m:Media) ON (m.channel_id)",
-    "CREATE INDEX media_ingested_idx IF NOT EXISTS FOR (m:Media) ON (m.ingested_at)",
-];
-
 /// A row in the `:Media` dedup/provenance ledger.
 #[derive(Debug, Clone)]
 pub struct MediaRecord {

@@ -112,6 +112,17 @@ pub trait Graph: Send + Sync {
 /// changes little: `query("…").param("k", v)`, `graph.execute(q)`,
 /// `row.get::<String>("k")`.
 pub mod graph {
+    /// Apply a bundle's schema file (`graph_schema!(plugin)`): each statement
+    /// in order, through the plugin's graph. Every statement is `IF NOT
+    /// EXISTS`, so running it on every start is safe. Returns how many ran.
+    pub async fn apply_schema(g: &dyn super::Graph, src: &str) -> anyhow::Result<usize> {
+        let stmts = super::protocol::graph_schema::statements(src);
+        for s in &stmts {
+            g.query(s, serde_json::json!({})).await?;
+        }
+        Ok(stmts.len())
+    }
+
     use serde::Serialize;
     use serde::de::DeserializeOwned;
     use serde_json::{Map, Value};

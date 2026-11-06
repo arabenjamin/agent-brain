@@ -97,19 +97,14 @@ impl Ledger {
         Self { graph }
     }
 
+    /// The runs' constraint and index: schemas/graph/schema.cypher.
     pub async fn ensure_schema(&self) -> Result<()> {
-        self.graph
-            .run(query(
-                "CREATE CONSTRAINT research_run_id IF NOT EXISTS \
-                 FOR (r:ResearchRun) REQUIRE r.run_id IS UNIQUE",
-            ))
-            .await?;
-        self.graph
-            .run(query(
-                "CREATE INDEX research_run_created IF NOT EXISTS \
-                 FOR (r:ResearchRun) ON (r.created_at)",
-            ))
-            .await
+        agent_brain_plugin_api::graph::apply_schema(
+            self.graph.as_ref(),
+            agent_brain_plugin_api::protocol::graph_schema!(plugin),
+        )
+        .await?;
+        Ok(())
     }
 
     /// This month's runs, newest first.

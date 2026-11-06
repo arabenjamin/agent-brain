@@ -2,7 +2,7 @@
 
 **Status: planned 2026-11-05 from todo 9e1a512f. § 8 decided by the owner
 the same day (the recommendations, 1–6; 7 waits on Phase 3's list). Phase 0
-built 2026-11-06. Phase 1 under way: tool schemas moved and checked 2026-11-06; graph, telemetry, seeds and lists next.**
+built 2026-11-06. Phase 1 under way: tool and graph schemas moved and checked 2026-11-06; telemetry, seeds and lists next.**
 
 The owner's goal (2026-11-05): keep the code small enough that an LLM can pull
 what it needs into context. The repo only grows, so break it up. Alongside:
@@ -209,6 +209,29 @@ already loaded and checked; it just holds two files today. Inside it:
      `skills` dropped under the own-code limit (62K to 52K). The text now
      counts as core data, so core's total barely moves; what an agent changing
      the handler must read shrinks.
+   - ✅ **Graph, built 2026-11-06.** The 47 Neo4j constraints and indexes
+     (the inventory first said 48, but one was a DuckDB index) moved from Rust
+     strings in 8 files to `schemas/graph/schema.cypher` in 5 bundles (core 33,
+     developer 5, media 5, maps 2, research 2), with their comments.
+     `graph_schema!(core)` / `graph_schema!(plugin)` reads the file at compile
+     time (`crates/protocol/src/graph_schema.rs`). Core's
+     `Neo4jClient::init_schema` and each plugin's `start` apply it, the plugins
+     through one helper, `plugin_api::graph::apply_schema`, where there were
+     four styles before. Proven equal: every bundle's parsed statements matched
+     the old Rust strings in order (47 of 47). `repository` gains a dependency
+     on `protocol` for the reader (its reach goes from 52K to 60K, still under
+     the limit). Compared with the live graph:
+     - six file indexes live under auto-generated names (an equivalent
+       already existed), so nothing is missing;
+     - `task_created` was live and documented but in no code. It's added, so
+       a fresh install gets it (48 statements now);
+     - **the original fork's retired labels** still hold 7 constraints, 7
+       indexes and 185 nodes (`Parameter` 117, `Schema` 66) that no code
+       touches. Removing them is the owner's call (§ 8.8).
+
+     `schema.md`'s constraint and index tables had drifted (a documented
+     index no code created, a dozen real ones missing). They're replaced by a
+     pointer to the files.
 3. **One check**, `scripts/check_schemas.sh`, run in CI and pre-commit.
    ✅ Built for tools: every file is JSON and loaded by exactly one call, its
    placeholders are exactly the ones the call fills, and no schema is written
@@ -366,5 +389,10 @@ made per item once Phase 3's 60-day usage list exists.
    Rust-native equivalent, but it has no drift check.
 6. **The brain using the template.** Decided: yes, to a staged diff only
    (Phase 2.5), after the template has stamped the existing plugins.
+8. **The retired labels' leftovers in the live graph** (found 2026-11-06,
+   § Phase 1): 7 constraints, 7 indexes and 185 nodes on `ApiCredential`,
+   `Endpoint`, `HealingEvent`, `ModelSpec`, `Parameter`, `Resource`, `Schema`
+   and `DynamicTool`, from the agent-api fork, read and written by no code.
+   Recommended: snapshot, then drop them with a reviewed script. Open.
 7. **Phase 3's list.** The owner's call per item (remove, move or keep),
    once the 60-day usage is in.

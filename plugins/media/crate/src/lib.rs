@@ -16,7 +16,6 @@ use std::sync::{Arc, OnceLock};
 
 use agent_brain_plugin_api::{Plugin, PluginContext, Skill, async_trait};
 use serde::Deserialize;
-use serde_json::json;
 use tracing::{info, warn};
 
 mod read_rules;
@@ -134,9 +133,12 @@ impl Plugin for Media {
             .graph
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no graph"))?;
-        for stmt in store::SCHEMA {
-            graph.query(stmt, json!({})).await?;
-        }
+        // Constraints and indexes: schemas/graph/schema.cypher.
+        agent_brain_plugin_api::graph::apply_schema(
+            graph.as_ref(),
+            agent_brain_plugin_api::protocol::graph_schema!(plugin),
+        )
+        .await?;
         let store = store::Store::new(graph);
         let mut created = 0usize;
         for (plugin, path) in ctx.files("sources-media") {

@@ -131,9 +131,6 @@ impl Tracks {
     pub async fn seed(&self) -> Result<(), String> {
         let g = self.graph()?;
         let (files, mut problems) = areas::load_all(self.ctx.files("areas"));
-        areas::ensure_schema(g.as_ref())
-            .await
-            .map_err(|e| e.to_string())?;
         problems.extend(
             areas::seed(g.as_ref(), &files)
                 .await

@@ -29,12 +29,6 @@ use tracing::warn;
 use agent_brain_plugin_api::graph::{Row, query};
 use agent_brain_plugin_api::{Graph, Introspection};
 
-/// The snapshots' constraint and index (run by the plugin's `start`).
-pub const SCHEMA: &[&str] = &[
-    "CREATE CONSTRAINT arch_snapshot_id IF NOT EXISTS FOR (a:ArchSnapshot) REQUIRE a.id IS UNIQUE",
-    "CREATE INDEX arch_snapshot_taken_idx IF NOT EXISTS FOR (a:ArchSnapshot) ON (a.taken_at)",
-];
-
 /// The host's view of the core, set when the plugin starts.
 static INTRO: OnceLock<std::sync::Arc<dyn Introspection>> = OnceLock::new();
 /// The bundle's folder (`layout.yaml`).

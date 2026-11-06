@@ -672,42 +672,21 @@ One node, `{id: 'scheduler'}`: the scheduler's last tick, so the HBI shows when 
 
 ---
 
-### Constraints
+### Constraints and indexes
 
-| Name | Node | Property | Type |
-|------|------|----------|------|
-| `workflow_id` | `Workflow` | `id` | UNIQUE |
-| `workflow_name` | `Workflow` | `name` | UNIQUE |
-| `working_memory_id` | `WorkingMemory` | `id` | UNIQUE |
-| `entity_name` | `Entity` | `name` | UNIQUE |
-| `entity_alias_name` | `EntityAlias` | `name` | UNIQUE |
-| `topic_name` | `Topic` | `name` | UNIQUE |
-| `program_name` | `Program` | `name` | UNIQUE |
-| `arch_snapshot_id` | `ArchSnapshot` | `id` | UNIQUE |
-| `agent_job_id` | `AgentJob` | `id` | UNIQUE |
-| `todo_id` | `Todo` | `id` | UNIQUE |
-| `note_id` | `Note` | `id` | UNIQUE |
-| `task_id` | `Task` | `id` | UNIQUE |
-| `research_run_id` | `ResearchRun` | `run_id` | UNIQUE (research plugin) |
+They live in files, one per bundle, applied in order on every start (CODEBASE_SPLIT_PLAN Phase 1):
 
-### Indexes
+| Bundle | File | Applied by |
+|---|---|---|
+| core | `plugins/core/schemas/graph/schema.cypher` | `Neo4jClient::init_schema` (`init-db` and startup) |
+| developer | `plugins/developer/schemas/graph/schema.cypher` | the plugin's `start` (`ArchSnapshot`, `DevNote`) |
+| maps | `plugins/maps/schemas/graph/schema.cypher` | the plugin's `start`, before watch areas are seeded (`Place`, `WatchArea`) |
+| media | `plugins/media/schemas/graph/schema.cypher` | the plugin's `start` (`Media`, `MediaSource`) |
+| research | `plugins/research/schemas/graph/schema.cypher` | the plugin's `start` (`ResearchRun`) |
 
-| Name | Node | Property | Type | Notes |
-|------|------|----------|------|-------|
-| `note_embeddings` | `Note` | `embedding` | VECTOR | 1024-dim cosine similarity (bge-m3) |
-| `task_status` | `Task` | `status` | RANGE | Scheduler polls `status='created'` every tick |
-| `task_created` | `Task` | `created_at` | RANGE | Recency ordering in `list_tasks` |
-| `note_content_fulltext` | `Note` | `content` | FULLTEXT | BM25 hybrid search |
-| `note_next_review` | `Note` | `next_review_at` | RANGE | Spaced repetition query |
-| `note_produced_by_task` | `Note` | `produced_by_task` | RANGE | What a run produced: the `workflow_scorecard` view, run provenance |
-| `working_memory_session` | `WorkingMemory` | `session_id` | RANGE | Session context lookup |
-| `entity_type_idx` | `Entity` | `entity_type` | RANGE | Filter by entity type |
-| `entity_key_idx` | `Entity` | `key` | RANGE | Write-time resolution by normalised key |
-| `entity_id_idx` | `Entity` | `id` | RANGE | HBI drawer, merges and candidates look entities up by id |
-| `entity_alias_key_idx` | `EntityAlias` | `key` | RANGE | Write-time resolution by normalised key |
-| `arch_snapshot_taken_idx` | `ArchSnapshot` | `taken_at` | RANGE | Newest snapshot, history |
-| `agent_job_status` | `AgentJob` | `status` | RANGE | Queue coordinator polling |
-| `agent_job_priority` | `AgentJob` | `priority` | RANGE | Priority-ordered dispatch |
-| `agent_job_created` | `AgentJob` | `created_at` | RANGE | FIFO ordering within priority |
-| `research_run_created` | `ResearchRun` | `created_at` | RANGE | The monthly spend sum (research plugin) |
-| `agent_job_parent` | `AgentJob` | `parent_job_id` | RANGE | Chain unpark / cancel-children lookups |
+The file is the list: each statement carries the comment saying what it serves. Every statement is `CREATE … <name> IF NOT EXISTS FOR …`, and no name repeats across bundles (`scripts/check_schemas.sh`). A new label's constraint goes in its bundle's file, never in Rust.
+
+Measured against the live graph on 2026-11-06:
+- **Equivalent under another name.** Six file indexes (`agent_job_status`, `agent_job_priority`, `agent_job_created`, `entity_type_idx`, `note_next_review`, `working_memory_session`) are live under auto-generated names (`index_8795ea6`, …), created before they had names. `init_schema` treats "an equivalent index exists" as success, so nothing is missing.
+- **Retired labels' leftovers.** The original agent-api fork's `ApiCredential`, `Endpoint`, `HealingEvent`, `ModelSpec`, `Parameter`, `Resource`, `Schema` and `DynamicTool` still have 7 constraints and 7 indexes, and 185 nodes (`Parameter` 117, `Schema` 66, one `ApiCredential`, one `HealingEvent`). No code reads or writes these labels. Removing them is the owner's call.
+- `task_created` was live and documented but in no code; it is in core's file now.

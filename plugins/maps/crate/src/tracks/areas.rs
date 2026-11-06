@@ -175,7 +175,6 @@ mod tests {
 // map and is the map's to edit or delete.
 
 use agent_brain_plugin_api::Graph;
-use agent_brain_plugin_api::graph::query;
 use serde_json::{Value, json};
 
 /// An area as the graph holds it.
@@ -231,13 +230,6 @@ fn params(a: &Area) -> Value {
 const SET_FIELDS: &str = "a.title = $title, a.description = $description, a.bbox = $bbox, \
      a.ships = $ships, a.aircraft = $aircraft, a.owner_program = $program, \
      a.owner_topic = $topic, a.owner_workflow = $workflow, a.updated_at = datetime()";
-
-pub async fn ensure_schema(g: &dyn Graph) -> anyhow::Result<()> {
-    g.run(query(
-        "CREATE CONSTRAINT watch_area_name IF NOT EXISTS FOR (a:WatchArea) REQUIRE a.name IS UNIQUE",
-    ))
-    .await
-}
 
 /// Sync the bundles' areas into the graph. Returns what could not be synced
 /// (a name the map already uses).

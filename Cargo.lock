@@ -429,6 +429,7 @@ name = "agent-brain-repository"
 version = "0.1.0"
 dependencies = [
  "agent-brain-models",
+ "agent-brain-protocol",
  "anyhow",
  "chrono",
  "duckdb",

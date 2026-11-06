@@ -56,16 +56,6 @@ pub struct DevNote {
     pub date: String,
 }
 
-/// The label's constraint and its own indexes, so dev history never mixes
-/// with `:Note` retrieval.
-pub const SCHEMA: &[&str] = &[
-    "CREATE CONSTRAINT dev_note_id IF NOT EXISTS FOR (d:DevNote) REQUIRE d.id IS UNIQUE",
-    "CREATE VECTOR INDEX dev_note_embeddings IF NOT EXISTS FOR (d:DevNote) ON (d.embedding) \
-     OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}}",
-    "CREATE FULLTEXT INDEX dev_note_fulltext IF NOT EXISTS FOR (d:DevNote) \
-     ON EACH [d.title, d.content, d.subsystem]",
-];
-
 /// `{CODEBASE_DIR}/devdocs/devnotes.jsonl` (the repo is bind-mounted read-write).
 pub fn seed_file(codebase_dir: Option<String>) -> PathBuf {
     PathBuf::from(codebase_dir.unwrap_or_else(|| ".".into()))

@@ -60,9 +60,12 @@ impl Plugin for Developer {
         let Some(g) = &ctx.graph else {
             return Ok(());
         };
-        for stmt in arch::SCHEMA.iter().chain(dev_notes::SCHEMA) {
-            g.query(stmt, serde_json::json!({})).await?;
-        }
+        // Snapshots' and dev notes' constraints and indexes: schemas/graph/schema.cypher.
+        agent_brain_plugin_api::graph::apply_schema(
+            g.as_ref(),
+            agent_brain_plugin_api::protocol::graph_schema!(plugin),
+        )
+        .await?;
         // Seed an empty graph from git and embed what lacks a vector, off the
         // startup path (the embedder may still be loading).
         if let Some(notes) = dev_notes(ctx) {
