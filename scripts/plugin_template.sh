@@ -42,7 +42,7 @@ die() { echo "plugin_template: $*" >&2; exit 1; }
 # 4). A bundle leaves this list in the commit that links it; a new one is
 # stamped. `core` is the brain's own bundle, not a plugin, and is never
 # stamped.
-NOT_YET_LINKED="developer epistemics maps media"
+NOT_YET_LINKED="epistemics maps media"
 
 # The template must be committed: cruft clones it from HEAD.
 template_committed() {

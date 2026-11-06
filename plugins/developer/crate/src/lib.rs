@@ -91,3 +91,17 @@ fn dev_notes(ctx: &PluginContext) -> Option<Arc<dev_notes::DevNotes>> {
         dev_notes::seed_file(ctx.env("CODEBASE_DIR")),
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_matches_plugin_yaml() {
+        let want = format!("name: {}", Developer.name());
+        assert!(
+            include_str!("../../plugin.yaml").lines().any(|l| l == want),
+            "plugin.yaml has no `{want}` line"
+        );
+    }
+}

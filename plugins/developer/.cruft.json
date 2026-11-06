@@ -1,0 +1,25 @@
+{
+  "template": ".",
+  "commit": "d5ba64d9c48df67f39b95e233dd92ccee2ec3297",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "name": "developer",
+      "description": "Codebase tools (read_codebase_file, search_codebase, get_git_log, write_codebase_doc, write_proposal, analyze_own_structure, workspace files), the architecture view and snapshot_architecture, the dev notes (dev_docs), the doc-update, brain-api-sync, diagnose and capability-mining workflows, and the code-analyst and self-analyst agents.",
+      "kind": "rust",
+      "tools": "analyze_own_structure,dev_docs,get_git_log,list_workspace_files,read_codebase_file,search_codebase,snapshot_architecture,write_codebase_doc,write_proposal,write_workspace_file",
+      "graph_labels": "ArchSnapshot,DevNote",
+      "needs_env": "",
+      "__struct": "Developer",
+      "__crate": "agent-brain-plugin-developer",
+      "_template": ".",
+      "_commit": "d5ba64d9c48df67f39b95e233dd92ccee2ec3297"
+    }
+  },
+  "directory": "templates/plugin",
+  "skip": [
+    "crate/src/skill.rs",
+    "schemas/tools",
+    "schemas/graph"
+  ]
+}
